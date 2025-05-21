@@ -1,0 +1,12 @@
+viewpoint_generation_node:
+  ros__parameters:
+    visualize: True
+    triangle_mesh_file: '/workspaces/isaac_ros-dev/inspection_assets/Parts/blade.stl'
+    triangle_mesh_units: 'm'
+    point_cloud_file: '/workspaces/isaac_ros-dev/inspection_assets/Parts/blade.ply'
+    point_cloud_units: 'm'
+    ppsqmm: 1
+    fov_width: 0.02
+    fov_height: 0.03
+    dof: 0.02
+    focal_distance: 0.35
