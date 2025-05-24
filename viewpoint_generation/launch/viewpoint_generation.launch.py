@@ -19,6 +19,8 @@ def generate_launch_description():
         name="viewpoint_generation_node",
         executable="viewpoint_generation_node",
         parameters=[config],
+        output="screen",
+        emulate_tty=True
     )
 
     ld.add_action(viewpoint_generation_node)

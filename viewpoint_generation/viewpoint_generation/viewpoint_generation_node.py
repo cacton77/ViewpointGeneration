@@ -1,9 +1,11 @@
+import os
 import time
 import rclpy
 import rclpy.node
 from rclpy.action import ActionServer
 from viewpoint_generation.partitioner import Partitioner
 from rcl_interfaces.msg import SetParametersResult
+from ament_index_python.packages import get_package_prefix
 
 from std_srvs.srv import Trigger
 from viewpoint_generation_interfaces.action import ViewpointGeneration
@@ -79,6 +81,14 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             return
 
+        # If triangle_mesh_file begins with "package://package_name", replace it with the path to the package
+        if triangle_mesh_file.startswith('package://'):
+            package_name, relative_path = triangle_mesh_file.split(
+                'package://')[1].split('/', 1)
+            package_path = get_package_prefix(package_name)
+            triangle_mesh_file = os.path.join(
+                package_path, 'share', package_name, relative_path)
+
         success = self.partitioner.set_triangle_mesh_file(
             triangle_mesh_file,
             self.get_parameter(
@@ -112,6 +122,14 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 'No point cloud file provided.'
             )
             return
+
+        # If point_cloud_file begins with "package://package_name", replace it with the path to the package
+        if point_cloud_file.startswith('package://'):
+            package_name, relative_path = point_cloud_file.split(
+                'package://')[1].split('/', 1)
+            package_path = get_package_prefix(package_name)
+            point_cloud_file = os.path.join(
+                package_path, 'share', package_name, relative_path)
 
         success = self.partitioner.set_point_cloud_file(
             point_cloud_file,

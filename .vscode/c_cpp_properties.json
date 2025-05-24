@@ -1,0 +1,41 @@
+{
+  "configurations": [
+    {
+      "browse": {
+        "databaseFilename": "${default}",
+        "limitSymbolsToIncludedHeaders": false
+      },
+      "includePath": [
+        "/home/col/workspaces/isaac_ros-dev/install/viewpoint_generation_interfaces/include/**",
+        "/home/col/workspaces/isaac_ros-dev/install/isaac_ros_nitros_bridge_interfaces/include/**",
+        "/home/col/workspaces/isaac_ros-dev/install/isaac_ros_tensor_list_interfaces/include/**",
+        "/home/col/workspaces/isaac_ros-dev/install/isaac_ros_pointcloud_interfaces/include/**",
+        "/home/col/workspaces/isaac_ros-dev/install/isaac_ros_nova_interfaces/include/**",
+        "/home/col/workspaces/isaac_ros-dev/install/isaac_ros_common/include/**",
+        "/home/col/workspaces/isaac_ros-dev/install/isaac_ros_bi3d_interfaces/include/**",
+        "/home/col/workspaces/isaac_ros-dev/install/isaac_ros_apriltag_interfaces/include/**",
+        "/home/col/workspaces/isaac_ros-dev/install/isaac_common/include/**",
+        "/home/col/workspaces/isaac_ros-dev/install/inspection_srvs/include/**",
+        "/home/col/workspaces/isaac_ros-dev/install/inspection_msgs/include/**",
+        "/home/col/Inspection/base_ws/install/inspection_srvs/include/**",
+        "/home/col/Inspection/base_ws/install/inspection_msgs/include/**",
+        "/home/col/Inspection/base_ws/install/inspection_interfaces/include/**",
+        "/home/col/Inspection/base_ws/install/gphoto2_srvs/include/**",
+        "/home/col/Inspection/dev_ws/install/usb_cam/include/**",
+        "/home/col/Inspection/dev_ws/install/inspection_srvs/include/**",
+        "/home/col/Inspection/dev_ws/install/inspection_msgs/include/**",
+        "/home/col/Inspection/dev_ws/install/gphoto2_cam/include/**",
+        "/opt/ros/humble/include/**",
+        "/home/col/workspaces/isaac_ros-dev/src/isaac_ros_common/isaac_common/include/**",
+        "/home/col/workspaces/isaac_ros-dev/src/isaac_ros_common/isaac_ros_common/include/**",
+        "/usr/include/**"
+      ],
+      "name": "ROS",
+      "intelliSenseMode": "gcc-x64",
+      "compilerPath": "/usr/bin/gcc",
+      "cStandard": "gnu11",
+      "cppStandard": "c++14"
+    }
+  ],
+  "version": 4
+}
