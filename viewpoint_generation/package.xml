@@ -4,7 +4,7 @@
   <name>viewpoint_generation</name>
   <version>0.0.0</version>
   <description>TODO: Package description</description>
-  <maintainer email="actonc@uw.edu">col</maintainer>
+  <maintainer email="actonc@uw.edu">Colin Acton</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>ros2launch</exec_depend>

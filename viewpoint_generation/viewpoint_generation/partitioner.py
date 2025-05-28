@@ -3,7 +3,10 @@ import time
 import math
 import numpy as np
 import open3d as o3d
+import open3d.visualization.gui as gui
+import open3d.visualization.rendering as rendering
 
+from matplotlib import colormaps
 from open3d.geometry import PointCloud, TriangleMesh
 
 
@@ -48,17 +51,37 @@ class Partitioner():
 
     ppsqmm = 100
 
-    num_neighbors = 30
+    # Region Growth Parameters
+    nn_glob = None
+    curvature_cmap = 'RdYlGn'
+    curvature = None  # Will be set after estimating curvature
+    rg_curvature_threshold = 50  # percentile of curvature values
+    rg_angle_threshold = 15.0  # in degrees
+    rg_num_neighbors = 30
+    planar_region_cmap = 'plasma'
 
     fov_height = 0.02
     fov_width = 0.03
     dof = 0.02
 
     visualize = True
+    mesh_color = (0.2, 0.2, 0.2)
+    background_color = (0.1, 0.1, 0.1)
+    bb_color = (1., 1., 1.)
+    text_color = (1., 1., 1.)
     viewer = o3d.visualization.Visualizer()
     is_running = False
 
     def __init__(self):
+        # gui.Application.instance.initialize()
+        # self.window = gui.Application.instance.create_window(
+        #     "Viewpoint Generation", 800, 600)
+        # self.scene_widget = gui.SceneWidget()
+        # self.scene_widget.scene = rendering.Open3DScene(self.window.renderer)
+        # self.scene_widget.scene.set_background([0.1, 0.1, 0.1, 1.0])
+        # self.scene_widget.set_on_mouse(self._on_mouse_event)
+        # self.scene_widget.set_on_key(self._on_key_event)
+        # self.window.add_child(self.scene_widget)
         pass
 
     def set_triangle_mesh_file(self, triangle_mesh_file, units):
@@ -108,10 +131,13 @@ class Partitioner():
                 print('Unknown units. Triangle mesh not scaled.')
                 return False
 
+            # Check if the mesh has colors
+            mesh.paint_uniform_color(self.mesh_color)
+
             # Visualize if true
             if self.visualize:
                 bb = mesh.get_axis_aligned_bounding_box()
-                bb.color = (0, 1, 0)
+                bb.color = self.bb_color
                 bb_width = (bb.get_max_bound(
                 )[0] - bb.get_min_bound()[0]).round(3)
                 bb_depth = (bb.get_max_bound(
@@ -128,7 +154,7 @@ class Partitioner():
                 )[0] - text_bb.get_min_bound()[0]
                 text_scale = 2 * bb_width / text_width
                 text.scale(text_scale, center=(0, 0, 0))
-                text.paint_uniform_color((0, 1, 0))
+                text.paint_uniform_color(self.text_color)
                 text.translate(bb_bottom_front_left +
                                [0, -2*text_scale*text_height, 0])
 
@@ -138,9 +164,26 @@ class Partitioner():
                 self.viewer.add_geometry(mesh)
                 self.viewer.add_geometry(text)
                 self.viewer.add_geometry(bb)
+
+                # self.scene_widget.scene.add_geometry(
+                #     'TriangleMesh', mesh, rendering.MaterialRecord())
+                # self.scene_widget.scene.add_geometry('BoundingBox',
+                #                                      bb, rendering.MaterialRecord())
+                # self.scene_widget.scene.add_geometry(
+                #     'Text', text, rendering.MaterialRecord())
+                # self.axes = o3d.geometry.TriangleMesh.create_coordinate_frame(
+                #     size=2.0)
+                # self.scene_widget.scene.add_geometry(
+                #     'Axes', self.axes, rendering.MaterialRecord())
+                # self.scene_widget.scene.camera.look_at(
+                #     mesh.get_center() + np.array([0, 0, 1]),
+                #     mesh.get_center(),
+                #     np.array([0, -1, 0])
+                # )
+
                 opt = self.viewer.get_render_option()
                 opt.show_coordinate_frame = True
-                opt.background_color = (0.1, 0.1, 0.1)
+                opt.background_color = self.background_color
                 opt.mesh_show_back_face = True
                 self.viewer.run()
                 self.viewer.destroy_window()
@@ -199,7 +242,7 @@ class Partitioner():
         # Visualize if true
         if self.visualize:
             bb = pcd.get_axis_aligned_bounding_box()
-            bb.color = (0, 1, 0)
+            bb.color = self.bb_color
             bb_width = (bb.get_max_bound(
             )[0] - bb.get_min_bound()[0]).round(3)
             bb_depth = (bb.get_max_bound(
@@ -218,7 +261,7 @@ class Partitioner():
             )[0] - text_bb.get_min_bound()[0]
             text_scale = 2 * bb_width / text_width
             text.scale(text_scale, center=(0, 0, 0))
-            text.paint_uniform_color((0, 1, 0))
+            text.paint_uniform_color(self.text_color)
             text.translate(bb_bottom_front_left +
                            [0, -2*text_scale*text_height, 0])
 
@@ -228,9 +271,10 @@ class Partitioner():
             self.viewer.add_geometry(pcd)
             self.viewer.add_geometry(text)
             self.viewer.add_geometry(bb)
+
             opt = self.viewer.get_render_option()
             opt.show_coordinate_frame = True
-            opt.background_color = (0.1, 0.1, 0.1)
+            opt.background_color = self.background_color
             opt.mesh_show_back_face = True
             opt.point_show_normal = True
             self.viewer.run()
@@ -239,8 +283,46 @@ class Partitioner():
 
         self.point_cloud_file = point_cloud_file
         self.pcd = pcd
+        self.npcd = None
+        self.nn_glob = None  # Reset nearest neighbors
 
         return True
+
+    def set_point_cloud_units(self, units):
+        if self.point_cloud_file is None:
+            return False, 'No point cloud file loaded.'
+
+        if units == 'cm':
+            self.pcd.scale(0.01, center=self.pcd.get_center())
+            msg = 'Point cloud scaled to centimeters.'
+        elif units == 'mm':
+            self.pcd.scale(0.001, center=self.pcd.get_center())
+            msg = 'Point cloud scaled to millimeters.'
+        elif units == 'm':
+            msg = 'Point cloud is already in meters.'
+        elif units == 'in':
+            self.pcd.scale(0.0254, center=self.pcd.get_center())
+            msg = 'Point cloud scaled to meters.'
+        else:
+            return False, 'Unknown units. Point cloud not scaled.'
+
+        return True, msg
+
+    def set_ppsqmm(self, ppsqmm):
+        if ppsqmm <= 0:
+            msg = 'Points per square millimeter must be greater than 0.'
+            return False, msg
+
+        self.ppsqmm = ppsqmm
+
+        # Recalculate the number of points to sample based on the new ppsqmm
+        if self.mesh is not None:
+            N_points = int(self.mesh.get_surface_area() * (self.ppsqmm * 1e6))
+            msg = f'Number of points to sample: {N_points}'
+            return True, msg
+        else:
+            msg = 'No triangle mesh loaded. Cannot set ppsqmm.'
+            return False, msg
 
     def sample_point_cloud(self):
         # Perform poisson disk sampling on the triangle mesh
@@ -250,12 +332,11 @@ class Partitioner():
         elif self.is_running:
             return False, 'Point cloud partitioning is running.'
 
-        N_points = self.mesh.get_surface_area() * (self.ppsqmm * 1e6)
+        N_points = int(self.mesh.get_surface_area() * (self.ppsqmm * 1e6))
         print('Number of points to sample:', N_points)
 
         # Save the sampled point cloud to a file under a directory named after the mesh file in the same directory as the mesh file
         mesh_dir = self.triangle_mesh_file.rsplit('/', 1)[0]
-        print(mesh_dir)
         mesh_name = self.triangle_mesh_file.rsplit(
             '/', 1)[-1].rsplit('.', 1)[0]
         pcd_dir = mesh_dir + '/' + mesh_name + '_pcd'
@@ -272,47 +353,102 @@ class Partitioner():
         else:
             # Sample the point cloud
             pcd = self.mesh.sample_points_poisson_disk(
-                number_of_points=int(N_points), init_factor=5)
+                number_of_points=int(N_points), init_factor=5, use_triangle_normal=True)
             # Save the point cloud to a file
             o3d.io.write_point_cloud(pcd_file, pcd)
             message = f'Point cloud file saved to {pcd_file}.'
 
         self.set_point_cloud_file(pcd_file, 'm')
-        self.run_region_growth()
 
         return True, message
 
-    def curvature_estimation(self, nn_glob, vp=[0., 0., 0.]):
+    def find_nearest_neighbors(self, k=30):
+        print('Finding nearest neighbors...')
+
+        # Generate a KDTree object for the point cloud
+        if self.pcd is None:
+            print('No point cloud loaded.')
+            return None
+
+        pcd_tree = o3d.geometry.KDTreeFlann(self.pcd)
+
+        # Search for nearest neighbors for each point in the point cloud
+        search_results = []
+        for point in self.pcd.points:
+            try:
+                result = pcd_tree.search_knn_vector_3d(point, k)
+                search_results.append(result)
+            except RuntimeError as e:
+                print(f"An error occurred with point {point}: {e}")
+                continue
+
+        # Separate the k and index values from the search_results
+        k_values = [result[0] for result in search_results]
+        self.nn_glob = [result[1] for result in search_results]
+        distances = [result[2] for result in search_results]
+
+        print('Nearest neighbors found.')
+
+    def estimate_curvature(self, vp=[0., 0., 0.]):
         # Estimate normals and curvature of the set point cloud
-        print('Estimating normals and curvature...')
 
         if self.npcd is None:
             self.npcd = np.asarray(self.pcd.points)
 
-        viewpoint = np.array(vp)
-        # datastructure to store normals and curvature
-        normals = np.empty(np.shape(self.npcd), dtype=np.float32)
-        curvature = np.empty((len(self.npcd), 1), dtype=np.float32)
+        if self.nn_glob is None:
+            self.find_nearest_neighbors(k=30)
 
-        # loop through the point cloud to estimate normals and curvature
-        for index in range(len(self.npcd)):
-            # access the points in the vicinity of the current point and store in the nn_loc variable
-            nn_loc = self.npcd[nn_glob[index]]
-            # calculate the covariance matrix of the points in the vicinity
+        print('Estimating normals and curvature...')
+        points = np.asarray(self.pcd.points)
+        normals = np.asarray(self.pcd.normals)
+        curvature = np.empty((len(points), 1), dtype=np.float32)
+
+        # Check if the normals are already present
+        if normals.size == 0:
+            print('Normals are not present. Estimating normals...')
+            self.pcd.estimate_normals(
+                search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+            normals = np.asarray(self.pcd.normals)
+        else:
+            print('Normals are already present. Using existing normals.')
+
+        # Estimate curvature
+        for i in range(len(points)):
+            # Access the points in the vicinity of the current point
+            nn_loc = self.npcd[self.nn_glob[i]]
+            # Calculate the covariance matrix of the points in the vicinity
             COV = np.cov(nn_loc, rowvar=False)
-            # calculate the eigenvalues and eigenvectors of the covariance matrix
+            # Calculate the eigenvalues and eigenvectors of the covariance matrix
             eigval, eigvec = np.linalg.eig(COV)
-            # sort the eigenvalues in ascending order
+            # Sort the eigenvalues in ascending order
             idx = np.argsort(eigval)
-            # store the normal of the point in the normals variable
-            nor = eigvec[:, idx][:, 0]
-            # check if the normal is pointing towards the viewpoint
-            if nor.dot((viewpoint - self.npcd[index, :])) > 0:
-                normals[index] = nor
-            else:
-                normals[index] = -nor
-            # store the curvature of the point in the curv variable
-            curvature[index] = eigval[idx][0] / np.sum(eigval)
+            # Store the curvature of the point
+            curvature[i] = eigval[idx][0] / np.sum(eigval)
+
+        # viewpoint = np.array(vp)
+        # # datastructure to store normals and curvature
+        # normals = np.empty(np.shape(self.npcd), dtype=np.float32)
+        # curvature = np.empty((len(self.npcd), 1), dtype=np.float32)
+
+        # # loop through the point cloud to estimate normals and curvature
+        # for index in range(len(self.npcd)):
+        #     # access the points in the vicinity of the current point and store in the nn_loc variable
+        #     nn_loc = self.npcd[self.nn_glob[index]]
+        #     # calculate the covariance matrix of the points in the vicinity
+        #     COV = np.cov(nn_loc, rowvar=False)
+        #     # calculate the eigenvalues and eigenvectors of the covariance matrix
+        #     eigval, eigvec = np.linalg.eig(COV)
+        #     # sort the eigenvalues in ascending order
+        #     idx = np.argsort(eigval)
+        #     # store the normal of the point in the normals variable
+        #     nor = eigvec[:, idx][:, 0]
+        #     # check if the normal is pointing towards the viewpoint
+        #     if nor.dot((viewpoint - self.npcd[index, :])) > 0:
+        #         normals[index] = nor
+        #     else:
+        #         normals[index] = -nor
+        #     # store the curvature of the point in the curv variable
+        #     curvature[index] = eigval[idx][0] / np.sum(eigval)
 
         # Print maximum and minimum curvature values
         max_curvature = np.max(curvature)
@@ -323,67 +459,77 @@ class Partitioner():
                 (max_curvature - min_curvature)
             # Set the color of the point cloud based on the curvature values
             self.pcd.paint_uniform_color((0, 0, 0))
+            cmap = colormaps[self.curvature_cmap]
             for i in range(len(self.npcd)):
-                np.asarray(self.pcd.colors)[i][0] = normalized_curvature[i]
+                val = 1 - normalized_curvature[i]
+                color = np.array(list(cmap(val)))[0, 0:3]  # Get RGB values
+                np.asarray(self.pcd.colors)[i] = color
+
+            bb = self.pcd.get_axis_aligned_bounding_box()
+            bb.color = self.bb_color
+            bb_width = (bb.get_max_bound(
+            )[0] - bb.get_min_bound()[0]).round(3)
+            bb_depth = (bb.get_max_bound(
+            )[1] - bb.get_min_bound()[1]).round(3)
+            bb_height = (bb.get_max_bound(
+            )[2] - bb.get_min_bound()[2]).round(3)
+            bb_bottom_front_left = bb.get_box_points()[0]
+            # Set text_string to number of points in the point cloud
+            text_string = f"Min Curvature: {min_curvature:.4f}, Max Curvature: {max_curvature:.4f}"
+            text = o3d.t.geometry.TriangleMesh.create_text(
+                text_string).to_legacy()
+            text_bb = text.get_axis_aligned_bounding_box()
+            text_height = text_bb.get_max_bound(
+            )[1] - text_bb.get_min_bound()[1]
+            text_width = text_bb.get_max_bound(
+            )[0] - text_bb.get_min_bound()[0]
+            text_scale = 2 * bb_width / text_width
+            text.scale(text_scale, center=(0, 0, 0))
+            text.paint_uniform_color(self.text_color)
+            text.translate(bb_bottom_front_left +
+                           [0, -2*text_scale*text_height, 0])
+
             # Visualize the point cloud with the curvature values
             self.viewer.create_window(
                 'Curvature', width=800, height=600)
             self.viewer.clear_geometries()
+            self.viewer.add_geometry(self.mesh)
             self.viewer.add_geometry(self.pcd)
+            # self.viewer.add_geometry(bb)
+            self.viewer.add_geometry(text)
             opt = self.viewer.get_render_option()
             opt.show_coordinate_frame = True
-            opt.background_color = (0.1, 0.1, 0.1)
+            opt.background_color = self.background_color
             opt.mesh_show_back_face = True
             opt.point_show_normal = True
             self.viewer.run()
             self.viewer.destroy_window()
             self.viewer.clear_geometries()
 
+        self.curvature = curvature
+
         return normals, curvature
 
-    def run_region_growth(self, theta_th='auto', cur_th='auto'):
+    def region_growth(self, theta_th='auto', cur_th='auto', min_region_size=1):
 
         if self.npcd is None:
             self.npcd = np.asarray(self.pcd.points)
 
-        # store point cloud as numpy array
-        unique_rows = np.asarray(self.pcd.points)
-        # Generate a KDTree object
-        pcd_tree = o3d.geometry.KDTreeFlann(self.pcd)
-
-        search_results = []
-
-        # search for nearest neighbors for each point in the point cloud and store the k value, index of the nearby points and their distances them in search_results
-        for point in self.pcd.points:
-            try:
-                result = pcd_tree.search_knn_vector_3d(
-                    point, self.num_neighbors)
-                search_results.append(result)
-            except RuntimeError as e:
-                print(f"An error occurred with point {point}: {e}")
-                continue
-
-        # separate the k and index values from the search_results
-
-        k_values = [result[0] for result in search_results]
-        nn_glob = [result[1] for result in search_results]
-        distances = [result[2] for result in search_results]
-
         # Estimate normals and curvature
-        # time and print this operation
-        start = time.time()
-        normals, curvature = self.curvature_estimation(nn_glob=nn_glob)
-        end = time.time()
-        print("Time taken to estimate normals and curvature: ", end-start)
+        if self.curvature is None:
+            self.estimate_curvature()
+
+        normals = np.asarray(self.pcd.normals)
+
         # return a list of indices that would sort the curvature array, pointcloud
-        order = curvature[:, 0].argsort().tolist()
+        order = self.curvature[:, 0].argsort().tolist()
         regions = []
         cur_th = 'auto'
         # Set default values for theta_th and cur_th
         if theta_th == 'auto':
-            theta_th = 15.0 / 180.0 * math.pi  # in radians
+            theta_th = self.rg_curvature_threshold / 180.0 * math.pi  # in radians
         if cur_th == 'auto':
-            cur_th = np.percentile(curvature, 98)
+            cur_th = np.percentile(self.curvature, self.rg_curvature_threshold)
         # Perform region growing
         # Loop through the points in the point cloud until all points are assigned to a region
         while len(order) > 0:
@@ -400,7 +546,7 @@ class Partitioner():
             # Loop through the seed_cur list until all indexes points in the seed_cur list are assigned to a region
             while seedval < len(seed_cur):
                 # Get the nearest neighbors of the current seed point
-                nn_loc = nn_glob[seed_cur[seedval]]
+                nn_loc = self.nn_glob[seed_cur[seedval]]
                 # Loop through the nearest neighbors
                 for j in range(len(nn_loc)):
                     # Get the current nearest neighbor index looped through the list of nearest neighbors
@@ -418,24 +564,48 @@ class Partitioner():
                             # remove the current nearest neighbor from the order list
                             order.remove(nn_cur)
                             # check for the curvature threshold
-                            if curvature[nn_cur] < cur_th:
+                            if self.curvature[nn_cur] < cur_th:
                                 seed_cur.append(nn_cur)
                 # increment the seed value
                 seedval += 1
+
+            # Only keep regions above minimum size
+            if len(region_cur) >= min_region_size:
+                regions.append(region_cur)
+            else:
+                # Put small regions back in order for potential inclusion in other regions
+                for pt in region_cur:
+                    if pt not in order:
+                        # Insert back in sorted order
+                        curvature_val = self.curvature[pt, 0]
+                        insert_pos = 0
+                        for i, ordered_pt in enumerate(order):
+                            if self.curvature[ordered_pt, 0] > curvature_val:
+                                insert_pos = i
+                                break
+                            insert_pos = i + 1
+                        order.insert(insert_pos, pt)
             # append the region_cur list to the region list
             regions.append(region_cur)
+
+        # Filter out regions with less than 3 points
+        regions = [region for region in regions if len(region) > 2]
+
         # return the region list which contains the indices of the points in each region
 
         # Visualize the regions
         if self.visualize:
-            colors = np.random.rand(len(regions), 3)
             for i, region in enumerate(regions):
                 print(f'Region {i} has {len(region)} points.')
+                # Generate random color from self.planar_region_cmap
+                cmap = colormaps[self.planar_region_cmap]
+                colors = np.array(cmap(np.linspace(0, 1, len(regions)))[
+                                  :, :3])  # Get RGB values
                 for point_index in region:
                     np.asarray(self.pcd.colors)[point_index] = colors[i]
 
             bb = self.pcd.get_axis_aligned_bounding_box()
-            bb.color = (0, 1, 0)
+            bb.color = self.bb_color
             bb_width = (bb.get_max_bound(
             )[0] - bb.get_min_bound()[0]).round(3)
             bb_depth = (bb.get_max_bound(
@@ -454,7 +624,7 @@ class Partitioner():
             )[0] - text_bb.get_min_bound()[0]
             text_scale = 2 * bb_width / text_width
             text.scale(text_scale, center=(0, 0, 0))
-            text.paint_uniform_color((0, 1, 0))
+            text.paint_uniform_color(self.text_color)
             text.translate(bb_bottom_front_left +
                            [0, -2*text_scale*text_height, 0])
 
@@ -466,9 +636,21 @@ class Partitioner():
             self.viewer.add_geometry(bb)
             opt = self.viewer.get_render_option()
             opt.show_coordinate_frame = True
-            opt.background_color = (0.1, 0.1, 0.1)
+            opt.background_color = self.background_color
             opt.mesh_show_back_face = True
             self.viewer.run()
             self.viewer.destroy_window()
 
         return regions
+
+    def _on_mouse_event(self, event):
+        # Force refresh after mouse interaction
+        gui.Application.instance.post_to_main_thread(
+            self.window, self.refresh_scene)
+        return gui.Widget.EventCallbackResult.IGNORED
+
+    def _on_key_event(self, event):
+        # Force refresh after key interaction
+        gui.Application.instance.post_to_main_thread(
+            self.window, self.refresh_scene)
+        return gui.Widget.EventCallbackResult.IGNORED

@@ -1,0 +1,25 @@
+ARG BASE_IMAGE=ros2_humble-image
+FROM ${BASE_IMAGE}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    neovim
+
+# Install dependencies
+RUN pip install --ignore-installed open3d pytransform3d bayesian-optimization==1.5.1 matplotlib
+
+# Install MoveIt2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-moveit
+
+# Install UR
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-ur
+
+# Install joy package
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-joy
+
+# Install ROS Control Cli
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-ros2controlcli \
+    ros-${ROS_DISTRO}-rqt-controller-manager

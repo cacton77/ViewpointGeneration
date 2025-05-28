@@ -24,6 +24,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('point_cloud_file', ''),
                 ('point_cloud_units', 'm'),
                 ('ppsqmm', 1),
+                ('sample_point_cloud', False),
+                ('estimate_curvature', False),
+                ('region_growth', False),
                 ('fov_width', 0.02),
                 ('fov_height', 0.03),
                 ('dof', 0.02),
@@ -157,14 +160,35 @@ class ViewpointGenerationNode(rclpy.node.Node):
         success = True
 
         for param in params:
-            if param.name == 'triangle_mesh_file':
-                self.set_triangle_mesh_file(param.value)
+            if param.name == 'visualize':
+                self.partitioner.visualize = param.value
+                self.get_logger().info(
+                    f'Visualize set to {param.value}.'
+                )
+            elif param.name == 'triangle_mesh_file':
+                success = self.set_triangle_mesh_file(param.value)
             elif param.name == 'triangle_mesh_units':
-                self.partitioner.triangle_mesh_units = param.value
+                success = self.partitioner.triangle_mesh_units = param.value
             elif param.name == 'point_cloud_file':
-                self.set_point_cloud_file(param.value)
+                success = self.set_point_cloud_file(param.value)
             elif param.name == 'point_cloud_units':
-                self.partitioner.point_cloud_units = param.value
+                success = self.partitioner.point_cloud_units = param.value
+            elif param.name == 'ppsqmm':
+                self.partitioner.ppsqmm = param.value
+                success, N_points = self.partitioner.set_ppsqmm(param.value)
+            elif param.name == 'sample_point_cloud':
+                success, message = self.sample_point_cloud()
+                # # Set the parameter to False after sampling
+                # sample_point_cloud_param = rclpy.parameter.Parameter(
+                #     'sample_point_cloud',
+                #     rclpy.Parameter.Type.BOOL,
+                #     False
+                # )
+                # self.set_parameters([sample_point_cloud_param])
+            elif param.name == 'estimate_curvature':
+                self.partitioner.estimate_curvature()
+            elif param.name == 'region_growth':
+                self.partitioner.region_growth()
             elif param.name == 'fov_height':
                 self.partitioner.fov_height = param.value
             elif param.name == 'fov_width':
@@ -173,14 +197,17 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 self.partitioner.dof = param.value
             elif param.name == 'focal_distance':
                 self.partitioner.focal_distance = param.value
-            elif param.name == 'ppsqmm':
-                self.partitioner.ppsqmm = param.value
 
         result = SetParametersResult()
         result.successful = success
+
         return result
 
-    def sample_point_cloud_callback(self, request, response):
+    def sample_point_cloud(self):
+        """
+        Sample the point cloud using the partitioner.
+        :return: Tuple (success, message)
+        """
         self.get_logger().info('Sampling point cloud...')
 
         success, message = self.partitioner.sample_point_cloud()
@@ -189,6 +216,12 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.get_logger().info(message)
         else:
             self.get_logger().error(message)
+
+        return success, message
+
+    def sample_point_cloud_callback(self, request, response):
+
+        success, message = self.sample_point_cloud()
 
         response.success = success
         response.message = message
