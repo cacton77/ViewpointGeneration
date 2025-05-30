@@ -1,6 +1,7 @@
 import os
 import time
 import math
+import random
 import numpy as np
 import open3d as o3d
 import open3d.visualization.gui as gui
@@ -65,7 +66,7 @@ class Partitioner():
     dof = 0.02
 
     visualize = True
-    mesh_color = (0.2, 0.2, 0.2)
+    mesh_color = (0.5, 0.5, 0.5)
     background_color = (0.1, 0.1, 0.1)
     bb_color = (1., 1., 1.)
     text_color = (1., 1., 1.)
@@ -276,7 +277,7 @@ class Partitioner():
             opt.show_coordinate_frame = True
             opt.background_color = self.background_color
             opt.mesh_show_back_face = True
-            opt.point_show_normal = True
+            # opt.point_show_normal = True
             self.viewer.run()
             self.viewer.destroy_window()
             self.viewer.clear_geometries()
@@ -342,7 +343,7 @@ class Partitioner():
         pcd_dir = mesh_dir + '/' + mesh_name + '_pcd'
         # Name the pcd file after the mesh file name with N_points appended and save as a ply file
         pcd_file = pcd_dir + '/' + mesh_name + \
-            '_pcd_' + str(int(N_points)) + '.ply'
+            '_pcd_' + str(int(N_points)) + 'points.ply'
         # Create the directory if it does not exist
         if not os.path.exists(pcd_dir):
             os.makedirs(pcd_dir)
@@ -358,11 +359,16 @@ class Partitioner():
             o3d.io.write_point_cloud(pcd_file, pcd)
             message = f'Point cloud file saved to {pcd_file}.'
 
-        self.set_point_cloud_file(pcd_file, 'm')
+        return True, message, pcd_file
 
-        return True, message
+    def set_number_of_neighbors(self, k):
+        if k <= 0:
+            return False, 'Number of neighbors must be greater than 0.'
+        self.rg_num_neighbors = k
+        self.nn_glob = None  # Reset nearest neighbors
+        return True
 
-    def find_nearest_neighbors(self, k=30):
+    def find_nearest_neighbors(self):
         print('Finding nearest neighbors...')
 
         # Generate a KDTree object for the point cloud
@@ -376,7 +382,8 @@ class Partitioner():
         search_results = []
         for point in self.pcd.points:
             try:
-                result = pcd_tree.search_knn_vector_3d(point, k)
+                result = pcd_tree.search_knn_vector_3d(
+                    point, self.rg_num_neighbors)
                 search_results.append(result)
             except RuntimeError as e:
                 print(f"An error occurred with point {point}: {e}")
@@ -392,11 +399,8 @@ class Partitioner():
     def estimate_curvature(self, vp=[0., 0., 0.]):
         # Estimate normals and curvature of the set point cloud
 
-        if self.npcd is None:
-            self.npcd = np.asarray(self.pcd.points)
-
         if self.nn_glob is None:
-            self.find_nearest_neighbors(k=30)
+            self.find_nearest_neighbors()
 
         print('Estimating normals and curvature...')
         points = np.asarray(self.pcd.points)
@@ -415,7 +419,7 @@ class Partitioner():
         # Estimate curvature
         for i in range(len(points)):
             # Access the points in the vicinity of the current point
-            nn_loc = self.npcd[self.nn_glob[i]]
+            nn_loc = points[self.nn_glob[i]]
             # Calculate the covariance matrix of the points in the vicinity
             COV = np.cov(nn_loc, rowvar=False)
             # Calculate the eigenvalues and eigenvectors of the covariance matrix
@@ -460,7 +464,7 @@ class Partitioner():
             # Set the color of the point cloud based on the curvature values
             self.pcd.paint_uniform_color((0, 0, 0))
             cmap = colormaps[self.curvature_cmap]
-            for i in range(len(self.npcd)):
+            for i in range(len(points)):
                 val = 1 - normalized_curvature[i]
                 color = np.array(list(cmap(val)))[0, 0:3]  # Get RGB values
                 np.asarray(self.pcd.colors)[i] = color
@@ -475,7 +479,7 @@ class Partitioner():
             )[2] - bb.get_min_bound()[2]).round(3)
             bb_bottom_front_left = bb.get_box_points()[0]
             # Set text_string to number of points in the point cloud
-            text_string = f"Min Curvature: {min_curvature:.4f}, Max Curvature: {max_curvature:.4f}"
+            text_string = f"Number of Neighbors: {self.rg_num_neighbors}, Min Curvature: {min_curvature:.4f}, Max Curvature: {max_curvature:.4f}"
             text = o3d.t.geometry.TriangleMesh.create_text(
                 text_string).to_legacy()
             text_bb = text.get_axis_aligned_bounding_box()
@@ -501,7 +505,7 @@ class Partitioner():
             opt.show_coordinate_frame = True
             opt.background_color = self.background_color
             opt.mesh_show_back_face = True
-            opt.point_show_normal = True
+            # opt.point_show_normal = True
             self.viewer.run()
             self.viewer.destroy_window()
             self.viewer.clear_geometries()
@@ -599,10 +603,9 @@ class Partitioner():
                 print(f'Region {i} has {len(region)} points.')
                 # Generate random color from self.planar_region_cmap
                 cmap = colormaps[self.planar_region_cmap]
-                colors = np.array(cmap(np.linspace(0, 1, len(regions)))[
-                                  :, :3])  # Get RGB values
+                color = np.array(cmap(random.random()))[:3]
                 for point_index in region:
-                    np.asarray(self.pcd.colors)[point_index] = colors[i]
+                    np.asarray(self.pcd.colors)[point_index] = color
 
             bb = self.pcd.get_axis_aligned_bounding_box()
             bb.color = self.bb_color
@@ -633,7 +636,7 @@ class Partitioner():
             self.viewer.clear_geometries()
             self.viewer.add_geometry(self.pcd)
             self.viewer.add_geometry(text)
-            self.viewer.add_geometry(bb)
+            # self.viewer.add_geometry(bb)
             opt = self.viewer.get_render_option()
             opt.show_coordinate_frame = True
             opt.background_color = self.background_color

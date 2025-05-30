@@ -12,6 +12,9 @@ from viewpoint_generation_interfaces.action import ViewpointGeneration
 
 
 class ViewpointGenerationNode(rclpy.node.Node):
+
+    block_next_param_callback = False
+
     def __init__(self):
         node_name = 'viewpoint_generation_node'
         super().__init__(node_name)
@@ -19,18 +22,19 @@ class ViewpointGenerationNode(rclpy.node.Node):
             namespace='',
             parameters=[
                 ('visualize', False),
-                ('triangle_mesh_file', ''),
-                ('triangle_mesh_units', 'm'),
-                ('point_cloud_file', ''),
-                ('point_cloud_units', 'm'),
-                ('ppsqmm', 1),
-                ('sample_point_cloud', False),
-                ('estimate_curvature', False),
-                ('region_growth', False),
-                ('fov_width', 0.02),
-                ('fov_height', 0.03),
-                ('dof', 0.02),
-                ('focal_distance', 0.35)
+                ('model.triangle_mesh_file', ''),
+                ('model.triangle_mesh_units', 'm'),
+                ('model.point_cloud_file', ''),
+                ('model.point_cloud_units', 'm'),
+                ('pcd_sampling.ppsqmm', 1),
+                ('pcd_sampling.sample_point_cloud', False),
+                ('curvature.estimate_curvature', False),
+                ('curvature.number_of_neighbors', 30),
+                ('regions.region_growth', False),
+                ('camera.fov_width', 0.02),
+                ('camera.fov_height', 0.03),
+                ('camera.dof', 0.02),
+                ('camera.focal_distance', 0.35)
             ]
         )
 
@@ -40,23 +44,23 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.partitioner.visualize = self.get_parameter(
             'visualize').get_parameter_value().bool_value
         self.set_triangle_mesh_file(self.get_parameter(
-            'triangle_mesh_file').get_parameter_value().string_value)
+            'model.triangle_mesh_file').get_parameter_value().string_value)
         self.partitioner.triangle_mesh_units = self.get_parameter(
-            'triangle_mesh_units').get_parameter_value().string_value
+            'model.triangle_mesh_units').get_parameter_value().string_value
         self.set_point_cloud_file(self.get_parameter(
-            'point_cloud_file').get_parameter_value().string_value)
+            'model.point_cloud_file').get_parameter_value().string_value)
         self.partitioner.point_cloud_units = self.get_parameter(
-            'point_cloud_units').get_parameter_value().string_value
+            'model.point_cloud_units').get_parameter_value().string_value
         self.partitioner.ppsqmm = self.get_parameter(
-            'ppsqmm').get_parameter_value().integer_value
+            'pcd_sampling.ppsqmm').get_parameter_value().integer_value
         self.partitioner.fov_width = self.get_parameter(
-            'fov_width').get_parameter_value().double_value
+            'camera.fov_width').get_parameter_value().double_value
         self.partitioner.fov_height = self.get_parameter(
-            'fov_height').get_parameter_value().double_value
+            'camera.fov_height').get_parameter_value().double_value
         self.partitioner.dof = self.get_parameter(
-            'dof').get_parameter_value().double_value
+            'camera.dof').get_parameter_value().double_value
         self.partitioner.focal_distance = self.get_parameter(
-            'focal_distance').get_parameter_value().double_value
+            'camera.focal_distance').get_parameter_value().double_value
 
         self.add_on_set_parameters_callback(self.parameter_callback)
 
@@ -95,12 +99,12 @@ class ViewpointGenerationNode(rclpy.node.Node):
         success = self.partitioner.set_triangle_mesh_file(
             triangle_mesh_file,
             self.get_parameter(
-                'triangle_mesh_units').get_parameter_value().string_value
+                'model.triangle_mesh_units').get_parameter_value().string_value
         )
 
         if not success:
             triangle_mesh_file_param = rclpy.parameter.Parameter(
-                'triangle_mesh_file',
+                'model.triangle_mesh_file',
                 rclpy.Parameter.Type.STRING,
                 ''
             )
@@ -121,10 +125,10 @@ class ViewpointGenerationNode(rclpy.node.Node):
         """
 
         if point_cloud_file is '' or None:
-            self.get_logger().error(
+            self.get_logger().warning(
                 'No point cloud file provided.'
             )
-            return
+            return False
 
         # If point_cloud_file begins with "package://package_name", replace it with the path to the package
         if point_cloud_file.startswith('package://'):
@@ -137,12 +141,12 @@ class ViewpointGenerationNode(rclpy.node.Node):
         success = self.partitioner.set_point_cloud_file(
             point_cloud_file,
             self.get_parameter(
-                'point_cloud_units').get_parameter_value().string_value
+                'model.point_cloud_units').get_parameter_value().string_value
         )
 
         if not success:
             point_cloud_file_param = rclpy.parameter.Parameter(
-                'point_cloud_file',
+                'model.point_cloud_file',
                 rclpy.Parameter.Type.STRING,
                 ''
             )
@@ -150,12 +154,17 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.get_logger().error(
                 f'Could not load requested point cloud file {point_cloud_file}.'
             )
+            return False
         else:
             self.get_logger().info(
                 f'Point cloud file {point_cloud_file} loaded successfully.'
             )
+            return True
 
     def parameter_callback(self, params):
+        if self.block_next_param_callback:
+            self.block_next_param_callback = False
+            return SetParametersResult(successful=True)
 
         success = True
 
@@ -165,41 +174,69 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 self.get_logger().info(
                     f'Visualize set to {param.value}.'
                 )
-            elif param.name == 'triangle_mesh_file':
+            elif param.name == 'model.triangle_mesh_file':
                 success = self.set_triangle_mesh_file(param.value)
-            elif param.name == 'triangle_mesh_units':
+            elif param.name == 'model.triangle_mesh_units':
                 success = self.partitioner.triangle_mesh_units = param.value
-            elif param.name == 'point_cloud_file':
+            elif param.name == 'model.point_cloud_file':
                 success = self.set_point_cloud_file(param.value)
-            elif param.name == 'point_cloud_units':
+            elif param.name == 'model.point_cloud_units':
                 success = self.partitioner.point_cloud_units = param.value
-            elif param.name == 'ppsqmm':
+            elif param.name == 'pcd_sampling.ppsqmm':
                 self.partitioner.ppsqmm = param.value
                 success, N_points = self.partitioner.set_ppsqmm(param.value)
-            elif param.name == 'sample_point_cloud':
-                success, message = self.sample_point_cloud()
-                # # Set the parameter to False after sampling
-                # sample_point_cloud_param = rclpy.parameter.Parameter(
-                #     'sample_point_cloud',
-                #     rclpy.Parameter.Type.BOOL,
-                #     False
-                # )
-                # self.set_parameters([sample_point_cloud_param])
-            elif param.name == 'estimate_curvature':
+            elif param.name == 'pcd_sampling.sample_point_cloud':
+                # Sample the point cloud
+                success, message, pcd_file = self.sample_point_cloud()
+                # Set the point cloud of the partitioner
+                self.partitioner.set_point_cloud_file(pcd_file, 'm')
+
+                params = []
+
+                if success:
+                    # Update the point cloud units to meters
+                    point_cloud_units_param = rclpy.parameter.Parameter(
+                        'model.point_cloud_units',
+                        rclpy.Parameter.Type.STRING,
+                        'm'
+                    )
+                    # Update the point cloud file parameter with the sampled file
+                    point_cloud_file_param = rclpy.parameter.Parameter(
+                        'model.point_cloud_file',
+                        rclpy.Parameter.Type.STRING,
+                        pcd_file
+                    )
+                    params.append(point_cloud_file_param)
+                    params.append(point_cloud_units_param)
+
+                # Set the parameter to False after sampling
+                sample_point_cloud_param = rclpy.parameter.Parameter(
+                    'sample_point_cloud',
+                    rclpy.Parameter.Type.BOOL,
+                    False
+                )
+                params.append(sample_point_cloud_param)
+
+                self.block_next_param_callback = True
+                self.set_parameters(params)
+
+            elif param.name == 'curvature.number_of_neighbors':
+                success = self.partitioner.set_number_of_neighbors(param.value)
+            elif param.name == 'curvature.estimate_curvature':
                 self.partitioner.estimate_curvature()
-            elif param.name == 'region_growth':
+            elif param.name == 'regions.region_growth':
                 self.partitioner.region_growth()
-            elif param.name == 'fov_height':
+            elif param.name == 'camera.fov_height':
                 self.partitioner.fov_height = param.value
-            elif param.name == 'fov_width':
+            elif param.name == 'camera.fov_width':
                 self.partitioner.fov_width = param.value
-            elif param.name == 'dof':
+            elif param.name == 'camera.dof':
                 self.partitioner.dof = param.value
-            elif param.name == 'focal_distance':
+            elif param.name == 'camera.focal_distance':
                 self.partitioner.focal_distance = param.value
 
         result = SetParametersResult()
-        result.successful = success
+        result.successful = True
 
         return result
 
@@ -210,14 +247,14 @@ class ViewpointGenerationNode(rclpy.node.Node):
         """
         self.get_logger().info('Sampling point cloud...')
 
-        success, message = self.partitioner.sample_point_cloud()
+        success, message, pcd_file = self.partitioner.sample_point_cloud()
 
         if success:
             self.get_logger().info(message)
         else:
             self.get_logger().error(message)
 
-        return success, message
+        return success, message, pcd_file
 
     def sample_point_cloud_callback(self, request, response):
 
