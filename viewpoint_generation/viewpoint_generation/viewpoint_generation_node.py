@@ -22,6 +22,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             namespace='',
             parameters=[
                 ('visualize', False),
+                ('cuda_enabled', False),
                 ('model.triangle_mesh_file', ''),
                 ('model.triangle_mesh_units', 'm'),
                 ('model.point_cloud_file', ''),
@@ -174,6 +175,20 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 self.get_logger().info(
                     f'Visualize set to {param.value}.'
                 )
+            elif param.name == 'cuda_enabled':
+                success = self.partitioner.set_cuda_enabled(param.value)
+                if param.value and success:
+                    self.get_logger().info(
+                        'CUDA enabled successfully.'
+                    )
+                elif not success:
+                    self.get_logger().error(
+                        'Failed to enable CUDA. Please check your setup.'
+                    )
+                else:
+                    self.get_logger().info(
+                        'CUDA disabled.'
+                    )
             elif param.name == 'model.triangle_mesh_file':
                 success = self.set_triangle_mesh_file(param.value)
             elif param.name == 'model.triangle_mesh_units':
@@ -185,6 +200,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
             elif param.name == 'pcd_sampling.ppsqmm':
                 self.partitioner.ppsqmm = param.value
                 success, N_points = self.partitioner.set_ppsqmm(param.value)
+            elif param.name == 'pcd_sampling.number_of_points':
+
             elif param.name == 'pcd_sampling.sample_point_cloud':
                 # Sample the point cloud
                 success, message, pcd_file = self.sample_point_cloud()

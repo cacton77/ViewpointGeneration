@@ -1,6 +1,7 @@
 viewpoint_generation_node:
   ros__parameters:
     visualize: True
+    cuda_enabled: False
 
     model:
       triangle_mesh_file: "package://viewpoint_generation/assets/blade.stl"

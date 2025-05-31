@@ -10,6 +10,8 @@ import open3d.visualization.rendering as rendering
 from matplotlib import colormaps
 from open3d.geometry import PointCloud, TriangleMesh
 
+from viewpoint_generation.curvature import *
+
 
 class NPCD:
     def __init__(self, points, normals, colors):
@@ -66,6 +68,7 @@ class Partitioner():
     dof = 0.02
 
     visualize = True
+    cuda_enabled = False  # Set to True if using CuPy for GPU acceleration
     mesh_color = (0.5, 0.5, 0.5)
     background_color = (0.1, 0.1, 0.1)
     bb_color = (1., 1., 1.)
@@ -84,6 +87,25 @@ class Partitioner():
         # self.scene_widget.set_on_key(self._on_key_event)
         # self.window.add_child(self.scene_widget)
         pass
+
+    def set_cuda_enabled(self, enabled):
+        """
+        Set whether to use CuPy for GPU acceleration.
+        Args:
+            enabled (bool): Whether to enable CuPy for GPU acceleration.
+        """
+        if enabled:
+            try:
+                cp.cuda.Device(0).use()
+                print("CuPy available. Using GPU acceleration.")
+            except cp.cuda.runtime.CUDARuntimeError:
+                print("CuPy not available. Using CPU instead.")
+                self.cuda_enabled = False
+                return False
+
+        self.cuda_enabled = enabled
+
+        return True
 
     def set_triangle_mesh_file(self, triangle_mesh_file, units):
         if triangle_mesh_file is None:
@@ -396,63 +418,22 @@ class Partitioner():
 
         print('Nearest neighbors found.')
 
-    def estimate_curvature(self, vp=[0., 0., 0.]):
+    def estimate_curvature(self):
         # Estimate normals and curvature of the set point cloud
 
         if self.nn_glob is None:
             self.find_nearest_neighbors()
 
-        print('Estimating normals and curvature...')
-        points = np.asarray(self.pcd.points)
-        normals = np.asarray(self.pcd.normals)
-        curvature = np.empty((len(points), 1), dtype=np.float32)
-
-        # Check if the normals are already present
-        if normals.size == 0:
-            print('Normals are not present. Estimating normals...')
-            self.pcd.estimate_normals(
-                search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
-            normals = np.asarray(self.pcd.normals)
+        # Time the curvature estimation
+        start_time = time.time()
+        if self.cuda_enabled:
+            curvature = estimate_curvature_optimized(
+                self.pcd, nn_glob=self.nn_glob)
         else:
-            print('Normals are already present. Using existing normals.')
-
-        # Estimate curvature
-        for i in range(len(points)):
-            # Access the points in the vicinity of the current point
-            nn_loc = points[self.nn_glob[i]]
-            # Calculate the covariance matrix of the points in the vicinity
-            COV = np.cov(nn_loc, rowvar=False)
-            # Calculate the eigenvalues and eigenvectors of the covariance matrix
-            eigval, eigvec = np.linalg.eig(COV)
-            # Sort the eigenvalues in ascending order
-            idx = np.argsort(eigval)
-            # Store the curvature of the point
-            curvature[i] = eigval[idx][0] / np.sum(eigval)
-
-        # viewpoint = np.array(vp)
-        # # datastructure to store normals and curvature
-        # normals = np.empty(np.shape(self.npcd), dtype=np.float32)
-        # curvature = np.empty((len(self.npcd), 1), dtype=np.float32)
-
-        # # loop through the point cloud to estimate normals and curvature
-        # for index in range(len(self.npcd)):
-        #     # access the points in the vicinity of the current point and store in the nn_loc variable
-        #     nn_loc = self.npcd[self.nn_glob[index]]
-        #     # calculate the covariance matrix of the points in the vicinity
-        #     COV = np.cov(nn_loc, rowvar=False)
-        #     # calculate the eigenvalues and eigenvectors of the covariance matrix
-        #     eigval, eigvec = np.linalg.eig(COV)
-        #     # sort the eigenvalues in ascending order
-        #     idx = np.argsort(eigval)
-        #     # store the normal of the point in the normals variable
-        #     nor = eigvec[:, idx][:, 0]
-        #     # check if the normal is pointing towards the viewpoint
-        #     if nor.dot((viewpoint - self.npcd[index, :])) > 0:
-        #         normals[index] = nor
-        #     else:
-        #         normals[index] = -nor
-        #     # store the curvature of the point in the curv variable
-        #     curvature[index] = eigval[idx][0] / np.sum(eigval)
+            curvature = estimate_curvature(self.pcd, nn_glob=self.nn_glob)
+        end_time = time.time()
+        print(
+            f'Curvature estimation took {end_time - start_time:.2f} seconds.')
 
         # Print maximum and minimum curvature values
         max_curvature = np.max(curvature)
@@ -464,7 +445,7 @@ class Partitioner():
             # Set the color of the point cloud based on the curvature values
             self.pcd.paint_uniform_color((0, 0, 0))
             cmap = colormaps[self.curvature_cmap]
-            for i in range(len(points)):
+            for i in range(len(curvature)):
                 val = 1 - normalized_curvature[i]
                 color = np.array(list(cmap(val)))[0, 0:3]  # Get RGB values
                 np.asarray(self.pcd.colors)[i] = color
@@ -510,9 +491,19 @@ class Partitioner():
             self.viewer.destroy_window()
             self.viewer.clear_geometries()
 
-        self.curvature = curvature
+        # Save curvature values to disk named after the point cloud file - .ply
+        pcd_dir = self.point_cloud_file.rsplit('/', 1)[0]
+        pcd_name = self.point_cloud_file.rsplit(
+            '/', 1)[-1].rsplit('.', 1)[0]
+        curvature_file = pcd_dir + '/' + pcd_name + '_curvature.npy'
+        # Create the directory if it does not exist
+        if not os.path.exists(pcd_dir):
+            os.makedirs(pcd_dir)
+        # Save the curvature values to a file
+        np.save(curvature_file, curvature)
+        print(f'Curvature values saved to {curvature_file}.')
 
-        return normals, curvature
+        self.curvature = curvature
 
     def region_growth(self, theta_th='auto', cur_th='auto', min_region_size=1):
 
