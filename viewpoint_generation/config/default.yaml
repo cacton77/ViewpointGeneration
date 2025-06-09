@@ -5,25 +5,25 @@ viewpoint_generation_node:
 
     model:
       triangle_mesh_file: "package://viewpoint_generation/assets/blade.stl"
-      # triangle_mesh_file: "package://viewpoint_generation/assets/cube_beveled.stl"
       triangle_mesh_units: 'mm'
       point_cloud_file: "package://viewpoint_generation/assets/blade.ply"
-      # point_cloud_file: "package://viewpoint_generation/assets/cube_beveled_pcd/cube_beveled_pcd_23068points.ply"
       point_cloud_units: 'mm'
 
     pcd_sampling:
-      ppsqmm: 4
+      ppsqmm: 4.
+      number_of_points: 100000
       sample_point_cloud: False
     
     curvature:
       number_of_neighbors: 30
       estimate_curvature: False
 
-    regions:
-      region_growth: False
-
     camera:
       fov_width: 0.02
       fov_height: 0.03
       dof: 0.02
       focal_distance: 0.35
+
+    regions:
+      region_growth: False
+

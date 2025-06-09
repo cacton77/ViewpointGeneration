@@ -60,7 +60,7 @@ class Partitioner():
     curvature = None  # Will be set after estimating curvature
     rg_curvature_threshold = 50  # percentile of curvature values
     rg_angle_threshold = 15.0  # in degrees
-    rg_num_neighbors = 30
+    rg_num_neighbors = 30 # Number of nearest neighbors to consider for curvature estimation and region growing
     planar_region_cmap = 'plasma'
 
     fov_height = 0.02
@@ -342,10 +342,22 @@ class Partitioner():
         if self.mesh is not None:
             N_points = int(self.mesh.get_surface_area() * (self.ppsqmm * 1e6))
             msg = f'Number of points to sample: {N_points}'
-            return True, msg
+            return True, N_points
         else:
             msg = 'No triangle mesh loaded. Cannot set ppsqmm.'
-            return False, msg
+            return False, 0
+
+    def set_number_of_points(self, N_points):
+        if N_points <= 0:
+            return False, 'Number of points must be greater than 0.'
+
+        # Update ppsqmm based on the new number of points
+        if self.mesh is not None:
+            area = self.mesh.get_surface_area()
+            ppsqmm = N_points / (area * 1e6)
+            self.ppsqmm = ppsqmm
+            msg = f'Points per square millimeter set to {self.ppsqmm}.'
+            return True, ppsqmm
 
     def sample_point_cloud(self):
         # Perform poisson disk sampling on the triangle mesh
@@ -419,10 +431,33 @@ class Partitioner():
         print('Nearest neighbors found.')
 
     def estimate_curvature(self):
-        # Estimate normals and curvature of the set point cloud
+        """ Estimate the curvature of the point cloud using the nearest neighbors. """
+
+        # Check if the point cloud is loaded and has normals
+        if self.pcd is None:
+            print('No point cloud loaded.')
+            return None
+        if not self.pcd.has_normals():
+            print('Estimating normals for the point cloud.')
+            self.pcd.estimate_normals(
+                search_param=o3d.geometry.KDTreeSearchParamHybrid(
+                    radius=0.1, max_nn=30))
 
         if self.nn_glob is None:
             self.find_nearest_neighbors()
+
+        # Check if curvature file already exists
+        pcd_dir = self.point_cloud_file.rsplit('/', 1)[0]
+        pcd_name = self.point_cloud_file.rsplit(
+            '/', 1)[-1].rsplit('.', 1)[0]
+        curvature_file = pcd_dir + '/' + pcd_name + '_curvature.npy'
+        curvature_file = f'{pcd_dir}/{pcd_name}_{self.rg_num_neighbors}nn_curvature.npy'
+        if os.path.exists(curvature_file):
+            print(f'Curvature file already exists: {curvature_file}')
+            # Load the curvature values from the file
+            self.curvature = np.load(curvature_file)
+            print('Curvature values loaded from file.')
+            return self.curvature
 
         # Time the curvature estimation
         start_time = time.time()
@@ -496,6 +531,7 @@ class Partitioner():
         pcd_name = self.point_cloud_file.rsplit(
             '/', 1)[-1].rsplit('.', 1)[0]
         curvature_file = pcd_dir + '/' + pcd_name + '_curvature.npy'
+        curvature_file = f'{pcd_dir}/{pcd_name}_{self.rg_num_neighbors}nn_curvature.npy'
         # Create the directory if it does not exist
         if not os.path.exists(pcd_dir):
             os.makedirs(pcd_dir)

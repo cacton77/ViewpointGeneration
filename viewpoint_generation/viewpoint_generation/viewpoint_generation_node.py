@@ -27,7 +27,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('model.triangle_mesh_units', 'm'),
                 ('model.point_cloud_file', ''),
                 ('model.point_cloud_units', 'm'),
-                ('pcd_sampling.ppsqmm', 1),
+                ('pcd_sampling.ppsqmm', 1.),
+                ('pcd_sampling.number_of_points', 100000),
                 ('pcd_sampling.sample_point_cloud', False),
                 ('curvature.estimate_curvature', False),
                 ('curvature.number_of_neighbors', 30),
@@ -118,6 +119,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 f'Triangle mesh file {triangle_mesh_file} loaded successfully.'
             )
 
+
     def set_point_cloud_file(self, point_cloud_file):
         """
         Helper function to set the point cloud file for the partitioner.
@@ -200,8 +202,31 @@ class ViewpointGenerationNode(rclpy.node.Node):
             elif param.name == 'pcd_sampling.ppsqmm':
                 self.partitioner.ppsqmm = param.value
                 success, N_points = self.partitioner.set_ppsqmm(param.value)
+                number_of_points_param = rclpy.parameter.Parameter(
+                    'pcd_sampling.number_of_points',
+                    rclpy.Parameter.Type.INTEGER,
+                    N_points
+                )
+                self.block_next_param_callback = True
+                self.set_parameters([number_of_points_param])
             elif param.name == 'pcd_sampling.number_of_points':
-
+                # Set the number of points to sample
+                success, ppsqmm = self.partitioner.set_number_of_points(param.value)
+                if success:
+                    self.get_logger().info(
+                        f'Number of points set to {param.value}.'
+                    )
+                else:
+                    self.get_logger().error(
+                        'Failed to set number of points.'
+                    )
+                ppsqmm_param = rclpy.parameter.Parameter(   
+                    'pcd_sampling.ppsqmm',
+                    rclpy.Parameter.Type.DOUBLE,
+                    ppsqmm
+                )
+                self.block_next_param_callback = True
+                self.set_parameters([ppsqmm_param])
             elif param.name == 'pcd_sampling.sample_point_cloud':
                 # Sample the point cloud
                 success, message, pcd_file = self.sample_point_cloud()
