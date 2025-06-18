@@ -2,58 +2,65 @@ ARG BASE_IMAGE=ros2_humble-image
 FROM ${BASE_IMAGE}
 
 ARG ROS_DISTRO=humble
+ENV ROS_DISTRO=${ROS_DISTRO}
 
-## Basic Packages install
-## For any other packages needed- please add to this apt-get installation!
-RUN apt-get update && \
-    apt-get install -y \
+# Install MoveIt2 build dependencies
+RUN sudo apt-get update && sudo apt-get install -y \
     build-essential \
     cmake \
     git \
-    neovim \
     python3-colcon-common-extensions \
+    python3-colcon-mixin \
     python3-flake8 \
     python3-rosdep \
     python3-setuptools \
     python3-vcstool \
-    wget
+    wget \
+    neovim \
+    ros-humble-osqp-vendor \
+    ros-humble-stomp \
+    ros-humble-topic-tools \
+    ros-humble-rmf-utils \
+    && sudo rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update && \
-    rosdep update
+# Set up colcon mixins
+RUN colcon mixin add default https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml && \
+    colcon mixin update default
 
-RUN source /opt/ros/$ROS_DISTRO/setup.bash
+# Update rosdep (it should already be initialized in the base image)
+RUN rosdep update
 
-#Update ROS2
-RUN rosdep update --rosdistro=$ROS_DISTRO 
+# Remove any existing MoveIt debians to avoid conflicts
+RUN sudo apt-get update && \
+    sudo apt-get remove -y ros-${ROS_DISTRO}-moveit* || true && \
+    sudo rm -rf /var/lib/apt/lists/*
 
-# Uninstall any pre-existing MoveIt Debians
-RUN apt-get update && \
-    apt-get remove -y ros-$ROS_DISTRO-moveit*
-
-ENV COLCON_WS=~/ws_moveit2/
-
-RUN mkdir -p /workspaces/moveit2_ws/src 
-
+# Create workspace and clone MoveIt2
+RUN mkdir -p /workspaces/moveit2_ws/src
 WORKDIR /workspaces/moveit2_ws/src
 
-RUN git clone https://github.com/moveit/moveit2.git
-RUN for repo in moveit2/moveit2.repos $(f="moveit2/moveit2.repos"; test -r $f && echo $f); do vcs import < "$repo"; done
+# Clone MoveIt2 (main branch for moveit_py support)
+RUN git clone https://github.com/ros-planning/moveit2.git -b main && \
+    for repo in moveit2/moveit2.repos $(f="moveit2/moveit2.repos"; test -r $f && echo $f); do vcs import < "$repo"; done
 
-WORKDIR /workspaces/moveit2_ws
+RUN sed -i 's/#include <types.h>/#include <sys\/types.h>/' \
+    /workspaces/moveit2_ws/src/moveit2/moveit_core/online_signal_smoothing/include/moveit/online_signal_smoothing/acceleration_filter.hpp
 
-# First, initialize and update rosdep if not already done
-RUN bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
-    if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then \
-    sudo rosdep init; \
-    fi && \
-    rosdep update"
-
-# Install MoveIt2 dependencies, skipping problematic packages
-RUN bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+# Install dependencies (skip problematic packages)
+RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     rosdep install -r --from-paths . --ignore-src --rosdistro ${ROS_DISTRO} -y \
-    --skip-keys 'topic-tools ros-testing'"
+    --skip-keys='ros-humble-ros-testing ros-humble-stomp ros-humble-topic-tools ros-humble-osqp-vendor ros-humble-launch-pytest ros-humble-rmf-utils ros-humble-ament-clang-format' || \
+    echo 'Some dependencies failed to install but continuing with build...'"
 
-# Build from within bash to ensure the environment is set up correctly before building
-RUN bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
-    colcon build --event-handlers desktop_notification- status- --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF --parallel-workers 1 && \ 
-    echo 'source /workspaces/moveit2_ws/install/setup.bash' >> /etc/bash.bashrc"
+RUN sudo ln -sf /usr/include/sys/types.h /usr/include/types.h
+
+# Build the workspace without tests and with overrides
+WORKDIR /workspaces/moveit2_ws
+RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    colcon build \
+    --executor sequential \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+    --allow-overriding moveit moveit_common moveit_configs_utils moveit_core moveit_hybrid_planning moveit_kinematics moveit_msgs moveit_planners moveit_planners_ompl moveit_resources_fanuc_moveit_config moveit_resources_panda_moveit_config moveit_ros_move_group moveit_ros_perception moveit_ros_planning moveit_ros_planning_interface moveit_ros_visualization moveit_servo moveit_simple_controller_manager"
+
+# Make sure that the workspace is always sourced
+RUN echo "source /workspaces/moveit2_ws/install/setup.bash" | sudo tee --append /etc/bash.bashrc
