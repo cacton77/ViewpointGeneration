@@ -81,8 +81,15 @@ def generate_launch_description():
         output='screen'
     )
 
+    gui_client = Node(
+        package='viewpoint_generation',
+        executable='gui_client',
+        name='gui_client',
+        output='screen',)
+
     ld.add_action(config_file_arg)  # Don't forget to add the argument!
-    ld.add_action(rqt_configure)
+    ld.add_action(gui_client)
+    # ld.add_action(rqt_configure)
     ld.add_action(viewpoint_generation_node)
 
     return ld

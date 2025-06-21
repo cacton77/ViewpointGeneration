@@ -1,29 +1,34 @@
 viewpoint_generation_node:
   ros__parameters:
-    visualize: True
-    cuda_enabled: False
-
     model:
-      triangle_mesh_file: "package://viewpoint_generation/assets/blade.stl"
-      triangle_mesh_units: 'mm'
-      point_cloud_file: "package://viewpoint_generation/assets/blade.ply"
-      point_cloud_units: 'mm'
-
-    pcd_sampling:
-      ppsqmm: 4.
-      number_of_points: 100000
-      sample_point_cloud: False
-    
-    curvature:
-      number_of_neighbors: 30
-      estimate_curvature: False
+      mesh:
+        file: "package://viewpoint_generation/assets/blade.stl"
+        units: 'mm'
+      point_cloud:
+        file: "package://viewpoint_generation/assets/blade.ply"
+        units: 'mm'
+        sampling:
+          ppsqmm: 4.
+          number_of_points: 100000
+        curvature:
+          file: "package://viewpoint_generation/assets/blade_pcd/blade_pcd_100000points_10nn_curvature.npy"
+          number_of_neighbors: 10
 
     camera:
-      fov_width: 0.02
-      fov_height: 0.03
+      fov:
+        width: 0.02
+        height: 0.03
       dof: 0.02
       focal_distance: 0.35
 
     regions:
-      region_growth: False
+      file: ""
+      region_growth:
+        curvature_threshold: 0.0
+        angle_threshold: 15.0
+
+    settings:
+      cuda_enabled: False
+
+
 
