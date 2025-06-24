@@ -12,12 +12,15 @@ from matplotlib import colormaps
 from open3d.geometry import PointCloud, TriangleMesh
 
 from viewpoint_generation.curvature import *
+from viewpoint_generation.region_growth import *
 
 
 class Partitioner():
 
     mesh_file = None
+    mesh_units = 'm'
     point_cloud_file = None
+    point_cloud_units = 'm'
     curvature_file = None
     region_file = None
 
@@ -31,10 +34,11 @@ class Partitioner():
     nn_glob = None
     curvature_cmap = 'RdYlGn'
     curvature = None  # Will be set after estimating curvature
-    rg_curvature_threshold = 50  # percentile of curvature values
+    rg_curvature_threshold = 0.5  # percentile of curvature values
     rg_angle_threshold = 15.0  # in degrees
     rg_min_region_size = 3  # Minimum number of points in a region
-    curvature_num_neighbors = 30 # Number of nearest neighbors to consider for curvature estimation and region growing
+    # Number of nearest neighbors to consider for curvature estimation and region growing
+    curvature_num_neighbors = 30
     planar_region_cmap = 'plasma'
     region_dict = {}
 
@@ -96,6 +100,7 @@ class Partitioner():
 
             # Update the triangle mesh file
             self.mesh_file = mesh_file
+            self.mesh_units = units
 
             mesh.compute_vertex_normals()
             # Estimate normals if not already present
@@ -178,7 +183,8 @@ class Partitioner():
             return False
 
         self.point_cloud_file = point_cloud_file
-        self.pcd = pcd
+        self.point_cloud = pcd
+        self.point_cloud_units = point_cloud_units
         self.npcd = None
         self.nn_glob = None  # Reset nearest neighbors
 
@@ -221,6 +227,9 @@ class Partitioner():
             return False, 'Point cloud partitioning is running.'
 
         N_points = int(self.mesh.get_surface_area() * (self.ppsqmm * 1e6))
+        if N_points <= 0:
+            return False, 'Number of points to sample must be greater than 0.'
+
         print('Number of points to sample:', N_points)
 
         # Save the sampled point cloud to a file under a directory named after the mesh file in the same directory as the mesh file
@@ -229,8 +238,8 @@ class Partitioner():
             '/', 1)[-1].rsplit('.', 1)[0]
         pcd_dir = mesh_dir + '/' + mesh_name + '_pcd'
         # Name the pcd file after the mesh file name with N_points appended and save as a ply file
-        pcd_file = pcd_dir + '/' + mesh_name + \
-            '_pcd_' + str(int(N_points)) + 'points.ply'
+        pcd_file = pcd_dir + '/' + mesh_name + '_' + \
+            self.mesh_units + '_pcd_' + str(int(N_points)) + 'points.ply'
         # Create the directory if it does not exist
         if not os.path.exists(pcd_dir):
             os.makedirs(pcd_dir)
@@ -261,15 +270,15 @@ class Partitioner():
         print('Finding nearest neighbors...')
 
         # Generate a KDTree object for the point cloud
-        if self.pcd is None:
+        if self.point_cloud is None:
             print('No point cloud loaded.')
             return None
 
-        pcd_tree = o3d.geometry.KDTreeFlann(self.pcd)
+        pcd_tree = o3d.geometry.KDTreeFlann(self.point_cloud)
 
         # Search for nearest neighbors for each point in the point cloud
         search_results = []
-        for point in self.pcd.points:
+        for point in self.point_cloud.points:
             try:
                 result = pcd_tree.search_knn_vector_3d(
                     point, self.curvature_num_neighbors)
@@ -289,12 +298,12 @@ class Partitioner():
         """ Estimate the curvature of the point cloud using the nearest neighbors. """
 
         # Check if the point cloud is loaded and has normals
-        if self.pcd is None:
+        if self.point_cloud is None:
             print('No point cloud loaded.')
             return False, 'No point cloud loaded.'
-        if not self.pcd.has_normals():
+        if not self.point_cloud.has_normals():
             print('Estimating normals for the point cloud.')
-            self.pcd.estimate_normals(
+            self.point_cloud.estimate_normals(
                 search_param=o3d.geometry.KDTreeSearchParamHybrid(
                     radius=0.1, max_nn=30))
 
@@ -319,9 +328,10 @@ class Partitioner():
         start_time = time.time()
         if self.cuda_enabled:
             curvature = estimate_curvature_optimized(
-                self.pcd, nn_glob=self.nn_glob)
+                self.point_cloud, nn_glob=self.nn_glob)
         else:
-            curvature = estimate_curvature(self.pcd, nn_glob=self.nn_glob)
+            curvature = estimate_curvature(
+                self.point_cloud, nn_glob=self.nn_glob)
         end_time = time.time()
         print(
             f'Curvature estimation took {end_time - start_time:.2f} seconds.')
@@ -360,95 +370,63 @@ class Partitioner():
         print(f'Curvature values loaded from {curvature_file}.')
         return True
 
-    def region_growth(self):
-        """ Perform region growing on the point cloud based on curvature and normals. 
-        Returns:
-            success (bool): True if region growing was successful, False otherwise.
-            message (str): Path to the region file or an error message.
+    def set_region_growth_angle_threshold(self, angle_threshold):
         """
+        Set the angle threshold for region growing.
+        Args:
+            angle_threshold (float): Angle threshold in degrees.
+        Returns:
+            bool: True if the angle threshold was set successfully, False otherwise.
+        """
+        if angle_threshold <= 0 or angle_threshold > 180:
+            message = 'Angle threshold must be between 0 and 180 degrees.'
+            return False, message
 
-        # Estimate normals and curvature
-        if self.curvature is None:
-            return False, 'Curvature not estimated. Please estimate curvature first.'
+        self.rg_angle_threshold = angle_threshold * np.pi / 180.0  # Convert to radians
+        message = f'Region growth angle threshold set to {angle_threshold} degrees.'
+        return True, message
 
-        normals = np.asarray(self.pcd.normals)
+    def set_region_growth_curvature_threshold(self, curvature_threshold):
+        """
+        Set the curvature threshold for region growing.
+        Args:
+            curvature_threshold (float): Curvature threshold in percent.
+        Returns:
+            bool: True if the curvature threshold was set successfully, False otherwise.
+        """
+        if curvature_threshold <= 0 or curvature_threshold > 1:
+            message = 'Curvature threshold must be between 0 and 1.'
+            return False, message
 
-        # return a list of indices that would sort the curvature array, pointcloud
-        order = self.curvature[:, 0].argsort().tolist()
-        regions = []
-        cur_th = 'auto'
+        self.rg_curvature_threshold = curvature_threshold
+        message = f'Region growth curvature threshold set to {100*curvature_threshold} percent.'
+        return True, message
 
-        theta_th = self.rg_curvature_threshold / 180.0 * math.pi  # in radians
-        cur_th = np.percentile(self.curvature, self.rg_curvature_threshold)
+    def region_growth(self):
+        region_dict = {'regions': {}, 'order': []}
+        config = RegionGrowingConfig(
+            seed_threshold=0.05,
+            region_threshold=0.1,
+            min_cluster_size=50,
+            normal_angle_threshold=self.rg_angle_threshold,
+            curvature_threshold=self.rg_curvature_threshold,
+            knn_neighbors=20
+        )
 
-        # Perform region growing
-        # Loop through the points in the point cloud until all points are assigned to a region
-        while len(order) > 0:
-            region_cur = []
-            seed_cur = []
-            # Get the curvature value of the first point of minimum curvature
-            poi_min = order[0]
-            region_cur.append(poi_min)
-            seedval = 0
-            # Add the first point index which is the index of the point of minimum curvature to the seed_cur list
-            seed_cur.append(poi_min)
-            # Remove the index point of minimum curvature from the order list
-            order.remove(poi_min)
-            # Loop through the seed_cur list until all indexes points in the seed_cur list are assigned to a region
-            while seedval < len(seed_cur):
-                # Get the nearest neighbors of the current seed point
-                nn_loc = self.nn_glob[seed_cur[seedval]]
-                # Loop through the nearest neighbors
-                for j in range(len(nn_loc)):
-                    # Get the current nearest neighbor index looped through the list of nearest neighbors
-                    nn_cur = nn_loc[j]
-                    if nn_cur in order:  # Check if nn_cur is in order
-                        # find the angle between the normals of the current seed point and the current nearest neighbor
-                        dot_product = np.dot(
-                            normals[seed_cur[seedval]], normals[nn_cur])
-                        angle = np.arccos(np.abs(dot_product))
+        rg = RegionGrowing(config)
+        clusters, noise_points = rg.segment(self.point_cloud)
 
-                        # check for the angle threshold
-                        if angle < theta_th:
-                            # add the current nearest neighbor to the region_cur list
-                            region_cur.append(nn_cur)
-                            # remove the current nearest neighbor from the order list
-                            order.remove(nn_cur)
-                            # check for the curvature threshold
-                            # if self.curvature[nn_cur] < cur_th:
-                            seed_cur.append(nn_cur)
-                # increment the seed value
-                seedval += 1
-
-            # # Only keep regions above minimum size
-            # if len(region_cur) >= self.rg_min_region_size:
-            #     regions.append(region_cur)
-            # else:
-            #     # Put small regions back in order for potential inclusion in other regions
-            #     for pt in region_cur:
-            #         if pt not in order:
-            #             # Insert back in sorted order
-            #             curvature_val = self.curvature[pt, 0]
-            #             insert_pos = 0
-            #             for i, ordered_pt in enumerate(order):
-            #                 if self.curvature[ordered_pt, 0] > curvature_val:
-            #                     insert_pos = i
-            #                     break
-            #                 insert_pos = i + 1
-            #             order.insert(insert_pos, pt)
-            # append the region_cur list to the region list
-            regions.append(region_cur)
-
-        # Translate region list to a dictionary with region index as key and list of point indices as value
-        region_dict = {}
-        for i, region in enumerate(regions):
-            region_dict[i] = region
+        for i, cluster in enumerate(clusters):
+            region_dict['regions'][i] = {'points': cluster, 'viewpoint': None}
+            region_dict['noise_points'] = noise_points
 
         # Save the regions to a json file named after the point cloud curvature file stripped of the  .npy extension
         curvature_dir = self.curvature_file.rsplit('/', 1)[0]
         curvature_name = self.curvature_file.rsplit(
             '/', 1)[-1].rsplit('.', 1)[0]
-        region_file = curvature_dir + '/' + curvature_name + '_' + str(self.rg_curvature_threshold) + '_' + str(self.rg_angle_threshold) + '_regions.json'
+        region_file = curvature_dir + '/' + curvature_name + '_' + \
+            str(self.rg_curvature_threshold) + '_' + \
+            str(self.rg_angle_threshold) + '_viewpoints.json'
         # Create the directory if it does not exist
         if not os.path.exists(curvature_dir):
             os.makedirs(curvature_dir)
@@ -460,63 +438,4 @@ class Partitioner():
         self.region_file = region_file
         self.region_dict = region_dict
 
-        # # Visualize the regions
-        # if self.visualize:
-        #     for i, region in enumerate(regions):
-        #         print(f'Region {i} has {len(region)} points.')
-        #         # Generate random color from self.planar_region_cmap
-        #         cmap = colormaps[self.planar_region_cmap]
-        #         color = np.array(cmap(random.random()))[:3]
-        #         for point_index in region:
-        #             np.asarray(self.pcd.colors)[point_index] = color
-
-        #     bb = self.pcd.get_axis_aligned_bounding_box()
-        #     bb.color = self.bb_color
-        #     bb_width = (bb.get_max_bound(
-        #     )[0] - bb.get_min_bound()[0]).round(3)
-        #     bb_depth = (bb.get_max_bound(
-        #     )[1] - bb.get_min_bound()[1]).round(3)
-        #     bb_height = (bb.get_max_bound(
-        #     )[2] - bb.get_min_bound()[2]).round(3)
-        #     bb_bottom_front_left = bb.get_box_points()[0]
-        #     # Set text_string to number of points in the point cloud
-        #     text_string = f"N points: {len(self.pcd.points)}"
-        #     text = o3d.t.geometry.TriangleMesh.create_text(
-        #         text_string).to_legacy()
-        #     text_bb = text.get_axis_aligned_bounding_box()
-        #     text_height = text_bb.get_max_bound(
-        #     )[1] - text_bb.get_min_bound()[1]
-        #     text_width = text_bb.get_max_bound(
-        #     )[0] - text_bb.get_min_bound()[0]
-        #     text_scale = 2 * bb_width / text_width
-        #     text.scale(text_scale, center=(0, 0, 0))
-        #     text.paint_uniform_color(self.text_color)
-        #     text.translate(bb_bottom_front_left +
-        #                    [0, -2*text_scale*text_height, 0])
-
-        #     self.viewer.create_window(
-        #         'Regions', width=800, height=600)
-        #     self.viewer.clear_geometries()
-        #     self.viewer.add_geometry(self.pcd)
-        #     self.viewer.add_geometry(text)
-        #     # self.viewer.add_geometry(bb)
-        #     opt = self.viewer.get_render_option()
-        #     opt.show_coordinate_frame = True
-        #     opt.background_color = self.background_color
-        #     opt.mesh_show_back_face = True
-        #     self.viewer.run()
-        #     self.viewer.destroy_window()
-
         return True, region_file
-
-    def _on_mouse_event(self, event):
-        # Force refresh after mouse interaction
-        gui.Application.instance.post_to_main_thread(
-            self.window, self.refresh_scene)
-        return gui.Widget.EventCallbackResult.IGNORED
-
-    def _on_key_event(self, event):
-        # Force refresh after key interaction
-        gui.Application.instance.post_to_main_thread(
-            self.window, self.refresh_scene)
-        return gui.Widget.EventCallbackResult.IGNORED

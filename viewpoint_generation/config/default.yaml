@@ -10,9 +10,6 @@ viewpoint_generation_node:
         sampling:
           ppsqmm: 4.
           number_of_points: 100000
-        curvature:
-          file: "package://viewpoint_generation/assets/blade_pcd/blade_pcd_100000points_10nn_curvature.npy"
-          number_of_neighbors: 10
 
     camera:
       fov:
@@ -24,8 +21,17 @@ viewpoint_generation_node:
     regions:
       file: ""
       region_growth:
-        curvature_threshold: 0.0
-        angle_threshold: 15.0
+        curvature:
+          file: "package://viewpoint_generation/assets/blade_pcd/blade_pcd_100000points_10nn_curvature.npy"
+          number_of_neighbors: 10
+        curvature_threshold: 0.1
+        angle_threshold: 30.0
+
+    viewpoints:
+      nothing: ''
+
+    traversal:
+      nothing: ''
 
     settings:
       cuda_enabled: False

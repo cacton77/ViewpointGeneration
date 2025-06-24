@@ -16,6 +16,7 @@ from viewpoint_generation.assets.materials import Materials
 sys.stdout.reconfigure(line_buffering=True)
 isMacOS = sys.platform == 'darwin'
 
+
 class GUIClient():
 
     MENU_OPEN = 1
@@ -39,7 +40,6 @@ class GUIClient():
     MENU_SHOW_PATH = 19
     MENU_ABOUT = 21
 
-
     def __init__(self):
         self.app = gui.Application.instance
         self.window = self.app.create_window(
@@ -60,7 +60,6 @@ class GUIClient():
         while not self.ros_thread.parameters_dict:
             time.sleep(0.1)
         self.parameters_dict = self.ros_thread.expand_dict_keys()
-        pprint(self.parameters_dict)
 
         w = self.window
         self.window.set_on_close(self.on_main_window_closing)
@@ -73,21 +72,22 @@ class GUIClient():
             self.window.renderer)
         self.scene_widget.enable_scene_caching(False)
         self.scene_widget.scene.show_axes(True)
-        self.scene_widget.scene.show_ground_plane(True, o3d.visualization.rendering.Scene.GroundPlane.XY)
+        self.scene_widget.scene.show_ground_plane(
+            True, o3d.visualization.rendering.Scene.GroundPlane.XY)
         self.scene_widget.scene.set_background(
             [0.1, 0.1, 0.1, 1.0])
         # Set view
-        self.scene_widget.look_at(np.array([0, 0, 0]), np.array([1, 1, 1]), np.array([0, 0, 1]))
+        self.scene_widget.look_at(
+            np.array([0, 0, 0]), np.array([1, 1, 1]), np.array([0, 0, 1]))
 
         self.window.add_child(self.scene_widget)
 
-        self.parameter_widgets = {} 
-        
+        self.parameter_widgets = {}
+
         self.init_gui()
         self.init_menu_bar()
         # self.window.add_child(self.parameter_panel)
         self.window.set_on_layout(self._on_layout)
-
 
         self.last_draw_time = time.time()
 
@@ -96,23 +96,23 @@ class GUIClient():
         # Get theme for consistent styling
         theme = self.window.theme
         em = theme.font_size
-        
+
         # Create main layout
         self.main_layout = gui.Vert(0.5 * em, gui.Margins(0.5 * em))
         self.main_layout.background_color = Materials.panel_color
-        
+
         # Create tab widget
         self.tab_widget = gui.TabControl()
         self.tab_widget.background_color = Materials.panel_color
-        
+
         # Create tabs for each top-level key
         for tab_name, tab_data in self.parameters_dict.items():
             tab_panel = self.create_tab_panel(tab_name, tab_data, em)
             self.tab_widget.add_tab(tab_name.title(), tab_panel)
-        
+
         # Add tab widget to main layout
         self.main_layout.add_child(self.tab_widget)
-        
+
         # Set the main layout
         self.window.add_child(self.main_layout)
 
@@ -252,24 +252,26 @@ class GUIClient():
         # w.set_on_menu_item_activated(
         #     self.MENU_ABOUT, self._on_menu_about)
         # ----
-    
+
     def create_tab_panel(self, tab_name, tab_data, em):
         """Create a panel for a tab with nested structure"""
         # Create scrollable area for the tab content
-        scroll_area = gui.ScrollableVert(0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 1.25 * em, 0.25 * em))
+        scroll_area = gui.ScrollableVert(
+            0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 1.25 * em, 0.25 * em))
         scroll_area.background_color = Materials.panel_color
-        
+
         # Create the content recursively
         content = self.create_nested_content(tab_name, tab_data, em)
         content.background_color = Materials.panel_color
         scroll_area.add_child(content)
-        
+
         return scroll_area
-    
+
     def create_nested_content(self, parent_name, data, em, level=0):
         """Recursively create nested content for parameters"""
-        container = gui.Vert(0.25 * em, gui.Margins(0.25 * em, 0.00 * em, 0.00 * em, 0.00 * em))
-        
+        container = gui.Vert(
+            0.25 * em, gui.Margins(0.25 * em, 0.00 * em, 0.00 * em, 0.00 * em))
+
         # If this is a leaf parameter (has 'name', 'type', 'value')
         if isinstance(data, dict) and 'name' in data and 'type' in data and 'value' in data:
             widget_grid = self.create_parameter_widget(data, em)
@@ -284,112 +286,129 @@ class GUIClient():
                         container.add_child(widget_grid)
                     else:
                         # This is a nested group, create a collapsible section
-                        section = self.create_collapsible_section(key, value, em, level)
+                        section = self.create_collapsible_section(
+                            key, value, em, level)
                         container.add_child(section)
-        
+
         return container
-    
+
     def create_collapsible_section(self, section_name, section_data, em, level):
         """Create a collapsible section for nested parameters"""
         # Create a collapsible widget
-        collapsible = gui.CollapsableVert(section_name.replace('_', ' ').title(), 0.25 * em, gui.Margins(0.25 * em, 0.00 * em, 0.00 * em, 0.00 * em))
-        
+        collapsible = gui.CollapsableVert(section_name.replace('_', ' ').title(
+        ), 0.25 * em, gui.Margins(0.25 * em, 0.00 * em, 0.00 * em, 0.00 * em))
+
         # Add content to the collapsible section
-        content = self.create_nested_content(section_name, section_data, em, level + 1)
-        collapsible.add_child(content)
+        content = self.create_nested_content(
+            section_name, section_data, em, level + 1)
+
+        button_horiz = gui.Horiz(
+            0.25 * em, gui.Margins(0.75 * em, 0.25 * em, 0.25 * em, 0.25 * em))
 
         # If section_name is 'Sampling', add a button
         if section_name == 'sampling':
             button = gui.Button("Sample Point Cloud")
             button.set_on_clicked(lambda: self.ros_thread.sample_point_cloud())
-            collapsible.add_child(button)
+            button_horiz.add_child(button)
         elif section_name == 'curvature':
             button = gui.Button("Compute Curvature")
             button.set_on_clicked(lambda: self.ros_thread.estimate_curvature())
-            collapsible.add_child(button)
+            button_horiz.add_child(button)
         elif section_name == 'region_growth':
             button = gui.Button("Run Region Growth")
             button.set_on_clicked(lambda: self.ros_thread.region_growth())
-            collapsible.add_child(button)
-        
+            button_horiz.add_child(button)
+
+        content.add_child(button_horiz)
+        collapsible.add_child(content)
+
         # Expand by default for first level
         if level == 0:
             collapsible.set_is_open(True)
-        
+
         return collapsible
-    
+
     def create_parameter_widget(self, param_data, em):
         """Create a widget for a single parameter"""
         # Create a grid layout for label and widget
-        grid = gui.VGrid(2, 0.25 * em, gui.Margins(0.75 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        
+        grid = gui.VGrid(2, 0.25 * em, gui.Margins(0.75 * em,
+                         0.25 * em, 0.25 * em, 0.25 * em))
+
         param_name = param_data['name']
         param_type = param_data['type']
         param_value = param_data['value']
-        
+
         # Create label
         label = gui.Label(param_name.split('.')[-1].replace('_', ' ').title())
         grid.add_child(label)
-        
+
         # Create appropriate widget based on type
         widget = None
-        
+
         if param_type == 'bool':
             widget = gui.Checkbox("")
             widget.checked = bool(param_value)
-            widget.set_on_checked(lambda checked, name=param_name: self.on_parameter_changed(name, checked))
-        
+            widget.set_on_checked(
+                lambda checked, name=param_name: self.on_parameter_changed(name, checked))
+
         elif param_type == 'integer':
             widget = gui.NumberEdit(gui.NumberEdit.INT)
             widget.int_value = int(param_value)
-            widget.set_on_value_changed(lambda value, name=param_name: self.on_parameter_changed(name, value))
-        
+            widget.set_on_value_changed(
+                lambda value, name=param_name: self.on_parameter_changed(name, value))
+
         elif param_type == 'double':
             widget = gui.NumberEdit(gui.NumberEdit.DOUBLE)
             widget.double_value = float(param_value)
-            widget.set_on_value_changed(lambda value, name=param_name: self.on_parameter_changed(name, value))
-        
+            widget.set_on_value_changed(
+                lambda value, name=param_name: self.on_parameter_changed(name, value))
+
         elif param_type == 'string':
             if 'file' in param_name.lower() or 'path' in param_name.lower():
                 # Create a horizontal layout for file path + browse button
                 file_layout = gui.Horiz(0.25 * em)
-                
+
                 widget = gui.TextEdit()
                 widget.text_value = str(param_value)
-                widget.set_on_text_changed(lambda text, name=param_name: self.on_parameter_changed(name, text))
-                
+                widget.set_on_text_changed(
+                    lambda text, name=param_name: self.on_parameter_changed(name, text))
+
                 browse_button = gui.Button("...")
                 browse_button.horizontal_padding_em = 0.5
                 browse_button.vertical_padding_em = 0
-                browse_button.set_on_clicked(lambda name=param_name: self.on_browse_file(name))
-                
+                browse_button.set_on_clicked(
+                    lambda name=param_name: self.on_browse_file(name))
+
                 file_layout.add_child(widget)
-                file_layout.add_fixed(0.25 * em)  # Add some space between text and button
+                # Add some space between text and button
+                file_layout.add_fixed(0.25 * em)
                 file_layout.add_child(browse_button)
-                
+
                 grid.add_child(file_layout)
             else:
                 widget = gui.TextEdit()
                 widget.text_value = str(param_value)
-                widget.set_on_text_changed(lambda text, name=param_name: self.on_parameter_changed(name, text))
+                widget.set_on_text_changed(
+                    lambda text, name=param_name: self.on_parameter_changed(name, text))
                 grid.add_child(widget)
-        
+
         else:
             # Default to text edit for unknown types
             widget = gui.TextEdit()
             widget.text_value = str(param_value)
-            widget.set_on_text_changed(lambda text, name=param_name: self.on_parameter_changed(name, text))
+            widget.set_on_text_changed(
+                lambda text, name=param_name: self.on_parameter_changed(name, text))
             grid.add_child(widget)
-        
+
         # Store widget reference
         if widget is not None and param_type != 'string' or 'file' not in param_name.lower():
             self.parameter_widgets[param_name] = widget
             grid.add_child(widget)
         else:
             self.parameter_widgets[param_name] = widget
-        
+
         return grid
-    
+
     def on_parameter_changed(self, param_name, new_value):
         """Handle parameter value changes"""
         print(f"Parameter {param_name} changed to: {new_value}")
@@ -397,36 +416,38 @@ class GUIClient():
         self.update_parameter_value(param_name, new_value)
         # Set Parameter via ROS thread
         self.set_parameter(param_name, new_value)
-    
+
     def update_parameter_value(self, param_name, new_value):
         """Update parameter value in the nested dictionary"""
         keys = param_name.split('.')
         current = self.parameters_dict
-        
+
         # Navigate to the parent of the target parameter
         for key in keys[:-1]:
             if key in current:
                 current = current[key]
             else:
                 return  # Path not found
-        
+
         # Update the value if the parameter exists
         final_key = keys[-1]
         if final_key in current and isinstance(current[final_key], dict):
             current[final_key]['value'] = new_value
-    
+
     def on_browse_file(self, param_name):
         """Handle file browse button clicks"""
-        file_dialog = gui.FileDialog(gui.FileDialog.OPEN, "Choose file", self.window.theme)
+        file_dialog = gui.FileDialog(
+            gui.FileDialog.OPEN, "Choose file", self.window.theme)
         file_dialog.set_on_cancel(self.window.close_dialog)
-        file_dialog.set_on_done(lambda path: self.on_file_selected(param_name, path))
+        file_dialog.set_on_done(
+            lambda path: self.on_file_selected(param_name, path))
         self.window.show_dialog(file_dialog)
-    
+
     def on_file_selected(self, param_name, file_path):
         """Handle file selection"""
         print(f"File selected for {param_name}: {file_path}")
         self.on_parameter_changed(param_name, file_path)
-        
+
         # Update the widget display
         if param_name in self.parameter_widgets:
             widget = self.parameter_widgets[param_name]
@@ -461,13 +482,11 @@ class GUIClient():
                         # If it does, only update if the flag is True
                         param_update_flag = value['update_flag']
                         if param_update_flag:
-                            print(f"Updating {param_name} with value: {param_value}, update_flag: {param_update_flag}")
                             parameters_updated = True
 
                         if param_name in self.parameter_widgets and param_update_flag:
                             widget = self.parameter_widgets[param_name]
                             self.set_widget_value(widget, param_value)
-                            print(f"Updated widget for {param_name}: {param_value}")
 
                             # if param_name is 'model.mesh.file' load the mesh
                             if 'model.mesh.file' in param_name:
@@ -484,7 +503,7 @@ class GUIClient():
                                 pcd_file = self.ros_thread.parameters_dict['model.point_cloud.file']['value']
                                 if pcd_file:
                                     self.import_point_cloud(pcd_file)
-                            elif 'model.point_cloud.curvature.file' in param_name:
+                            elif 'regions.region_growth.curvature.file' in param_name:
                                 self.import_curvature(param_value)
                             elif 'regions.file' in param_name:
                                 self.import_regions(param_value)
@@ -494,7 +513,8 @@ class GUIClient():
                     else:
                         # This is a nested structure - recurse
                         new_prefix = f"{prefix}.{key}" if prefix else key
-                        parameters_updated = parameters_updated or update_recursive(value, new_prefix)
+                        parameters_updated = parameters_updated or update_recursive(
+                            value, new_prefix)
 
             return parameters_updated
 
@@ -504,8 +524,7 @@ class GUIClient():
         self.ros_thread.collapse_dict_keys(self.parameters_dict)
 
         if parameters_updated:
-            print("-----------------------------------")        
-
+            print("-----------------------------------")
 
     def import_mesh(self, file_path):
         try:
@@ -524,14 +543,15 @@ class GUIClient():
                 elif mesh_units == 'in':
                     mesh.scale(25.4, center=(0, 0, 0))
 
-
-                self.scene_widget.scene.remove_geometry("mesh")  # Remove previous mesh if exists
+                self.scene_widget.scene.remove_geometry(
+                    "mesh")  # Remove previous mesh if exists
                 self.scene_widget.scene.add_geometry(
                     "mesh", mesh, Materials.mesh_material)
-                print(f"Loaded mesh from {file_path}")
+
                 # Set camera view to fit the mesh
                 bb = mesh.get_axis_aligned_bounding_box()
-                self.scene_widget.look_at(bb.get_center(), bb.get_max_bound() * 1.5, np.array([0, 0, 1]))
+                self.scene_widget.look_at(
+                    bb.get_center(), bb.get_max_bound() * 1.5, np.array([0, 0, 1]))
         except Exception as e:
             print(f"Error loading mesh from {file_path}: {e}")
 
@@ -539,7 +559,8 @@ class GUIClient():
         try:
             point_cloud = o3d.io.read_point_cloud(file_path)
             if point_cloud.is_empty():
-                print(f"Warning: Point cloud file {file_path} is empty or invalid.")
+                print(
+                    f"Warning: Point cloud file {file_path} is empty or invalid.")
             else:
 
                 pcd_units = self.ros_thread.parameters_dict['model.point_cloud.units']['value']
@@ -552,15 +573,12 @@ class GUIClient():
                 elif pcd_units == 'in':
                     point_cloud.scale(25.4, center=(0, 0, 0))
 
-                self.scene_widget.scene.remove_geometry("point_cloud")  # Remove previous point cloud if exists
+                # Remove previous point cloud if exists
+                self.scene_widget.scene.remove_geometry("point_cloud")
                 self.scene_widget.scene.add_geometry(
                     "point_cloud", point_cloud, Materials.point_cloud_material)
-                print(f"Loaded point cloud from {file_path}")
-                # Set camera view to fit the point cloud
-                # bb = point_cloud.get_axis_aligned_bounding_box()
-                # self.scene_widget.look_at(bb.get_center(), bb.get_max_bound() * 1.5, np.array([0, 0, 1]))
 
-            self.point_cloud = point_cloud # Store the point cloud for later use
+            self.point_cloud = point_cloud  # Store the point cloud for later use
 
         except Exception as e:
             print(f"Error loading point cloud from {file_path}: {e}")
@@ -568,12 +586,13 @@ class GUIClient():
     def import_curvature(self, file_path):
         """ Load curvature data from file and color point cloud based on curvature data"""
         try:
-            curvature  = np.load(file_path)
+            curvature = np.load(file_path)
 
             max_curvature = np.max(curvature)
             min_curvature = np.min(curvature)
 
-            normalized_curvature = (curvature - min_curvature) / (max_curvature - min_curvature)
+            normalized_curvature = (
+                curvature - min_curvature) / (max_curvature - min_curvature)
 
             cmap = colormaps[Materials.curvature_colormap]
 
@@ -582,10 +601,10 @@ class GUIClient():
                 color = np.array(list(cmap(val)))[0, 0:3]  # Get RGB values
                 np.asarray(self.point_cloud.colors)[i] = color
 
-            self.scene_widget.scene.remove_geometry("point_cloud")  # Remove previous point cloud if exists
+            # Remove previous point cloud if exists
+            self.scene_widget.scene.remove_geometry("point_cloud")
             self.scene_widget.scene.add_geometry(
                 "point_cloud", self.point_cloud, Materials.point_cloud_material)
-            print(f"Loaded curvature data from {file_path} and updated point cloud colors")
 
         except Exception as e:
             print(f"Error loading curvature data from {file_path}: {e}")
@@ -593,23 +612,35 @@ class GUIClient():
     def import_regions(self, file_path):
         """ Load regions from file and paint point cloud based on regions """
         try:
-            regions_dict = json.load(open(file_path, 'r'))
-            
-            for region, points in regions_dict.items():
-                cmap = colormaps[Materials.regions_colormap]
-                color = np.array(cmap(random.random()))[:3]
-                for point_index in points:
-                    np.asarray(self.point_cloud.colors)[point_index] = color
+            self.point_cloud.paint_uniform_color((1, 1, 1))
 
-            self.scene_widget.scene.remove_geometry("point_cloud")  # Remove previous point cloud if exists
+            regions_dict = json.load(open(file_path, 'r'))
+
+            colors = np.zeros((len(self.point_cloud.points), 3))
+
+            np.random.seed(42)  # For reproducibility
+            for region, dict in regions_dict['regions'].items():
+                cluster = dict['points']
+                color = np.random.rand(3)
+
+                for point_idx in cluster:
+                    colors[point_idx] = color
+
+            for point_idx in regions_dict['noise_points']:
+                colors[point_idx] = [0.5, 0.5, 0.5]
+
+            self.point_cloud.colors = o3d.utility.Vector3dVector(colors)
+
+            # Remove previous point cloud if exists
+            self.scene_widget.scene.remove_geometry("point_cloud")
             self.scene_widget.scene.add_geometry(
                 "point_cloud", self.point_cloud, Materials.point_cloud_material)
-            print(f"Loaded regions from {file_path} and updated point cloud colors")
+            print(
+                f"Loaded regions from {file_path} and updated point cloud colors")
 
         except Exception as e:
             print(f"Error loading regions from {file_path}: {e}")
             return
-
 
     def set_widget_value(self, widget, value):
         """Set the value of a widget based on its type"""
@@ -632,7 +663,7 @@ class GUIClient():
                 print(f"Warning: Unknown widget type for value: {value}")
         except Exception as e:
             print(f"Error setting widget value to {value}: {e}")
-    
+
     def update_scene(self):
         # # Remove axes from scene if they exit
         # if self.scene_widget.scene.has_geometry("axes"):
@@ -670,14 +701,16 @@ class GUIClient():
 
         width = 22 * em
         # Set height to preferred size with a maximum of 80% of the window height
-        height = self.main_layout.calc_preferred_size(layout_context, gui.Widget.Constraints()).height
-        if height > 0.8 * r.height:
-            height = 0.8 * r.height
+        height = self.main_layout.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).height
+        if height > r.height - 5 * em:
+            height = r.height - 5 * em
 
         right_margin = 0.25 * em
         # Place main layout on the right side in the middle of the window
         self.main_layout.frame = gui.Rect(
-            r.width - width - right_margin, 0.5 * r.height - height/2, width, height)
+            r.width - width - right_margin, 0.5 * (r.height - 2.5) - height/2 + 2.5 * em, width, height)
+
 
 def main(args=None):
     rclpy.init(args=args)

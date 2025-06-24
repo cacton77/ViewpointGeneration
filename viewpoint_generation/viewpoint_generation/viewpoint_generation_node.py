@@ -18,6 +18,7 @@ from geometry_msgs.msg import Pose, Point
 from shape_msgs.msg import Mesh, MeshTriangle
 from moveit_msgs.msg import CollisionObject, AttachedCollisionObject
 
+
 class ViewpointGenerationNode(rclpy.node.Node):
 
     block_next_param_callback = False
@@ -34,11 +35,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('model.point_cloud.units', 'm'),
                 ('model.point_cloud.sampling.ppsqmm', 1.),
                 ('model.point_cloud.sampling.number_of_points', 100000),
-                ('model.point_cloud.curvature.file', ''),
-                ('model.point_cloud.curvature.number_of_neighbors', 10),
+                ('regions.region_growth.curvature.file', ''),
+                ('regions.region_growth.curvature.number_of_neighbors', 10),
                 ('regions.file', ''),
-                ('regions.region_growth.curvature_threshold', 50.0),
+                ('regions.region_growth.curvature_threshold', 0.50),
                 ('regions.region_growth.angle_threshold', 15.0),
+                ('viewpoints.nothing', ''),
+                ('traversal.nothing', ''),
                 ('camera.fov.width', 0.02),
                 ('camera.fov.height', 0.03),
                 ('camera.dof', 0.02),
@@ -64,7 +67,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.get_parameter(
                 'model.point_cloud.sampling.number_of_points').get_parameter_value().integer_value)
         self.set_curvature_file(self.get_parameter(
-            'model.point_cloud.curvature.file').get_parameter_value().string_value)
+            'regions.region_growth.curvature.file').get_parameter_value().string_value)
         self.partitioner.fov_width = self.get_parameter(
             'camera.fov.width').get_parameter_value().double_value
         self.partitioner.fov_height = self.get_parameter(
@@ -145,7 +148,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             #     ''
             # )
             # curvature_file_param = rclpy.parameter.Parameter(
-            #     'model.point_cloud.curvature.file',
+            #     'region_growth.curvature.file',
             #     rclpy.Parameter.Type.STRING,
             #     ''
             # )
@@ -156,19 +159,19 @@ class ViewpointGenerationNode(rclpy.node.Node):
             # with self.planning_scene_monitor.read_write() as scene:
             #     # Load mesh
             #     mesh = o3d.io.read_triangle_mesh(mesh_file)
-                
+
             #     # Convert mesh data
             #     vertices = np.asarray(mesh.vertices).tolist()
             #     triangles = np.asarray(mesh.triangles).tolist()
-                
+
             #     # Add collision object (this syntax may vary based on moveit_py version)
             #     scene.add_collision_mesh(
             #         'object_mesh',
             #         'tool0',
             #         vertices,
             #         triangles
-            #     )                
-            
+            #     )
+
             return True
 
     def set_point_cloud_file(self, point_cloud_file, point_cloud_units):
@@ -197,7 +200,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
             point_cloud_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
 
-        success = self.partitioner.set_point_cloud_file(point_cloud_file, point_cloud_units)
+        success = self.partitioner.set_point_cloud_file(
+            point_cloud_file, point_cloud_units)
 
         if not success:
             point_cloud_file_param = rclpy.parameter.Parameter(
@@ -241,7 +245,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         if not success:
             curvature_file_param = rclpy.parameter.Parameter(
-                'model.point_cloud.curvature.file',
+                'regions.region_growth.curvature.file',
                 rclpy.Parameter.Type.STRING,
                 ''
             )
@@ -277,8 +281,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 self.get_logger().info('CUDA disabled.')
             return True
 
-
-
     def set_sampling_ppsqmm(self, ppsqmm):
         """
         Helper function to set the points per square millimeter for the partitioner.
@@ -291,7 +293,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 'Points per square millimeter must be greater than 0.'
             )
             return False
-
 
         success, N_points = self.partitioner.set_ppsqmm(ppsqmm)
 
@@ -326,7 +327,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             return False
 
-        success, ppsqmm = self.partitioner.set_sampling_number_of_points(number_of_points)
+        success, ppsqmm = self.partitioner.set_sampling_number_of_points(
+            number_of_points)
 
         if not success:
             self.get_logger().error(
@@ -360,7 +362,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
         success, message = self.partitioner.sample_point_cloud()
 
         if success:
-            self.get_logger().info(f"Point cloud sampled successfully. File: {message}")
+            self.get_logger().info(
+                f"Point cloud sampled successfully. File: {message}")
 
             # Set the point cloud of the partitioner
             pcd_file = message
@@ -380,7 +383,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 pcd_file
             )
 
-            self.set_parameters([point_cloud_file_param, point_cloud_units_param])
+            self.set_parameters(
+                [point_cloud_file_param, point_cloud_units_param])
 
         else:
             self.get_logger().error(f"Failed to sample point cloud: {message}")
@@ -403,7 +407,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             return False
 
-        success = self.partitioner.set_curvature_number_of_neighbors(number_of_neighbors)
+        success = self.partitioner.set_curvature_number_of_neighbors(
+            number_of_neighbors)
 
         if not success:
             self.get_logger().error(
@@ -414,7 +419,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.get_logger().info(
                 f'Number of neighbors set to {number_of_neighbors}.')
             curvature_file_param = rclpy.parameter.Parameter(
-                'model.point_cloud.curvature.file',
+                'regions.region_growth.curvature.file',
                 rclpy.Parameter.Type.STRING,
                 ''
             )
@@ -437,17 +442,18 @@ class ViewpointGenerationNode(rclpy.node.Node):
         success, message = self.partitioner.estimate_curvature()
 
         if success:
-            self.get_logger().info(f"Curvature estimation completed successfully. Curvature file: {message}")
+            self.get_logger().info(
+                f"Curvature estimation completed successfully. Curvature file: {message}")
             # Set the curvature file parameter with the estimated curvature file
             curvature_file_param = rclpy.parameter.Parameter(
-                'model.point_cloud.curvature.file',
+                'regions.region_growth.curvature.file',
                 rclpy.Parameter.Type.STRING,
                 message
             )
             self.set_parameters([curvature_file_param])
         else:
             self.get_logger().error("Curvature estimation failed.")
-        
+
         response.success = success
         response.message = message
 
@@ -487,26 +493,33 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: True if successful, False otherwise.
         """
 
-        if angle_threshold <= 0:
-            self.get_logger().error(
-                'Angle threshold must be greater than 0.'
-            )
-            return False
-
-        # success = self.partitioner.set_region_growth_angle_threshold(angle_threshold)
-        self.partitioner.rg_angle_threshold = angle_threshold
-        success = True
+        success, message = self.partitioner.set_region_growth_angle_threshold(
+            angle_threshold)
 
         if not success:
-            self.get_logger().error(
-                f'Failed to set angle threshold to {angle_threshold}.'
-            )
+            self.get_logger().error(message)
             return False
         else:
-            self.get_logger().info(
-                f'Angle threshold set to {angle_threshold}.')
+            self.get_logger().info(message)
             return True
-    
+
+    def set_region_growth_curvature_threshold(self, curvature_threshold):
+        """
+        Helper function to set the curvature threshold for region growth.
+        :param curvature_threshold: The curvature threshold to use for region growth.
+        :return: True if successful, False otherwise.
+        """
+
+        success, message = self.partitioner.set_region_growth_curvature_threshold(
+            curvature_threshold)
+
+        if not success:
+            self.get_logger().error(message)
+            return False
+        else:
+            self.get_logger().info(message)
+            return True
+
     def region_growth_callback(self, request, response):
         """
         Callback for the region growth service.
@@ -519,7 +532,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
         success, message = self.partitioner.region_growth()
 
         if success:
-            self.get_logger().info(f"Region growth completed successfully. Regions file: {message}")
+            self.get_logger().info(
+                f"Region growth completed successfully. Regions file: {message}")
             region_file_param = rclpy.parameter.Parameter(
                 'regions.file',
                 rclpy.Parameter.Type.STRING,
@@ -568,25 +582,28 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     'model.mesh.units').get_parameter_value().string_value)
             elif param.name == 'model.mesh.units':
                 success = self.set_mesh_file(
-                    self.get_parameter('model.mesh.file').get_parameter_value().string_value, 
+                    self.get_parameter(
+                        'model.mesh.file').get_parameter_value().string_value,
                     param.value)
             elif param.name == 'model.point_cloud.file':
                 success = self.set_point_cloud_file(param.value, self.get_parameter(
                     'model.point_cloud.units').get_parameter_value().string_value)
             elif param.name == 'model.point_cloud.units':
                 success = self.set_point_cloud_file(
-                    self.get_parameter('model.point_cloud.file').get_parameter_value().string_value, 
+                    self.get_parameter(
+                        'model.point_cloud.file').get_parameter_value().string_value,
                     param.value)
             elif param.name == 'model.point_cloud.sampling.ppsqmm':
                 success = self.set_sampling_ppsqmm(param.value)
             elif param.name == 'model.point_cloud.sampling.number_of_points':
                 success = self.set_sampling_number_of_points(param.value)
-            elif param.name == 'model.point_cloud.curvature.file':
+            elif param.name == 'regions.region_growth.curvature.file':
                 success = self.set_curvature_file(param.value)
-            elif param.name == 'model.point_cloud.curvature.number_of_neighbors':
+            elif param.name == 'regions.region_growth.curvature.number_of_neighbors':
                 success = self.set_curvature_number_of_neighbors(param.value)
             elif param.name == 'regions.region_growth.curvature_threshold':
-                success = self.set_region_growth_curvature_threshold(param.value)
+                success = self.set_region_growth_curvature_threshold(
+                    param.value)
             elif param.name == 'regions.region_growth.angle_threshold':
                 success = self.set_region_growth_angle_threshold(param.value)
             elif param.name == 'camera.fov.height':

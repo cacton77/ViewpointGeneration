@@ -15,7 +15,7 @@ class Materials:
 
     point_cloud_material = rendering.MaterialRecord()
     point_cloud_material.shader = "defaultUnlit"
-    point_cloud_material.point_size = 2.0
+    point_cloud_material.point_size = 10.0
     point_cloud_material.base_color = [1.0, 1.0, 1.0, 1.0]
 
     curvature_colormap = 'RdYlGn'
