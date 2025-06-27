@@ -22,10 +22,23 @@ viewpoint_generation_node:
       file: ""
       region_growth:
         curvature:
+          knn_neighbors: 10
           file: "package://viewpoint_generation/assets/blade_pcd/blade_pcd_100000points_10nn_curvature.npy"
-          number_of_neighbors: 10
+        seed_threshold: 0.1
+        min_cluster_size: 100
+        max_cluster_size: 100000
         curvature_threshold: 0.1
-        angle_threshold: 30.0
+        normal_angle_threshold: 45.0
+      fov_clustering:
+        lambda_weight: 1.0
+        beta_weight: 1.0
+        max_point_out_percentage: 0.001
+        k-means:
+          point_weight: 1.0
+          normal_weight: 1.0
+          number_of_runs: 10
+          maximum_iterations: 100
+
 
     viewpoints:
       nothing: ''

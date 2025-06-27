@@ -10,7 +10,7 @@ import open3d.visualization.gui as gui
 from pprint import pprint
 from matplotlib import colormaps
 
-from viewpoint_generation.threads.ros import ROSThread
+from viewpoint_generation.threads.ros_client import ROSThread
 from viewpoint_generation.assets.materials import Materials
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -58,6 +58,7 @@ class GUIClient():
 
         # Wait until self.ros_thread.parameters_dict is populated
         while not self.ros_thread.parameters_dict:
+            print("Waiting for parameters from ROS...")
             time.sleep(0.1)
         self.parameters_dict = self.ros_thread.expand_dict_keys()
 
@@ -80,41 +81,143 @@ class GUIClient():
         self.scene_widget.look_at(
             np.array([0, 0, 0]), np.array([1, 1, 1]), np.array([0, 0, 1]))
 
+        self.ray_casting_scene = o3d.t.geometry.RaycastingScene()
+
         self.window.add_child(self.scene_widget)
 
         self.parameter_widgets = {}
 
         self.init_gui()
         self.init_menu_bar()
+        self.setup_multi_directional_lighting()
         # self.window.add_child(self.parameter_panel)
         self.window.set_on_layout(self._on_layout)
 
         self.last_draw_time = time.time()
 
-    def init_gui(self):
-        """Initialize the Open3D GUI"""
-        # Get theme for consistent styling
-        theme = self.window.theme
-        em = theme.font_size
+    def setup_multi_directional_lighting(self):
+        """Configure multiple light sources for even illumination"""
+        
+        # Get the scene from the widget
+        scene = self.scene_widget.scene
+        
+        # Set lighting profile with required sun direction
+        sun_direction = np.array([0.577, -0.577, -0.577], dtype=np.float32)  # Normalized [1,-1,-1]
+        scene.set_lighting(scene.LightingProfile.NO_SHADOWS, sun_direction)
+    
+        
+        # Method 1: Add multiple directional lights
+        # self.add_directional_lights(scene)
+        
+        # Method 2: Add ambient + directional combination
+        # self.add_ambient_plus_directional(scene)
+        
+        # Method 3: Add point lights at multiple positions
+        # self.add_multiple_point_lights(scene)
 
-        # Create main layout
-        self.main_layout = gui.Vert(0.5 * em, gui.Margins(0.5 * em))
-        self.main_layout.background_color = Materials.panel_color
 
-        # Create tab widget
-        self.tab_widget = gui.TabControl()
-        self.tab_widget.background_color = Materials.panel_color
-
-        # Create tabs for each top-level key
-        for tab_name, tab_data in self.parameters_dict.items():
-            tab_panel = self.create_tab_panel(tab_name, tab_data, em)
-            self.tab_widget.add_tab(tab_name.title(), tab_panel)
-
-        # Add tab widget to main layout
-        self.main_layout.add_child(self.tab_widget)
-
-        # Set the main layout
-        self.window.add_child(self.main_layout)
+    def add_directional_lights(self, scene):
+        """Add directional lights from multiple angles"""
+        
+        # Light intensity (adjust as needed)
+        intensity = 50000
+        
+        # Light directions (normalized vectors pointing TO the object)
+        light_directions = [
+            [1, -1, -1],    # From top-right-front
+            [-1, -1, -1],   # From top-left-front  
+            [1, -1, 1],     # From top-right-back
+            [-1, -1, 1],    # From top-left-back
+            [0, 1, 0],      # From below
+            [0, 0, -1],     # From front (towards viewer)
+        ]
+        
+        # Add each directional light
+        for i, direction in enumerate(light_directions):
+            # Normalize direction
+            direction = np.array(direction)
+            direction = direction / np.linalg.norm(direction)
+            
+            # Add directional light
+            scene.add_directional_light(
+                name=f"directional_light_{i}",
+                color=[1.0, 1.0, 1.0],  # White light
+                direction=direction.tolist(),
+                intensity=intensity
+            )
+        
+        print(f"Added {len(light_directions)} directional lights")
+    
+    def add_ambient_plus_directional(self, scene):
+        """Combine ambient lighting with a few directional lights"""
+        
+        # Add ambient light for overall illumination
+        scene.add_ambient_light(
+            name="ambient",
+            color=[0.3, 0.3, 0.3],  # Soft ambient light
+            intensity=30000
+        )
+        
+        # Add a few key directional lights
+        key_lights = [
+            {"direction": [1, -1, -1], "intensity": 80000, "color": [1.0, 1.0, 1.0]},
+            {"direction": [-1, -1, 1], "intensity": 60000, "color": [0.9, 0.9, 1.0]},
+            {"direction": [0, 1, 0], "intensity": 40000, "color": [1.0, 0.9, 0.9]},
+        ]
+        
+        for i, light in enumerate(key_lights):
+            direction = np.array(light["direction"])
+            direction = direction / np.linalg.norm(direction)
+            
+            scene.add_directional_light(
+                name=f"key_light_{i}",
+                color=light["color"],
+                direction=direction.tolist(),
+                intensity=light["intensity"]
+            )
+        
+        print("Added ambient + 3 directional lights")
+    
+    def add_multiple_point_lights(self, scene):
+        """Add point lights at strategic positions around the object"""
+        
+        # Estimate object bounds (you might want to pass this in)
+        # For demo, assume object is centered at origin with size ~2 units
+        object_center = [0, 0, 0]
+        light_distance = 5.0  # Distance from object
+        intensity = 100000
+        
+        # Point light positions (around the object)
+        light_positions = [
+            [light_distance, light_distance, light_distance],      # Top-front-right
+            [-light_distance, light_distance, light_distance],     # Top-front-left
+            [light_distance, light_distance, -light_distance],     # Top-back-right
+            [-light_distance, light_distance, -light_distance],    # Top-back-left
+            [light_distance, -light_distance, light_distance],     # Bottom-front-right
+            [-light_distance, -light_distance, light_distance],    # Bottom-front-left
+            [0, 0, light_distance * 1.5],                          # Front center
+            [0, 0, -light_distance * 1.5],                         # Back center
+        ]
+        
+        for i, position in enumerate(light_positions):
+            scene.add_point_light(
+                name=f"point_light_{i}",
+                color=[1.0, 1.0, 1.0],
+                position=position,
+                intensity=intensity,
+                falloff=2.0,  # How quickly light falls off with distance
+                light_falloff_radius=light_distance * 2
+            )
+        
+        # Add some ambient light to fill in shadows
+        scene.add_ambient_light(
+            name="ambient_fill",
+            color=[0.2, 0.2, 0.2],
+            intensity=20000
+        )
+        
+        print(f"Added {len(light_positions)} point lights + ambient")
+    
 
     def init_menu_bar(self):
         # ---- Menu ----
@@ -253,10 +356,37 @@ class GUIClient():
         #     self.MENU_ABOUT, self._on_menu_about)
         # ----
 
+    def init_gui(self):
+        """Initialize the Open3D GUI"""
+        # Get theme for consistent styling
+        theme = self.window.theme
+        em = theme.font_size
+
+        # Create main layout
+        self.main_layout = gui.Vert(0.5 * em, gui.Margins(0.5 * em))
+        self.main_layout.background_color = Materials.panel_color
+
+        # Create tab widget
+        self.tab_widget = gui.TabControl()
+        self.tab_widget.background_color = Materials.panel_color
+
+        # Create tabs for each top-level key
+        for tab_name, tab_data in self.parameters_dict.items():
+            tab_panel = self.create_tab_panel(tab_name, tab_data, em)
+            self.tab_widget.add_tab(tab_name.title(), tab_panel)
+
+        # Add tab widget to main layout
+        self.main_layout.add_child(self.tab_widget)
+
+        # Set the main layout
+        self.window.add_child(self.main_layout)
+
+
+
     def create_tab_panel(self, tab_name, tab_data, em):
         """Create a panel for a tab with nested structure"""
         # Create scrollable area for the tab content
-        scroll_area = gui.ScrollableVert(
+        scroll_area = gui.Vert(
             0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 1.25 * em, 0.25 * em))
         scroll_area.background_color = Materials.panel_color
 
@@ -317,6 +447,10 @@ class GUIClient():
         elif section_name == 'region_growth':
             button = gui.Button("Run Region Growth")
             button.set_on_clicked(lambda: self.ros_thread.region_growth())
+            button_horiz.add_child(button)
+        elif section_name == 'fov_clustering':
+            button = gui.Button("Run FOV Clustering")
+            button.set_on_clicked(lambda: self.ros_thread.fov_clustering())
             button_horiz.add_child(button)
 
         content.add_child(button_horiz)
@@ -409,6 +543,190 @@ class GUIClient():
 
         return grid
 
+    def init_gui(self):
+        """Initialize the Open3D GUI with fixed tabs"""
+        # Get theme for consistent styling
+        theme = self.window.theme
+        em = theme.font_size
+
+        # Create tab widget directly - NO intermediate scrollable layout
+        self.main_layout = gui.TabControl()
+        self.main_layout.background_color = Materials.panel_color
+
+        # Create tabs for each top-level key
+        for tab_name, tab_data in self.parameters_dict.items():
+            tab_panel = self.create_tab_panel(tab_name, tab_data, em)
+            self.main_layout.add_tab(tab_name.title(), tab_panel)
+
+        # Add tab widget DIRECTLY to window - no intermediate layout
+        self.window.add_child(self.main_layout)
+
+    def create_tab_panel(self, tab_name, tab_data, em):
+        """Create a scrollable panel for a tab - ONLY scrolling here"""
+        # Create scrollable area directly - no intermediate containers
+        scroll_area = gui.ScrollableVert(
+            0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 1.25 * em, 0.25 * em))
+        scroll_area.background_color = Materials.panel_color
+
+        # Create the content recursively
+        content = self.create_nested_content(tab_name, tab_data, em)
+        content.background_color = Materials.panel_color
+        scroll_area.add_child(content)
+
+        return scroll_area
+
+    # Alternative approach: Use ScrollableVert directly as tab content
+    def create_tab_panel_simple(self, tab_name, tab_data, em):
+        """Simplified version using ScrollableVert directly"""
+        # Create scrollable area that will be the tab content
+        scroll_area = gui.ScrollableVert(
+            0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 1.25 * em, 0.25 * em))
+        scroll_area.background_color = Materials.panel_color
+
+        # Create the content recursively
+        content = self.create_nested_content(tab_name, tab_data, em)
+        content.background_color = Materials.panel_color
+        scroll_area.add_child(content)
+
+        return scroll_area
+
+    # If you want more control, you can also structure it this way:
+    def init_gui_advanced(self):
+        """Advanced layout with explicit control over fixed and scrollable areas"""
+        theme = self.window.theme
+        em = theme.font_size
+
+        # Create main vertical layout
+        self.main_layout = gui.Vert(0, gui.Margins(0.5 * em))
+        self.main_layout.background_color = Materials.panel_color
+
+        # Create fixed header area for tabs
+        header_area = gui.Vert(0, gui.Margins(0))
+        header_area.background_color = Materials.panel_color
+
+        # Create tab widget in header (fixed)
+        self.tab_widget = gui.TabControl()
+        self.tab_widget.background_color = Materials.panel_color
+
+        # Create tabs
+        for tab_name, tab_data in self.parameters_dict.items():
+            # Each tab panel will handle its own scrolling
+            tab_panel = self.create_scrollable_tab_content(tab_name, tab_data, em)
+            self.tab_widget.add_tab(tab_name.title(), tab_panel)
+
+        # Add tabs to header
+        header_area.add_child(self.tab_widget)
+
+        # Add header to main layout (this makes tabs fixed)
+        self.main_layout.add_child(header_area)
+
+        # Set the layout
+        self.window.add_child(self.main_layout)
+
+    def create_scrollable_tab_content(self, tab_name, tab_data, em):
+        """Create tab content with internal scrolling"""
+        # Create a container for the entire tab
+        tab_container = gui.Vert(0, gui.Margins(0))
+        
+        # Create scrollable content area
+        scrollable_content = gui.ScrollableVert(
+            0.5 * em, 
+            gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em)
+        )
+        scrollable_content.background_color = Materials.panel_color
+        
+        # Create the actual content
+        content = self.create_nested_content(tab_name, tab_data, em)
+        scrollable_content.add_child(content)
+        
+        # Add scrollable content to tab container
+        tab_container.add_child(scrollable_content)
+        
+        return tab_container
+
+    # Updated create_nested_content with better spacing
+    def create_nested_content(self, parent_name, data, em, level=0):
+        """Recursively create nested content for parameters"""
+        container = gui.Vert(
+            0.25 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        container.background_color = Materials.panel_color
+
+        # If this is a leaf parameter (has 'name', 'type', 'value')
+        if isinstance(data, dict) and 'name' in data and 'type' in data and 'value' in data:
+            widget_grid = self.create_parameter_widget(data, em)
+            container.add_child(widget_grid)
+        else:
+            # This is a nested structure, process each sub-item
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    if 'name' in value and 'type' in value and 'value' in value:
+                        # This is a parameter
+                        widget_grid = self.create_parameter_widget(value, em)
+                        container.add_child(widget_grid)
+                    else:
+                        # This is a nested group, create a collapsible section
+                        section = self.create_collapsible_section(
+                            key, value, em, level)
+                        container.add_child(section)
+
+        return container
+
+    # Optional: Add a fixed footer or status bar
+    def init_gui_with_footer(self):
+        """GUI with fixed header (tabs) and optional fixed footer"""
+        theme = self.window.theme
+        em = theme.font_size
+
+        # Main layout
+        self.main_layout = gui.Vert(0, gui.Margins(0.5 * em))
+        self.main_layout.background_color = Materials.panel_color
+
+        # Fixed header with tabs
+        self.tab_widget = gui.TabControl()
+        self.tab_widget.background_color = Materials.panel_color
+
+        for tab_name, tab_data in self.parameters_dict.items():
+            tab_panel = self.create_scrollable_tab_content(tab_name, tab_data, em)
+            self.tab_widget.add_tab(tab_name.title(), tab_panel)
+
+        # Add tabs to main layout (fixed at top)
+        self.main_layout.add_child(self.tab_widget)
+
+        # Optional: Add fixed footer/status bar
+        if hasattr(self, 'show_status_bar') and self.show_status_bar:
+            footer = gui.Horiz(0.25 * em, gui.Margins(0.5 * em))
+            footer.background_color = Materials.panel_color
+            
+            status_label = gui.Label("Ready")
+            footer.add_child(status_label)
+            
+            # Add some stretch space
+            footer.add_stretch()
+            
+            # Add status info
+            info_label = gui.Label("Parameters loaded")
+            footer.add_child(info_label)
+            
+            # Add footer to main layout (fixed at bottom)
+            self.main_layout.add_child(footer)
+
+        self.window.add_child(self.main_layout)
+
+    # Quick fix version - just replace your create_tab_panel method with this:
+    def create_tab_panel_fixed(self, tab_name, tab_data, em):
+        """Fixed version - use ScrollableVert instead of regular Vert"""
+        # Use ScrollableVert instead of regular Vert
+        scroll_area = gui.ScrollableVert(
+            0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 1.25 * em, 0.25 * em))
+        scroll_area.background_color = Materials.panel_color
+
+        # Create the content recursively (same as before)
+        content = self.create_nested_content(tab_name, tab_data, em)
+        content.background_color = Materials.panel_color
+        scroll_area.add_child(content)
+
+        return scroll_area
+    
     def on_parameter_changed(self, param_name, new_value):
         """Handle parameter value changes"""
         print(f"Parameter {param_name} changed to: {new_value}")
@@ -527,6 +845,8 @@ class GUIClient():
             print("-----------------------------------")
 
     def import_mesh(self, file_path):
+        # Remove point cloud if it exists
+        self.point_cloud = None
         try:
             mesh = o3d.io.read_triangle_mesh(file_path)
             if mesh.is_empty():
@@ -545,8 +865,14 @@ class GUIClient():
 
                 self.scene_widget.scene.remove_geometry(
                     "mesh")  # Remove previous mesh if exists
+                self.scene_widget.scene.remove_geometry("point_cloud")
+                self.scene_widget.scene.remove_geometry("fov_clusters")
+                self.scene_widget.scene.remove_geometry("noise_points")
                 self.scene_widget.scene.add_geometry(
                     "mesh", mesh, Materials.mesh_material)
+
+                self.ray_casting_scene = o3d.t.geometry.RaycastingScene()
+                self.ray_casting_scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(mesh))
 
                 # Set camera view to fit the mesh
                 bb = mesh.get_axis_aligned_bounding_box()
@@ -575,6 +901,8 @@ class GUIClient():
 
                 # Remove previous point cloud if exists
                 self.scene_widget.scene.remove_geometry("point_cloud")
+                self.scene_widget.scene.remove_geometry("fov_clusters")
+                self.scene_widget.scene.remove_geometry("noise_points")
                 self.scene_widget.scene.add_geometry(
                     "point_cloud", point_cloud, Materials.point_cloud_material)
 
@@ -598,11 +926,14 @@ class GUIClient():
 
             for i in range(len(normalized_curvature)):
                 val = 1 - normalized_curvature[i]
-                color = np.array(list(cmap(val)))[0, 0:3]  # Get RGB values
+                # color = np.array(list(cmap(val)))[0, 0:3]  # Get RGB values
+                color = np.array(list(cmap(val)))[0:3]
                 np.asarray(self.point_cloud.colors)[i] = color
 
             # Remove previous point cloud if exists
             self.scene_widget.scene.remove_geometry("point_cloud")
+            self.scene_widget.scene.remove_geometry("fov_clusters")
+            self.scene_widget.scene.remove_geometry("noise_points")
             self.scene_widget.scene.add_geometry(
                 "point_cloud", self.point_cloud, Materials.point_cloud_material)
 
@@ -612,6 +943,7 @@ class GUIClient():
     def import_regions(self, file_path):
         """ Load regions from file and paint point cloud based on regions """
         try:
+
             self.point_cloud.paint_uniform_color((1, 1, 1))
 
             regions_dict = json.load(open(file_path, 'r'))
@@ -619,22 +951,63 @@ class GUIClient():
             colors = np.zeros((len(self.point_cloud.points), 3))
 
             np.random.seed(42)  # For reproducibility
+            fov_meshes = o3d.geometry.TriangleMesh()
             for region, dict in regions_dict['regions'].items():
-                cluster = dict['points']
-                color = np.random.rand(3)
+                region_indices = dict['points']
+                region_point_cloud = self.point_cloud.select_by_index(region_indices)
 
-                for point_idx in cluster:
-                    colors[point_idx] = color
+                region_color = np.random.rand(3)
+                # If dict has 'fov_clusters' key
+                if 'fov_clusters' in dict:
+                    show_clusters = True
+                    # Iterate over each cluster in fov_clusters
+                    for fov_cluster_id, fov_cluster_dict in dict['fov_clusters'].items():
+                        fov_cluster_points = fov_cluster_dict['points']
+                        fov_cluster_color = region_color + 0.1*(np.random.rand(3) - 0.5)
+                        fov_cluster_color = np.clip(fov_cluster_color, 0, 1)
 
-            for point_idx in regions_dict['noise_points']:
-                colors[point_idx] = [0.5, 0.5, 0.5]
+                        fov_point_cloud = region_point_cloud.select_by_index(fov_cluster_points)  
+                        # Remove outliers from fov_point_cloud
+                        fov_point_cloud, _ = fov_point_cloud.remove_statistical_outlier(
+                            nb_neighbors=20, std_ratio=2.0)
+                        fov_mesh = fov_point_cloud.compute_convex_hull(joggle_inputs=True)[0]
+                        fov_mesh.paint_uniform_color(fov_cluster_color)
+                        fov_mesh.compute_vertex_normals()
+                        avg_normal = np.mean(np.asarray(fov_mesh.vertex_normals), axis=0)
+                        fov_mesh.translate(avg_normal * 0.005)
 
-            self.point_cloud.colors = o3d.utility.Vector3dVector(colors)
+                        fov_meshes += fov_mesh
 
-            # Remove previous point cloud if exists
+                else:
+                    show_clusters = False
+                    # If no fov_clusters, use points directly
+                    for point_idx in region_indices:
+                        colors[point_idx] = region_color
+
+                    for point_idx in regions_dict['noise_points']:
+                        colors[point_idx] = [0.5, 0.5, 0.5]
+
+                    self.point_cloud.colors = o3d.utility.Vector3dVector(colors)
+
+            if show_clusters:
+                noise_point_cloud = self.point_cloud.select_by_index(regions_dict['noise_points'])
+                noise_point_cloud.paint_uniform_color([1.0, 0.0, 0.0])  # Red for noise points
+
+            # self.scene_widget.scene.add_geometry(
+            #     "point_cloud", self.point_cloud, Materials.point_cloud_material)
             self.scene_widget.scene.remove_geometry("point_cloud")
-            self.scene_widget.scene.add_geometry(
-                "point_cloud", self.point_cloud, Materials.point_cloud_material)
+            self.scene_widget.scene.remove_geometry("fov_clusters")
+            self.scene_widget.scene.remove_geometry("noise_points")
+            if show_clusters:
+                self.scene_widget.scene.add_geometry(
+                    f"fov_clusters",
+                    fov_meshes, Materials.fov_cluster_material)
+                self.scene_widget.scene.add_geometry(
+                    "noise_points", noise_point_cloud, Materials.point_cloud_material)
+            else:
+                self.scene_widget.scene.add_geometry(
+                    "point_cloud", self.point_cloud, Materials.point_cloud_material)
+
             print(
                 f"Loaded regions from {file_path} and updated point cloud colors")
 
@@ -659,22 +1032,202 @@ class GUIClient():
             elif hasattr(widget, 'text_value'):
                 # TextEdit widget
                 widget.text_value = str(value)
+                if value == '':
+                    widget.text_value = 'None'
             else:
                 print(f"Warning: Unknown widget type for value: {value}")
         except Exception as e:
             print(f"Error setting widget value to {value}: {e}")
 
+    def cast_ray_from_center(self):
+        """Cast a ray from the center of the current view"""
+        scene = self.scene_widget.scene
+        camera = scene.camera
+        
+        # Get camera position and forward direction
+        view_matrix = camera.get_view_matrix()
+        inv_view_matrix = np.linalg.inv(view_matrix)
+        
+        camera_position = inv_view_matrix[:3, 3]
+        camera_forward = -inv_view_matrix[:3, 2]  # Negative Z is forward
+        camera_forward = camera_forward / np.linalg.norm(camera_forward)
+        
+        # Prepare ray for casting
+        rays = o3d.core.Tensor([
+            [camera_position[0], camera_position[1], camera_position[2],
+            camera_forward[0], camera_forward[1], camera_forward[2]]
+        ], dtype=o3d.core.Dtype.Float32)
+        
+        # Cast the ray
+        try:
+            result = scene.cast_rays(rays)
+            
+            if len(result['t_hit']) > 0 and result['t_hit'][0] < 1000.0:
+                t = float(result['t_hit'][0])
+                intersection_point = camera_position + t * camera_forward
+                
+                print(f"Intersection found at: {intersection_point}")
+                print(f"Distance: {t:.3f}")
+                
+                return {
+                    'point': intersection_point,
+                    'distance': t,
+                    'hit': True
+                }
+            else:
+                print("No intersection found")
+                return {'hit': False}
+                
+        except Exception as e:
+            print(f"Ray casting error: {e}")
+            return {'hit': False}
+
+            
+    def cast_ray_from_center(self):
+        # Get camera info
+        camera = self.scene_widget.scene.camera
+        view_matrix = camera.get_view_matrix()
+        inv_view_matrix = np.linalg.inv(view_matrix)
+        
+        camera_position = inv_view_matrix[:3, 3]
+        camera_forward = -inv_view_matrix[:3, 2]
+        camera_forward = camera_forward / np.linalg.norm(camera_forward)
+        
+        # Create ray: [origin_x, origin_y, origin_z, direction_x, direction_y, direction_z]
+        ray = np.array([[
+            camera_position[0], camera_position[1], camera_position[2],
+            camera_forward[0], camera_forward[1], camera_forward[2]
+        ]], dtype=np.float32)
+        
+        # Cast ray
+        rays_tensor = o3d.core.Tensor(ray, dtype=o3d.core.Dtype.Float32)
+        result = self.ray_casting_scene.cast_rays(rays_tensor)
+        
+        # Check for intersection
+        if len(result['t_hit']) > 0:
+            t = result['t_hit'][0].item()
+            if t < np.inf:
+                intersection_point = camera_position + t * camera_forward
+                return {'point': intersection_point, 'distance': t, 'hit': True}
+        
+        return {'hit': False}
+
+    def add_cylinder_pointing_at_camera_simple(self, intersection_result, cylinder_name="ray_cylinder"):
+        """Simple version using Open3D's align_vector_to_vector"""
+        
+        if not intersection_result['hit']:
+            return False
+        
+        scene = self.scene_widget.scene
+        camera = scene.camera
+        
+        # Get intersection point and camera position
+        intersection_point = intersection_result['point']
+        view_matrix = camera.get_view_matrix()
+        inv_view_matrix = np.linalg.inv(view_matrix)
+        camera_position = inv_view_matrix[:3, 3]
+        
+        # Calculate direction from intersection point to camera
+        direction_to_camera = camera_position - intersection_point
+        direction_to_camera = direction_to_camera / np.linalg.norm(direction_to_camera)
+        
+        # Create cylinder
+        height = 5.0
+        cylinder = o3d.geometry.TriangleMesh.create_cylinder(radius=10.0, height=2*height)
+        # Crop top and bottom of cylinder
+        cylinder = cylinder.crop(o3d.geometry.AxisAlignedBoundingBox(
+            min_bound=(-20, -20, -height/2),
+            max_bound=(20, 20, height/2)
+        ))
+        reticle = o3d.geometry.TriangleMesh.create_sphere(radius=1)
+        cylinder += reticle
+        
+        # Use Open3D's built-in method to align vectors
+        # Default cylinder points along Z-axis [0, 0, 1]
+        default_direction = np.array([0, 0, 1])
+        
+        # Calculate rotation matrix using Open3D's utility
+        rotation_matrix = o3d.geometry.get_rotation_matrix_from_xyz((0, 0, 0))  # Identity first
+        
+        # Manual rotation calculation (simple version)
+        # If vectors are not parallel, calculate rotation
+        if not np.allclose(default_direction, direction_to_camera):
+            # Use cross product for rotation axis
+            rotation_axis = np.cross(default_direction, direction_to_camera)
+            if np.linalg.norm(rotation_axis) > 1e-6:
+                rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+                # Calculate angle
+                dot_product = np.dot(default_direction, direction_to_camera)
+                angle = np.arccos(np.clip(dot_product, -1.0, 1.0))
+                
+                # Create rotation matrix manually
+                cos_angle = np.cos(angle)
+                sin_angle = np.sin(angle)
+                ux, uy, uz = rotation_axis
+                
+                rotation_matrix = np.array([
+                    [cos_angle + ux*ux*(1-cos_angle), ux*uy*(1-cos_angle) - uz*sin_angle, ux*uz*(1-cos_angle) + uy*sin_angle],
+                    [uy*ux*(1-cos_angle) + uz*sin_angle, cos_angle + uy*uy*(1-cos_angle), uy*uz*(1-cos_angle) - ux*sin_angle],
+                    [uz*ux*(1-cos_angle) - uy*sin_angle, uz*uy*(1-cos_angle) + ux*sin_angle, cos_angle + uz*uz*(1-cos_angle)]
+                ])
+        
+        # Apply rotation and translation
+        cylinder.rotate(rotation_matrix, center=[0, 0, 0])
+        cylinder.translate(intersection_point)
+        
+        # Color and add to scene
+        cylinder.paint_uniform_color([0.0, 1.0, 0.0])  # Green
+        cylinder.compute_vertex_normals()
+        
+        material = Materials.mesh_material
+        material.shader = "defaultUnlit"
+        material.base_color = [0.0, 1.0, 0.0, 1.0]
+        
+        scene.remove_geometry(cylinder_name)  # Remove previous cylinder if exists
+        scene.add_geometry(cylinder_name, cylinder, material)
+        return True
+
+    def set_mouse_orbit_center_to_intersection(self, intersection_result):
+        """Set the mouse orbit center to intersection point for left-click-drag rotation
+        Not working yet, but could be used if we need a lock-on feature 
+        """
+        
+        if not intersection_result['hit']:
+            return False
+        
+        intersection_point = intersection_result['point']
+        camera = self.scene_widget.scene.camera
+
+        # Get current camera position to maintain view
+        view_matrix = camera.get_view_matrix()
+        current_position = np.linalg.inv(view_matrix)[:3, 3]
+        
+        # Create small bounding box around intersection point
+        # setup_camera uses the center of this box as the orbit center
+        padding = 0.1  # Small padding
+        bounds = o3d.geometry.AxisAlignedBoundingBox(
+            min_bound=intersection_point - padding,
+            max_bound=intersection_point + padding
+        )
+        
+        # This sets the orbit center to the intersection point
+        self.scene_widget.setup_camera(60, bounds, intersection_point)
+
+        # Restore similar camera view
+        camera.look_at(intersection_point, current_position, [0, 0, 1])
+        
+        print(f"Mouse orbit center set to: {intersection_point}")
+        return True
+
     def update_scene(self):
-        # # Remove axes from scene if they exit
-        # if self.scene_widget.scene.has_geometry("axes"):
-        #     self.scene_widget.scene.remove_geometry("axes")
-        # # Add axes to scene
-        # axes = o3d.geometry.TriangleMesh.create_coordinate_frame(
-        #     size=0.5, origin=[0, 0, 0])
-        # self.scene_widget.scene.add_geometry("axes", axes, o3d.visualization.rendering.MaterialRecord())
-        # Update the scene
 
         self.update_all_widgets_from_dict()
+        intersection_result = self.cast_ray_from_center()
+        self.add_cylinder_pointing_at_camera_simple(intersection_result)
+
+        lockon = False
+        if lockon:
+            self.set_mouse_orbit_center_to_intersection(intersection_result)
 
         this_draw_time = time.time()
         if this_draw_time - self.last_draw_time < 1/self.fps:
@@ -709,7 +1262,7 @@ class GUIClient():
         right_margin = 0.25 * em
         # Place main layout on the right side in the middle of the window
         self.main_layout.frame = gui.Rect(
-            r.width - width - right_margin, 0.5 * (r.height - 2.5) - height/2 + 2.5 * em, width, height)
+            r.width - width - right_margin, 0.5 * r.height - height/2 + em, width, height)
 
 
 def main(args=None):

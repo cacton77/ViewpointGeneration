@@ -65,11 +65,38 @@ class ROSThread(Node):
                                                        f'{self.target_node_name}/region_growth',
                                                        callback_group=services_cb_group
                                                        )
+        self.fov_clustering_client = self.create_client(Trigger,
+                                                        f'{self.target_node_name}/fov_clustering',
+                                                        callback_group=services_cb_group
+                                                        )
 
         # Wait for services to be available
         self.wait_for_services()
 
         self.get_all_parameters()
+
+    def wait_for_services(self):
+        """Wait for all required services to be available"""
+        self.get_logger().info('Waiting for parameter services...')
+
+        # Wait for list parameters service
+        while not self.list_params_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info(
+                f'Waiting for {self.target_node_name}/list_parameters service...')
+
+        # Wait for get parameters service
+        while not self.get_params_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info(
+                f'Waiting for {self.target_node_name}/get_parameters service...')
+
+        # Wait for set parameters service
+        while not self.set_params_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info(
+                f'Waiting for {self.target_node_name}/set_parameters service...')
+
+        self.get_logger().info('All parameter services are available!')
+
+
 
     def sample_point_cloud(self):
         """Trigger the sampling service"""
@@ -85,7 +112,7 @@ class ROSThread(Node):
         """Callback for the sampling service future"""
         if future.result() is not None:
             self.get_logger().info(
-                f'Point cloud sampling triggered successfully. File: {future.result().message}')
+                f'Point cloud sampling triggered successfully. {future.result().message}')
             self.get_all_parameters()
             return True
         else:
@@ -132,27 +159,26 @@ class ROSThread(Node):
             self.get_logger().error('Failed to trigger region growth')
             return False
 
-    def wait_for_services(self):
-        """Wait for all required services to be available"""
-        self.get_logger().info('Waiting for parameter services...')
+    def fov_clustering(self):
+        """Trigger the FOV clustering service"""
+        if not self.fov_clustering_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().error('FOV clustering service not available')
+            return False
 
-        # Wait for list parameters service
-        while not self.list_params_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                f'Waiting for {self.target_node_name}/list_parameters service...')
-
-        # Wait for get parameters service
-        while not self.get_params_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                f'Waiting for {self.target_node_name}/get_parameters service...')
-
-        # Wait for set parameters service
-        while not self.set_params_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                f'Waiting for {self.target_node_name}/set_parameters service...')
-
-        self.get_logger().info('All parameter services are available!')
-
+        request = Trigger.Request()
+        future = self.fov_clustering_client.call_async(request)
+        future.add_done_callback(self.fov_clustering_future_callback)
+        
+    def fov_clustering_future_callback(self, future):
+        """Callback for the FOV clustering service future"""
+        if future.result() is not None:
+            self.get_logger().info('FOV clustering triggered successfully')
+            self.get_all_parameters()
+            return True
+        else:
+            self.get_logger().error('Failed to trigger FOV clustering')
+            return False
+        
     def expand_dict_keys(self):
         """
         Expand a flat dictionary with period-delimited keys into a nested dictionary structure.
@@ -291,6 +317,8 @@ class ROSThread(Node):
 
                 if name in self.parameters_dict:
                     update_flag = self.parameters_dict[name]['value'] != param_value
+                    # self.get_logger().info(
+                        # f'Parameter {name} updated: {update_flag} (old: \'{self.parameters_dict[name]["value"]}\', new: \'{param_value}\')')
                 else:
                     update_flag = True
 
@@ -413,7 +441,7 @@ class ROSThread(Node):
             results = future.result().results
             if results and results[0].successful:
                 self.get_logger().info(
-                    f'Successfully set parameter {param_name} to {new_value}')
+                    f'Successfully set parameter {param_name} to \'{new_value}\'')
                 self.get_all_parameters()
                 return True
             else:

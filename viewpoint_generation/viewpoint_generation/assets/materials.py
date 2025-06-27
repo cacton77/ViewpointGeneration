@@ -20,3 +20,8 @@ class Materials:
 
     curvature_colormap = 'RdYlGn'
     regions_colormap = 'plasma'
+
+    fov_cluster_material = rendering.MaterialRecord()
+    fov_cluster_material.shader = "defaultUnlit"
+    fov_cluster_material.base_color = [1.0, 1.0, 1.0, 1.0]
+    

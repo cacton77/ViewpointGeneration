@@ -3,6 +3,7 @@ import json
 import time
 import math
 import random
+import datetime
 import numpy as np
 import open3d as o3d
 import open3d.visualization.gui as gui
@@ -13,6 +14,7 @@ from open3d.geometry import PointCloud, TriangleMesh
 
 from viewpoint_generation.curvature import *
 from viewpoint_generation.region_growth import *
+from viewpoint_generation.fov_clustering import *
 
 
 class Partitioner():
@@ -21,26 +23,18 @@ class Partitioner():
     mesh_units = 'm'
     point_cloud_file = None
     point_cloud_units = 'm'
-    curvature_file = None
-    region_file = None
+    curvatures_file = None
+    regions_file = None
 
     mesh = None
-    pcd = None
-    npcd = None
+    point_cloud = None
+    curvatures = None  # Will be set after estimating curvature
 
     ppsqmm = 100
 
     # Region Growth Parameters
-    nn_glob = None
-    curvature_cmap = 'RdYlGn'
-    curvature = None  # Will be set after estimating curvature
-    rg_curvature_threshold = 0.5  # percentile of curvature values
-    rg_angle_threshold = 15.0  # in degrees
-    rg_min_region_size = 3  # Minimum number of points in a region
-    # Number of nearest neighbors to consider for curvature estimation and region growing
-    curvature_num_neighbors = 30
-    planar_region_cmap = 'plasma'
-    region_dict = {}
+
+    regions_dict = {}
 
     fov_height = 0.02
     fov_width = 0.03
@@ -54,6 +48,31 @@ class Partitioner():
     text_color = (1., 1., 1.)
     viewer = o3d.visualization.Visualizer()
     is_running = False
+
+    region_growing_config = RegionGrowingConfig(
+        seed_threshold=0.1,
+        region_threshold=0.2,
+        min_cluster_size=10,
+        normal_angle_threshold=np.pi / 6,
+        curvature_threshold=0.1,
+        knn_neighbors=30
+    )
+    fovc_config = FovClusteringConfig(
+        fov_height=0.02,
+        fov_width=0.03,
+        dof=0.02,
+        ppsqmm=10.0,
+        lambda_weight=1.0,
+        beta_weight=1.0,
+        max_point_out_percentage=0.001,
+        point_weight=1.0,
+        normal_weight=1.0,
+        number_of_runs=10,
+        maximum_iterations=100
+    )
+
+    rg = RegionGrowing(region_growing_config)
+    fovc = FovClustering()
 
     def __init__(self):
         pass
@@ -78,117 +97,97 @@ class Partitioner():
         return True
 
     def set_mesh_file(self, mesh_file, units):
-        if mesh_file is None:
-            print('No triangle mesh file provided.')
-            return False
+        if mesh_file == '':
+            return False, 'No triangle mesh file provided.'
 
         if mesh_file is not self.mesh_file:
             if mesh_file == '':
-                print('No triangle mesh file provided.')
-                return False
+                return False, 'No triangle mesh file provided.'
 
             try:
                 mesh = o3d.io.read_triangle_mesh(mesh_file)
             except Exception as e:
-                print(f'Could not load requested triangle mesh file: {e}')
-                return False
+                return False, f'Could not load requested triangle mesh file: {e}'
 
             # Check if the mesh is empty
             if mesh.is_empty():
-                print('The loaded triangle mesh is empty.')
-                return False
-
-            # Update the triangle mesh file
-            self.mesh_file = mesh_file
-            self.mesh_units = units
+                return False, 'The loaded triangle mesh is empty.'
 
             mesh.compute_vertex_normals()
             # Estimate normals if not already present
             if not mesh.has_vertex_normals():
-                print('Vertex normals were not present. They have been computed.')
-            else:
-                print('Vertex normals are present.')
+                mesh.estimate_vertex_normals(
+                    search_param=o3d.geometry.KDTreeSearchParamHybrid(
+                        radius=0.1, max_nn=self.region_growing_config.knn_neighbors))
 
             # Scale the mesh to meters
             if units == 'cm':
                 mesh.scale(0.01, center=(0, 0, 0))
-                print('Mesh scaled to meters.')
             elif units == 'mm':
                 mesh.scale(0.001, center=(0, 0, 0))
-                print('Mesh scaled to meters.')
-            elif units == 'm':
-                print('Mesh is already in meters.')
             elif units == 'in':
                 mesh.scale(0.0254, center=(0, 0, 0))
-                print('Mesh scaled to meters.')
+            elif units == 'm':
+                # No scaling needed for meters
+                pass
             else:
-                print('Unknown units. Mesh not scaled.')
-                return False
+                return False, 'Unknown units. Mesh not scaled.'
 
             # Check if the mesh has colors
             mesh.paint_uniform_color(self.mesh_color)
 
+            # Update the triangle mesh file
+            self.mesh_file = mesh_file
+            self.mesh_units = units
             self.mesh = mesh
 
-        return True
+        return True, f'Triangle mesh file set to \'{mesh_file}\' with units \'{units}\'.'
 
     def set_point_cloud_file(self, point_cloud_file, point_cloud_units):
         if point_cloud_file is self.point_cloud_file:
-            print('Point cloud file already set.')
-            return True
+            return True, 'Point cloud file already set.'
 
         if point_cloud_file == '':
-            print('No point cloud file provided.')
-            return False
+            self.point_cloud_file = None
+            self.point_cloud = None
+            return True, 'Point cloud file cleared.'
 
         try:
-            pcd = o3d.io.read_point_cloud(point_cloud_file)
-        except:
-            print('Could not load requested point cloud file.')
-            return False
+            point_cloud = o3d.io.read_point_cloud(point_cloud_file)
+        except Exception as e:
+            return False, f'Could not load requested point cloud file: {e}'
 
         # Check if the point cloud is empty
-        if pcd.is_empty():
-            print('The loaded point cloud is empty.')
-            return False
+        if point_cloud.is_empty():
+            return False, 'The loaded point cloud is empty.'
         # Check if the point cloud has normals
-        if not pcd.has_normals():
-            print('The point cloud does not have normals. Computing normals.')
-            pcd.estimate_normals(
+        if not point_cloud.has_normals():
+            point_cloud.estimate_normals(
                 search_param=o3d.geometry.KDTreeSearchParamHybrid(
-                    radius=0.1, max_nn=30))
-        else:
-            print('The loaded point cloud has normals.')
+                    radius=0.1, max_nn=self.region_growing_config.knn_neighbors))
+
         # Check if the point cloud has colors
-        if not pcd.has_colors():
-            print('The point cloud does not have colors. Setting colors to white.')
-            pcd.paint_uniform_color((1, 1, 1))
-        else:
-            print('The loaded point cloud has colors.')
+        if not point_cloud.has_colors():
+            point_cloud.paint_uniform_color((1, 1, 1))
 
         # Scale the point cloud to meters
         if point_cloud_units == 'cm':
-            pcd.scale(0.01, center=(0, 0, 0))
-            print('Point cloud scaled to meters.')
+            point_cloud.scale(0.01, center=(0, 0, 0))
         elif point_cloud_units == 'mm':
-            pcd.scale(0.001, center=(0, 0, 0))
-            print('Point cloud scaled to meters.')
-        elif point_cloud_units == 'm':
-            print('Point cloud is already in meters.')
+            point_cloud.scale(0.001, center=(0, 0, 0))
         elif point_cloud_units == 'in':
-            pcd.scale(0.0254, center=(0, 0, 0))
-            print('Point cloud scaled to meters.')
+            point_cloud.scale(0.0254, center=(0, 0, 0))
+        elif point_cloud_units == 'm':
+            # No scaling needed for meters
+            pass
         else:
-            print('Unknown units. Point cloud not scaled.')
-            return False
+            return False, f'Unknown units \'{point_cloud_units}\'. Point cloud not scaled.'
 
         self.point_cloud_file = point_cloud_file
-        self.point_cloud = pcd
+        self.point_cloud = point_cloud
         self.point_cloud_units = point_cloud_units
-        self.npcd = None
-        self.nn_glob = None  # Reset nearest neighbors
 
-        return True
+        return True, f'Point cloud file set to \'{point_cloud_file}\' with units \'{point_cloud_units}\'.'
 
     def set_ppsqmm(self, ppsqmm):
         if ppsqmm <= 0:
@@ -236,63 +235,87 @@ class Partitioner():
         mesh_dir = self.mesh_file.rsplit('/', 1)[0]
         mesh_name = self.mesh_file.rsplit(
             '/', 1)[-1].rsplit('.', 1)[0]
-        pcd_dir = mesh_dir + '/' + mesh_name + '_pcd'
-        # Name the pcd file after the mesh file name with N_points appended and save as a ply file
-        pcd_file = pcd_dir + '/' + mesh_name + '_' + \
-            self.mesh_units + '_pcd_' + str(int(N_points)) + 'points.ply'
+        point_cloud_dir = mesh_dir + '/' + mesh_name + '_point_cloud'
+        # Name the point_cloud file after the mesh file name with N_points appended and save as a ply file
+        point_cloud_file = point_cloud_dir + '/' + mesh_name + '_' + \
+            self.mesh_units + '_point_cloud_' + str(int(N_points)) + 'points.ply'
         # Create the directory if it does not exist
-        if not os.path.exists(pcd_dir):
-            os.makedirs(pcd_dir)
+        if not os.path.exists(point_cloud_dir):
+            os.makedirs(point_cloud_dir)
 
         # Check if the point cloud file already exists
-        if os.path.exists(pcd_file):
-            message = f'Point cloud file already exists. Loaded {pcd_file}.'
-        else:
+        if not os.path.exists(point_cloud_file):
             # Sample the point cloud
-            pcd = self.mesh.sample_points_poisson_disk(
+            point_cloud = self.mesh.sample_points_poisson_disk(
                 number_of_points=int(N_points), init_factor=5, use_triangle_normal=True)
             # Save the point cloud to a file
-            o3d.io.write_point_cloud(pcd_file, pcd)
-            message = f'Point cloud file saved to {pcd_file}.'
+            o3d.io.write_point_cloud(point_cloud_file, point_cloud)
 
-        message = pcd_file
+        message = point_cloud_file
 
         return True, message
 
-    def set_curvature_number_of_neighbors(self, k):
+    def set_knn_neighbors(self, k):
         if k <= 0:
             return False, 'Number of neighbors must be greater than 0.'
-        self.curvature_num_neighbors = k
-        self.nn_glob = None  # Reset nearest neighbors
-        return True
+        self.region_growing_config.knn_neighbors = k
+        self.rg.config = self.region_growing_config
+        return True, f'KNN neighbors set to {k}.'
+    
+    def set_seed_threshold(self, seed_threshold):
+        if seed_threshold <= 0:
+            return False, 'Seed threshold must be greater than 0.'
+        self.region_growing_config.seed_threshold = seed_threshold
+        self.rg.config = self.region_growing_config
+        return True, f'Seed threshold set to {seed_threshold}.'
 
-    def find_nearest_neighbors(self):
-        print('Finding nearest neighbors...')
+    def set_min_cluster_size(self, min_cluster_size):
+        if min_cluster_size <= 0:
+            return False, 'Minimum cluster size must be greater than 0.'
+        self.region_growing_config.min_cluster_size = min_cluster_size
+        self.rg.config = self.region_growing_config
+        return True, f'Minimum cluster size set to {min_cluster_size}.'
+    
+    def set_max_cluster_size(self, max_cluster_size):
+        if max_cluster_size <= 0:
+            return False, 'Maximum cluster size must be greater than 0.'
+        elif max_cluster_size < self.region_growing_config.min_cluster_size:
+            return False, 'Maximum cluster size must be greater than or equal to minimum cluster size.'
+        self.region_growing_config.max_cluster_size = max_cluster_size
+        self.rg.config = self.region_growing_config
+        return True, f'Maximum cluster size set to {max_cluster_size}.'
 
-        # Generate a KDTree object for the point cloud
-        if self.point_cloud is None:
-            print('No point cloud loaded.')
-            return None
+    def set_normal_angle_threshold(self, normal_angle_threshold):
+        """
+        Set the angle threshold for region growing.
+        Args:
+            angle_threshold (float): Angle threshold in degrees.
+        Returns:
+            bool: True if the angle threshold was set successfully, False otherwise.
+        """
+        if normal_angle_threshold <= 0 or normal_angle_threshold > 180:
+            return False, 'Angle threshold must be between 0 and 180 degrees.'
 
-        pcd_tree = o3d.geometry.KDTreeFlann(self.point_cloud)
+        self.region_growing_config.normal_angle_threshold = normal_angle_threshold * np.pi / 180.0  # Convert to radians
+        self.rg.config = self.region_growing_config
 
-        # Search for nearest neighbors for each point in the point cloud
-        search_results = []
-        for point in self.point_cloud.points:
-            try:
-                result = pcd_tree.search_knn_vector_3d(
-                    point, self.curvature_num_neighbors)
-                search_results.append(result)
-            except RuntimeError as e:
-                print(f"An error occurred with point {point}: {e}")
-                continue
+        return True, f'Region growth angle threshold set to {normal_angle_threshold} degrees.'
 
-        # Separate the k and index values from the search_results
-        k_values = [result[0] for result in search_results]
-        self.nn_glob = [result[1] for result in search_results]
-        distances = [result[2] for result in search_results]
+    def set_curvature_threshold(self, curvature_threshold):
+        """
+        Set the curvature threshold for region growing.
+        Args:
+            curvature_threshold (float): Curvature threshold in percent.
+        Returns:
+            bool: True if the curvature threshold was set successfully, False otherwise.
+        """
+        if curvature_threshold <= 0 or curvature_threshold > 1:
+            return False, 'Curvature threshold must be between 0 and 1.'
 
-        print('Nearest neighbors found.')
+        self.region_growing_config.curvature_threshold = curvature_threshold
+        self.rg.config = self.region_growing_config
+
+        return True, f'Region growth curvature threshold set to {100*curvature_threshold} percent.'
 
     def estimate_curvature(self):
         """ Estimate the curvature of the point cloud using the nearest neighbors. """
@@ -307,52 +330,56 @@ class Partitioner():
                 search_param=o3d.geometry.KDTreeSearchParamHybrid(
                     radius=0.1, max_nn=30))
 
-        if self.nn_glob is None:
-            self.find_nearest_neighbors()
-
         # Check if curvature file already exists
-        pcd_dir = self.point_cloud_file.rsplit('/', 1)[0]
-        pcd_name = self.point_cloud_file.rsplit(
+        point_cloud_dir = self.point_cloud_file.rsplit('/', 1)[0]
+        point_cloud_name = self.point_cloud_file.rsplit(
             '/', 1)[-1].rsplit('.', 1)[0]
-        curvature_file = pcd_dir + '/' + pcd_name + '_curvature.npy'
-        curvature_file = f'{pcd_dir}/{pcd_name}_{self.curvature_num_neighbors}nn_curvature.npy'
-        if os.path.exists(curvature_file):
-            print(f'Curvature file already exists: {curvature_file}')
+        curvatures_file = f'{point_cloud_dir}/{point_cloud_name}_{self.region_growing_config.knn_neighbors}nn_curvatures.npy'
+        if os.path.exists(curvatures_file):
+            print(f'Curvature file already exists: {curvatures_file}')
             # Load the curvature values from the file
-            self.curvature_file = curvature_file
-            self.curvature = np.load(curvature_file)
+            self.curvatures_file = curvatures_file
+            self.curvatures = np.load(curvatures_file)
             print('Curvature values loaded from file.')
-            return True, curvature_file
+            return True, curvatures_file
 
-        # Time the curvature estimation
         start_time = time.time()
-        if self.cuda_enabled:
-            curvature = estimate_curvature_optimized(
-                self.point_cloud, nn_glob=self.nn_glob)
-        else:
-            curvature = estimate_curvature(
-                self.point_cloud, nn_glob=self.nn_glob)
-        end_time = time.time()
+
+        # Preprocess point cloud
+        point_cloud = self.rg.preprocess_point_cloud(self.point_cloud)
+        points = np.asarray(point_cloud.points)
+        normals = np.asarray(point_cloud.normals)
+
+        print(f"Preprocessing completed in {time.time() - start_time:.2f}s")
+
+        # Build spatial structures
+        build_start = time.time()
+        self.rg.build_spatial_structures(points)
         print(
-            f'Curvature estimation took {end_time - start_time:.2f} seconds.')
+            f"Spatial indexing completed in {time.time() - build_start:.2f}s")
+
+        curvature_start = time.time()
+
+        neighbors_list = [self.rg.get_neighbors(i)
+                          for i in range(len(points))]
+        curvatures = self.rg.compute_curvatures(
+            points, normals, neighbors_list)
+
+        print(
+            f"Curvature computation completed in {time.time() - curvature_start:.2f}s")
 
         # Save curvature values to disk named after the point cloud file - .ply
-        pcd_dir = self.point_cloud_file.rsplit('/', 1)[0]
-        pcd_name = self.point_cloud_file.rsplit(
-            '/', 1)[-1].rsplit('.', 1)[0]
-        curvature_file = pcd_dir + '/' + pcd_name + '_curvature.npy'
-        curvature_file = f'{pcd_dir}/{pcd_name}_{self.curvature_num_neighbors}nn_curvature.npy'
         # Create the directory if it does not exist
-        if not os.path.exists(pcd_dir):
-            os.makedirs(pcd_dir)
+        if not os.path.exists(point_cloud_dir):
+            os.makedirs(point_cloud_dir)
         # Save the curvature values to a file
-        np.save(curvature_file, curvature)
-        print(f'Curvature values saved to {curvature_file}.')
+        np.save(curvatures_file, curvatures)
+        print(f'Curvature values saved to {curvatures_file}.')
 
-        self.curvature_file = curvature_file
-        self.curvature = curvature
+        self.curvatures_file = curvatures_file
+        self.curvaturess = curvatures
 
-        return True, curvature_file
+        return True, curvatures_file
 
     def set_curvature_file(self, curvature_file):
         """
@@ -362,80 +389,77 @@ class Partitioner():
         Returns:
             bool: True if the curvature file was set successfully, False otherwise.
         """
+        if curvature_file == '':
+            self.curvatures_file = None
+            self.curvatures = None
+            return True, 'Curvature file cleared.'
+
         if not os.path.exists(curvature_file):
-            print(f'Curvature file does not exist: {curvature_file}')
-            return False
+            return False, f'Curvature file does not exist: {curvature_file}'
 
-        self.curvature = np.load(curvature_file)
-        print(f'Curvature values loaded from {curvature_file}.')
-        return True
+        self.curvatures = np.load(curvature_file)
 
-    def set_region_growth_angle_threshold(self, angle_threshold):
-        """
-        Set the angle threshold for region growing.
-        Args:
-            angle_threshold (float): Angle threshold in degrees.
-        Returns:
-            bool: True if the angle threshold was set successfully, False otherwise.
-        """
-        if angle_threshold <= 0 or angle_threshold > 180:
-            message = 'Angle threshold must be between 0 and 180 degrees.'
-            return False, message
-
-        self.rg_angle_threshold = angle_threshold * np.pi / 180.0  # Convert to radians
-        message = f'Region growth angle threshold set to {angle_threshold} degrees.'
-        return True, message
-
-    def set_region_growth_curvature_threshold(self, curvature_threshold):
-        """
-        Set the curvature threshold for region growing.
-        Args:
-            curvature_threshold (float): Curvature threshold in percent.
-        Returns:
-            bool: True if the curvature threshold was set successfully, False otherwise.
-        """
-        if curvature_threshold <= 0 or curvature_threshold > 1:
-            message = 'Curvature threshold must be between 0 and 1.'
-            return False, message
-
-        self.rg_curvature_threshold = curvature_threshold
-        message = f'Region growth curvature threshold set to {100*curvature_threshold} percent.'
-        return True, message
+        return True, f'Curvature file set to {curvature_file}.'
 
     def region_growth(self):
-        region_dict = {'regions': {}, 'order': []}
-        config = RegionGrowingConfig(
-            seed_threshold=0.05,
-            region_threshold=0.1,
-            min_cluster_size=50,
-            normal_angle_threshold=self.rg_angle_threshold,
-            curvature_threshold=self.rg_curvature_threshold,
-            knn_neighbors=20
-        )
+        if self.curvatures_file is None:
+            return False, 'No curvature file loaded. Please run curvature estimation first.'
+        
+        regions_dict = {'regions': {}, 'order': []}
 
-        rg = RegionGrowing(config)
-        clusters, noise_points = rg.segment(self.point_cloud)
+        clusters, noise_points = self.rg.segment(self.point_cloud)
 
         for i, cluster in enumerate(clusters):
-            region_dict['regions'][i] = {'points': cluster, 'viewpoint': None}
-            region_dict['noise_points'] = noise_points
+            regions_dict['regions'][i] = {'points': cluster, 'viewpoint': None}
+            regions_dict['noise_points'] = noise_points
 
-        # Save the regions to a json file named after the point cloud curvature file stripped of the  .npy extension
-        curvature_dir = self.curvature_file.rsplit('/', 1)[0]
-        curvature_name = self.curvature_file.rsplit(
+        self.regions_file = self.save_regions_dict(regions_dict)
+        self.regions_dict = regions_dict
+
+        return True, self.regions_file
+
+    def save_regions_dict(self, regions_dict):
+         # Save the regions to a json file named after the point cloud curvature file stripped of the  .npy extension
+        curvatures_dir = self.curvatures_file.rsplit('/', 1)[0]
+        curvatures_name = self.curvatures_file.rsplit(
             '/', 1)[-1].rsplit('.', 1)[0]
-        region_file = curvature_dir + '/' + curvature_name + '_' + \
-            str(self.rg_curvature_threshold) + '_' + \
-            str(self.rg_angle_threshold) + '_viewpoints.json'
+        regions_file = curvatures_dir + '/' + curvatures_name + '_' + \
+            str(self.region_growing_config.seed_threshold) + '_' + \
+            str(self.region_growing_config.min_cluster_size) + '_' + \
+            str(self.region_growing_config.max_cluster_size) + '_' + \
+            str(self.region_growing_config.curvature_threshold) + '_' + \
+            str(self.region_growing_config.curvature_threshold) + '_' + \
+            str(self.region_growing_config.normal_angle_threshold) + '_' + \
+            datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + \
+            '_viewpoints.json'
         # Create the directory if it does not exist
-        if not os.path.exists(curvature_dir):
-            os.makedirs(curvature_dir)
+        if not os.path.exists(curvatures_dir):
+            os.makedirs(curvatures_dir)
         # Save the region dictionary to a json file
-        with open(region_file, 'w') as f:
-            json.dump(region_dict, f, indent=4)
-        print(f'Regions saved to {region_file}.')
+        with open(regions_file, 'w') as f:
+            json.dump(regions_dict, f, indent=4)
+        print(f'Regions saved to {regions_file}.')
+        return regions_file
 
-        self.region_file = region_file
-        self.region_dict = region_dict
+    def fov_clustering(self):
+        """
+        Perform FOV clustering on the regions obtained from region growing.
+        Returns:
+            bool: True if FOV clustering was successful, False otherwise.
+        """
+        if self.regions_file is None:
+            return False, 'No region file loaded. Please run region growth first.'
 
-        return True, region_file
+        # Iterate through regions in the region dictionary
+        for region_id, region in self.regions_dict['regions'].items():
+            region_point_cloud = self.point_cloud.select_by_index(
+                region['points'])
+            # Perform FOV clustering
+            fov_clusters = self.fovc.fov_clustering(region_point_cloud)
+            self.regions_dict['regions'][region_id]['fov_clusters'] = {}
+            for i, fov_cluster in enumerate(fov_clusters):
+                self.regions_dict['regions'][region_id]['fov_clusters'][i] = {'points': fov_cluster}
+
+        self.regions_file = self.save_regions_dict(self.regions_dict)
+
+        return True, self.regions_file

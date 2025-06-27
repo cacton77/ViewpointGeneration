@@ -117,6 +117,9 @@ class RegionGrowing:
             )
             pc.orient_normals_consistent_tangent_plane(100)
 
+        self.points = np.asarray(pc.points)
+        self.normals = np.asarray(pc.normals)
+
         return pc
 
     def compute_curvatures(self, points: np.ndarray, normals: np.ndarray,
@@ -274,14 +277,15 @@ class RegionGrowing:
         print(
             f"Spatial indexing completed in {time.time() - build_start:.2f}s")
 
-        # Compute curvatures
-        curvature_start = time.time()
-        neighbors_list = [self.get_neighbors(i)
-                          for i in range(len(self.points))]
-        self.curvatures = self.compute_curvatures(
-            self.points, self.normals, neighbors_list)
-        print(
-            f"Curvature computation completed in {time.time() - curvature_start:.2f}s")
+        if self.curvatures is None:
+            # Compute curvatures
+            curvature_start = time.time()
+            neighbors_list = [self.get_neighbors(i)
+                            for i in range(len(self.points))]
+            self.curvatures = self.compute_curvatures(
+                self.points, self.normals, neighbors_list)
+            print(
+                f"Curvature computation completed in {time.time() - curvature_start:.2f}s")
 
         # Find seed points (points with low curvature)
         seed_candidates = [i for i in range(

@@ -22,6 +22,7 @@ from moveit_msgs.msg import CollisionObject, AttachedCollisionObject
 class ViewpointGenerationNode(rclpy.node.Node):
 
     block_next_param_callback = False
+    initialized = False
 
     def __init__(self):
         node_name = 'viewpoint_generation_node'
@@ -35,11 +36,21 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('model.point_cloud.units', 'm'),
                 ('model.point_cloud.sampling.ppsqmm', 1.),
                 ('model.point_cloud.sampling.number_of_points', 100000),
+                ('regions.region_growth.curvature.knn_neighbors', 30),
                 ('regions.region_growth.curvature.file', ''),
-                ('regions.region_growth.curvature.number_of_neighbors', 10),
                 ('regions.file', ''),
+                ('regions.region_growth.seed_threshold', 15.0),
+                ('regions.region_growth.min_cluster_size', 10),
+                ('regions.region_growth.max_cluster_size', 100000),
                 ('regions.region_growth.curvature_threshold', 0.50),
-                ('regions.region_growth.angle_threshold', 15.0),
+                ('regions.region_growth.normal_angle_threshold', 15.0),
+                ('regions.fov_clustering.lambda_weight', 1.0),
+                ('regions.fov_clustering.beta_weight', 1.0),
+                ('regions.fov_clustering.max_point_out_percentage', 0.001),
+                ('regions.fov_clustering.k-means.point_weight', 1.0),
+                ('regions.fov_clustering.k-means.normal_weight', 1.0),
+                ('regions.fov_clustering.k-means.number_of_runs', 10),
+                ('regions.fov_clustering.k-means.maximum_iterations', 100),
                 ('viewpoints.nothing', ''),
                 ('traversal.nothing', ''),
                 ('camera.fov.width', 0.02),
@@ -66,8 +77,16 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.set_sampling_number_of_points(
             self.get_parameter(
                 'model.point_cloud.sampling.number_of_points').get_parameter_value().integer_value)
+        self.set_knn_neighbors(self.get_parameter(
+            'regions.region_growth.curvature.knn_neighbors').get_parameter_value().integer_value)
         self.set_curvature_file(self.get_parameter(
             'regions.region_growth.curvature.file').get_parameter_value().string_value)
+        self.set_seed_threshold(self.get_parameter(
+            'regions.region_growth.seed_threshold').get_parameter_value().double_value)
+        self.set_min_cluster_size(self.get_parameter(
+            'regions.region_growth.min_cluster_size').get_parameter_value().integer_value)
+        self.set_max_cluster_size(self.get_parameter(
+            'regions.region_growth.max_cluster_size').get_parameter_value().integer_value)
         self.partitioner.fov_width = self.get_parameter(
             'camera.fov.width').get_parameter_value().double_value
         self.partitioner.fov_height = self.get_parameter(
@@ -90,6 +109,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Region Growth Service
         self.create_service(Trigger, node_name + '/region_growth',
                             self.region_growth_callback)
+        # FOV Clustering Service
+        self.create_service(Trigger, node_name + '/fov_clustering',
+                            self.fov_clustering_callback)
 
         # Action Server
         self._action_server = ActionServer(
@@ -98,23 +120,15 @@ class ViewpointGenerationNode(rclpy.node.Node):
             'viewpoint_generation',
             self.execute_callback)
 
+        self.block_next_param_callback = False
+        self.initialized = True
+
     def set_mesh_file(self, mesh_file, mesh_units):
         """
         Helper function to set the triangle mesh file for the partitioner.
         :param mesh_file: The path to the triangle mesh file.
         :return: None
         """
-
-        if mesh_file is '' or None:
-            self.get_logger().error(
-                'No triangle mesh file provided.'
-            )
-            return False
-        elif mesh_units not in ['m', 'cm', 'mm', 'inch']:
-            self.get_logger().error(
-                f'Invalid mesh units provided: {mesh_units}. Must be one of: m, cm, mm, inch.'
-            )
-            return False
 
         # If mesh_file begins with "package://package_name", replace it with the path to the package
         if mesh_file.startswith('package://'):
@@ -124,7 +138,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             mesh_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
 
-        success = self.partitioner.set_mesh_file(mesh_file, mesh_units)
+        success, message = self.partitioner.set_mesh_file(mesh_file, mesh_units)
 
         if not success:
             mesh_file_param = rclpy.parameter.Parameter(
@@ -133,27 +147,26 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ''
             )
             self.set_parameters([mesh_file_param])
-            self.get_logger().error(
-                f'Could not load requested triangle mesh file {mesh_file}.'
-            )
+            self.get_logger().error(message)
             return False
         if success:
-            self.get_logger().info(
-                f'Triangle mesh file {mesh_file} loaded successfully.'
-            )
-            # # Clear the point cloud and curvature file parameters
-            # point_cloud_file_param = rclpy.parameter.Parameter(
-            #     'model.point_cloud.file',
-            #     rclpy.Parameter.Type.STRING,
-            #     ''
-            # )
-            # curvature_file_param = rclpy.parameter.Parameter(
-            #     'region_growth.curvature.file',
-            #     rclpy.Parameter.Type.STRING,
-            #     ''
-            # )
-            # self.block_next_param_callback = True
-            # self.set_parameters([point_cloud_file_param, curvature_file_param])
+            self.get_logger().info(message)
+
+            if self.initialized:
+                # Clear the point cloud and curvature file parameters
+                point_cloud_file_param = rclpy.parameter.Parameter(
+                    'model.point_cloud.file',
+                    rclpy.Parameter.Type.STRING,
+                    ''
+                )
+                
+                number_of_points_param = rclpy.parameter.Parameter(
+                    'model.point_cloud.sampling.number_of_points',
+                    rclpy.Parameter.Type.INTEGER,
+                    self.get_parameter('model.point_cloud.sampling.number_of_points').get_parameter_value().integer_value
+                )
+                
+                self.set_parameters([point_cloud_file_param, number_of_points_param])
 
             # # Update planning scene with the new mesh
             # with self.planning_scene_monitor.read_write() as scene:
@@ -181,17 +194,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: None
         """
 
-        if point_cloud_file is '' or None:
-            self.get_logger().warning(
-                'No point cloud file provided.'
-            )
-            return False
-        elif point_cloud_units not in ['m', 'cm', 'mm', 'inch']:
-            self.get_logger().error(
-                f'Invalid point cloud units provided: {point_cloud_units}. Must be one of: m, cm, mm, inch.'
-            )
-            return False
-
         # If point_cloud_file begins with "package://package_name", replace it with the path to the package
         if point_cloud_file.startswith('package://'):
             package_name, relative_path = point_cloud_file.split(
@@ -200,7 +202,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             point_cloud_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
 
-        success = self.partitioner.set_point_cloud_file(
+        success, message = self.partitioner.set_point_cloud_file(
             point_cloud_file, point_cloud_units)
 
         if not success:
@@ -215,9 +217,15 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             return False
         else:
-            self.get_logger().info(
-                f'Point cloud file {point_cloud_file} loaded successfully.'
+            self.get_logger().info(message)
+            # Clear the curvature file and regions file parameters
+            curvature_file_param = rclpy.parameter.Parameter(
+                'regions.region_growth.curvature.file',
+                rclpy.Parameter.Type.STRING,
+                ''
             )
+            self.set_parameters([curvature_file_param])
+
             return True
 
     def set_curvature_file(self, curvature_file):
@@ -227,12 +235,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: None
         """
 
-        if curvature_file is '' or None:
-            self.get_logger().warning(
-                'No curvature file provided.'
-            )
-            return False
-
         # If curvature_file begins with "package://package_name", replace it with the path to the package
         if curvature_file.startswith('package://'):
             package_name, relative_path = curvature_file.split(
@@ -241,23 +243,32 @@ class ViewpointGenerationNode(rclpy.node.Node):
             curvature_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
 
-        success = self.partitioner.set_curvature_file(curvature_file)
+        success, message = self.partitioner.set_curvature_file(curvature_file)
 
         if not success:
+            self.get_logger().error(message)
+
             curvature_file_param = rclpy.parameter.Parameter(
                 'regions.region_growth.curvature.file',
                 rclpy.Parameter.Type.STRING,
                 ''
             )
             self.set_parameters([curvature_file_param])
-            self.get_logger().error(
-                f'Could not load requested curvature file {curvature_file}.'
-            )
+
+
             return False
         else:
-            self.get_logger().info(
-                f'Curvature file {curvature_file} loaded successfully.'
-            )
+            self.get_logger().info(message)
+
+            if self.initialized:
+                # Clear the regions file parameter
+                regions_file_param = rclpy.parameter.Parameter(
+                    'regions.file',
+                    rclpy.Parameter.Type.STRING,
+                    ''
+                )
+                self.set_parameters([regions_file_param])
+
             return True
 
     def enable_cuda_callback(self, enable):
@@ -367,7 +378,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
             # Set the point cloud of the partitioner
             pcd_file = message
-            success = self.partitioner.set_point_cloud_file(pcd_file, 'm')
+            success, message = self.partitioner.set_point_cloud_file(pcd_file, 'm')
 
             # Update the point cloud units to meters
             point_cloud_units_param = rclpy.parameter.Parameter(
@@ -375,6 +386,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 rclpy.Parameter.Type.STRING,
                 'm'
             )
+            self.block_next_param_callback = True
+            self.set_parameters([point_cloud_units_param])
 
             # Update the point cloud file parameter with the sampled file
             point_cloud_file_param = rclpy.parameter.Parameter(
@@ -384,7 +397,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
 
             self.set_parameters(
-                [point_cloud_file_param, point_cloud_units_param])
+                [point_cloud_file_param])
 
         else:
             self.get_logger().error(f"Failed to sample point cloud: {message}")
@@ -394,39 +407,109 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         return response
 
-    def set_curvature_number_of_neighbors(self, number_of_neighbors):
+    def set_knn_neighbors(self, number_of_neighbors):
         """
         Helper function to set the number of neighbors for curvature estimation.
         :param number_of_neighbors: The number of neighbors to use for curvature estimation.
         :return: True if successful, False otherwise.
         """
 
-        if number_of_neighbors <= 0:
-            self.get_logger().error(
-                'Number of neighbors must be greater than 0.'
-            )
-            return False
-
-        success = self.partitioner.set_curvature_number_of_neighbors(
+        success, message = self.partitioner.set_knn_neighbors(
             number_of_neighbors)
 
         if not success:
-            self.get_logger().error(
-                f'Failed to set number of neighbors to {number_of_neighbors}.'
-            )
+            self.get_logger().error(message)
             return False
         else:
-            self.get_logger().info(
-                f'Number of neighbors set to {number_of_neighbors}.')
+            self.get_logger().info(message)
             curvature_file_param = rclpy.parameter.Parameter(
                 'regions.region_growth.curvature.file',
                 rclpy.Parameter.Type.STRING,
                 ''
             )
-            self.block_next_param_callback = True
             self.set_parameters([curvature_file_param])
 
         return True
+
+    def set_seed_threshold(self, seed_threshold):
+        """
+        Helper function to set the seed threshold for region growth.
+        :param seed_threshold: The seed threshold to use for region growth.
+        :return: True if successful, False otherwise.
+        """
+
+        success, message = self.partitioner.set_seed_threshold(seed_threshold)
+
+        if not success:
+            self.get_logger().error(message)
+            return False
+        else:
+            self.get_logger().info(message)
+            return True
+
+    def set_min_cluster_size(self, min_cluster_size):
+        """
+        Helper function to set the minimum cluster size for region growth.
+        :param min_cluster_size: The minimum cluster size to use for region growth.
+        :return: True if successful, False otherwise.
+        """
+
+        success, message = self.partitioner.set_min_cluster_size(min_cluster_size)
+
+        if not success:
+            self.get_logger().error(message)
+            return False
+        else:
+            self.get_logger().info(message)
+            return True
+
+    def set_max_cluster_size(self, max_cluster_size):
+        """
+        Helper function to set the maximum cluster size for region growth.
+        :param max_cluster_size: The maximum cluster size to use for region growth.
+        :return: True if successful, False otherwise.
+        """
+
+        success, message = self.partitioner.set_max_cluster_size(max_cluster_size)
+
+        if not success:
+            self.get_logger().error(message)
+            return False
+        else:
+            self.get_logger().info(message)
+            return True
+
+    def set_normal_angle_threshold(self, normal_angle_threshold):
+        """
+        Helper function to set the angle threshold for region growth.
+        :param normal_angle_threshold: The angle threshold to use for region growth.
+        :return: True if successful, False otherwise.
+        """
+
+        success, message = self.partitioner.set_normal_angle_threshold(normal_angle_threshold)
+
+        if not success:
+            self.get_logger().error(message)
+            return False
+        else:
+            self.get_logger().info(message)
+            return True
+
+    def set_curvature_threshold(self, curvature_threshold):
+        """
+        Helper function to set the curvature threshold for region growth.
+        :param curvature_threshold: The curvature threshold to use for region growth.
+        :return: True if successful, False otherwise.
+        """
+
+        success, message = self.partitioner.set_curvature_threshold(curvature_threshold)
+
+        if not success:
+            self.get_logger().error(message)
+            return False
+        else:
+            self.get_logger().info(message)
+            return True
 
     def estimate_curvature_callback(self, request, response):
         """
@@ -459,66 +542,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         return response
 
-    def set_region_growth_curvature_threshold(self, curvature_threshold):
-        """
-        Helper function to set the curvature threshold for region growth.
-        :param curvature_threshold: The curvature threshold to use for region growth.
-        :return: True if successful, False otherwise.
-        """
-
-        if curvature_threshold <= 0:
-            self.get_logger().error(
-                'Curvature threshold must be greater than 0.'
-            )
-            return False
-
-        # success = self.partitioner.set_region_growth_curvature_threshold(curvature_threshold)
-        self.partitioner.rg_curvature_threshold = curvature_threshold
-        success = True  # Simulating success for now
-
-        if not success:
-            self.get_logger().error(
-                f'Failed to set curvature threshold to {curvature_threshold}.'
-            )
-            return False
-        else:
-            self.get_logger().info(
-                f'Curvature threshold set to {curvature_threshold}.')
-            return True
-
-    def set_region_growth_angle_threshold(self, angle_threshold):
-        """
-        Helper function to set the angle threshold for region growth.
-        :param angle_threshold: The angle threshold to use for region growth.
-        :return: True if successful, False otherwise.
-        """
-
-        success, message = self.partitioner.set_region_growth_angle_threshold(
-            angle_threshold)
-
-        if not success:
-            self.get_logger().error(message)
-            return False
-        else:
-            self.get_logger().info(message)
-            return True
-
-    def set_region_growth_curvature_threshold(self, curvature_threshold):
-        """
-        Helper function to set the curvature threshold for region growth.
-        :param curvature_threshold: The curvature threshold to use for region growth.
-        :return: True if successful, False otherwise.
-        """
-
-        success, message = self.partitioner.set_region_growth_curvature_threshold(
-            curvature_threshold)
-
-        if not success:
-            self.get_logger().error(message)
-            return False
-        else:
-            self.get_logger().info(message)
-            return True
 
     def region_growth_callback(self, request, response):
         """
@@ -542,6 +565,35 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.set_parameters([region_file_param])
         else:
             self.get_logger().error("Region growth failed.")
+
+        response.success = success
+        response.message = message
+
+        return response
+
+    def fov_clustering_callback(self, request, response):
+        """
+        Callback for the FOV clustering service.
+        :param request: The request object.
+        :param response: The response object.
+        :return: The response object.
+        """
+        self.get_logger().info('Performing FOV clustering...')
+
+        success, message = self.partitioner.fov_clustering()
+
+        if success:
+            self.get_logger().info(
+                f"FOV clustering completed successfully. Regions file updated: {message}")
+            # Set the regions file parameter with the FOV clustering result
+            regions_file_param = rclpy.parameter.Parameter(
+                'regions.file',
+                rclpy.Parameter.Type.STRING,
+                message
+            )
+            self.set_parameters([regions_file_param])
+        else:
+            self.get_logger().error("FOV clustering failed.")
 
         response.success = success
         response.message = message
@@ -597,15 +649,21 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 success = self.set_sampling_ppsqmm(param.value)
             elif param.name == 'model.point_cloud.sampling.number_of_points':
                 success = self.set_sampling_number_of_points(param.value)
+            elif param.name == 'regions.region_growth.curvature.knn_neighbors':
+                success = self.set_knn_neighbors(param.value)
             elif param.name == 'regions.region_growth.curvature.file':
                 success = self.set_curvature_file(param.value)
-            elif param.name == 'regions.region_growth.curvature.number_of_neighbors':
-                success = self.set_curvature_number_of_neighbors(param.value)
+            elif param.name == 'regions.region_growth.seed_threshold':
+                success = self.set_seed_threshold(param.value)
+            elif param.name == 'regions.region_growth.min_cluster_size':
+                success = self.set_min_cluster_size(param.value)
+            elif param.name == 'regions.region_growth.max_cluster_size':
+                success = self.set_max_cluster_size(param.value)
             elif param.name == 'regions.region_growth.curvature_threshold':
-                success = self.set_region_growth_curvature_threshold(
+                success = self.set_curvature_threshold(
                     param.value)
-            elif param.name == 'regions.region_growth.angle_threshold':
-                success = self.set_region_growth_angle_threshold(param.value)
+            elif param.name == 'regions.region_growth.normal_angle_threshold':
+                success = self.set_normal_angle_threshold(param.value)
             elif param.name == 'camera.fov.height':
                 self.partitioner.fov_height = param.value
             elif param.name == 'camera.fov.width':
