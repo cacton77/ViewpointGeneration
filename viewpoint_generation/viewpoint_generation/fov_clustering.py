@@ -17,8 +17,9 @@ from bayes_opt import UtilityFunction
 
 from dataclasses import dataclass
 
+
 @dataclass
-class FovClusteringConfig:
+class FOVClusteringConfig:
     """Configuration parameters for region growing algorithms."""
 
     fov_height: float = 0.02  # Field of view height in m
@@ -29,7 +30,8 @@ class FovClusteringConfig:
     ppsqmm: float = 10.0  # Points per square millimeter for evaluation
     lambda_weight: float = 1.0  # Weight for point out percentage in cost function
     beta_weight: float = 1.0  # Weight for packing efficiency in cost function
-    max_point_out_percentage: float = 0.001  # Maximum allowed point out percentage for a valid cluster
+    # Maximum allowed point out percentage for a valid cluster
+    max_point_out_percentage: float = 0.001
 
     # Clustering parameters
     point_weight: float = 2.0  # Weight for point locations in clustering
@@ -38,10 +40,9 @@ class FovClusteringConfig:
     maximum_iterations: int = 100  # Maximum iterations for KMeans
 
 
-
-class FovClustering:
-    def __init__(self, config: FovClusteringConfig = None):
-        self.config = config or FovClusteringConfig()
+class FOVClustering:
+    def __init__(self, config: FOVClusteringConfig = None):
+        self.config = config or FOVClusteringConfig()
 
     def evaluate_fov_cluster(self, points, normals):
         """ Function to evaluate a cluster based on field of view and depth of field. """
@@ -54,10 +55,11 @@ class FovClustering:
         point_cloud = o3d.geometry.PointCloud()
         point_cloud.points = o3d.utility.Vector3dVector(points)
         point_cloud.normals = o3d.utility.Vector3dVector(normals)
-        
+
         z = np.array([0, 0, 1])
         z_hat = np.average(normals, axis=0)
-        x_hat = np.cross(z, z_hat) if np.linalg.norm(np.cross(z, z_hat)) != 0 else np.array([1, 0, 0])
+        x_hat = np.cross(z, z_hat) if np.linalg.norm(
+            np.cross(z, z_hat)) != 0 else np.array([1, 0, 0])
         y_hat = np.cross(z_hat, x_hat)
         x_hat = x_hat / np.linalg.norm(x_hat)
         y_hat = y_hat / np.linalg.norm(y_hat)
@@ -90,26 +92,29 @@ class FovClustering:
         points = np.asarray(point_cloud.points)
         normals = np.asarray(point_cloud.normals)
 
-        max_points_in = (np.pi * camera_radius**2) * (self.config.ppsqmm * 1e6)  # Convert to square millimeters
+        # Convert to square millimeters
+        max_points_in = (np.pi * camera_radius**2) * (self.config.ppsqmm * 1e6)
 
         # Get height and radial coordinates
         height_coords = points[:, 2]
-        
+
         # Get indices for the two radial dimensions
         radial_indices = [i for i in range(3) if i != 2]
         radial_coords = points[:, radial_indices]
-        
+
         # Check constraints
         height_mask = (height_coords >= 0) & (height_coords <= self.config.dof)
         radial_distances_sq = np.sum(radial_coords**2, axis=1)
-        extreme_radial_distance = np.max(np.sqrt(radial_distances_sq)) if radial_distances_sq.size > 0 else 0
+        extreme_radial_distance = np.max(
+            np.sqrt(radial_distances_sq)) if radial_distances_sq.size > 0 else 0
         radius_mask = radial_distances_sq <= camera_radius**2
-        
+
         points_in = np.sum(height_mask & radius_mask)
         points_in_xy = np.sum(radius_mask)
         points_out = points.shape[0] - points_in
 
-        point_out_percentage = points_out / points.shape[0] if points.shape[0] > 0 else 0
+        point_out_percentage = points_out / \
+            points.shape[0] if points.shape[0] > 0 else 0
         packing_efficiency = points_in_xy / max_points_in if max_points_in > 0 else 0
 
         if point_out_percentage > self.config.max_point_out_percentage:
@@ -119,18 +124,18 @@ class FovClustering:
 
         borderline = False
         epsilon = 0.05
-        if (extreme_radial_distance < (camera_radius*(1+epsilon)) and 
-            extreme_radial_distance > (camera_radius*(1-epsilon))) or (
-            extreme_radial_distance < (camera_radius*(1+epsilon)) and 
-            extreme_radial_distance > (camera_radius*(1-epsilon))) and valid == True:
+        if (extreme_radial_distance < (camera_radius*(1+epsilon)) and
+                extreme_radial_distance > (camera_radius*(1-epsilon))) or (
+                extreme_radial_distance < (camera_radius*(1+epsilon)) and
+                extreme_radial_distance > (camera_radius*(1-epsilon))) and valid == True:
 
             borderline = True
 
-        print(f'Points in: {points_in}, Points out: {points_out}, Point out percentage: {point_out_percentage}')
+        print(
+            f'Points in: {points_in}, Points out: {points_out}, Point out percentage: {point_out_percentage}')
         print(f'Packing efficiency: {packing_efficiency}')
 
         return valid, point_out_percentage, packing_efficiency, borderline
-
 
     def partition(self, points, normals, k) -> list:
         """ K-Means clustering function. """
@@ -258,7 +263,8 @@ class FovClustering:
             k_min = surface_area/camera_area
             pbounds = {"k": (k_min, 3*k_min)}
 
-        f = lambda k: self.evaluate_k_cost(points, normals, k=k, eval_fun=eval_fun)
+        def f(k): return self.evaluate_k_cost(
+            points, normals, k=k, eval_fun=eval_fun)
 
         optimizer = BayesianOptimization(
             f=f,
@@ -280,7 +286,8 @@ class FovClustering:
         total_packing_eff = 0
 
         for j, cluster in enumerate(valid_clusters):
-            cluster_valid, point_out_percentage, packing_eff, borderline = eval_fun(points, normals)
+            cluster_valid, point_out_percentage, packing_eff, borderline = eval_fun(
+                points, normals)
             total_point_out_percentage += point_out_percentage
             total_packing_eff += packing_eff
             total_count += 1
@@ -291,7 +298,7 @@ class FovClustering:
         avg_point_out_percentage = total_point_out_percentage/total_count
         avg_packing_eff = total_packing_eff/total_count
 
-        return k_opt, valid_clusters 
+        return k_opt, valid_clusters
 
     def fov_clustering(self, point_cloud):
         """ Partition a region of a point cloud into regions within camera fov and dof. """
@@ -300,10 +307,10 @@ class FovClustering:
         points = np.asarray(point_cloud.points)
         normals = np.asarray(point_cloud.normals)
 
-        k_opt, fov_clusters = self.optimize_k_b_opt(points, normals, self.evaluate_fov_cluster)
+        k_opt, fov_clusters = self.optimize_k_b_opt(
+            points, normals, self.evaluate_fov_cluster)
 
         return fov_clusters
-
 
 
 # Utility functions
@@ -319,19 +326,23 @@ def create_sample_mesh(k: int = 3, ppsqmm: float = 1000) -> o3d.geometry.PointCl
             mesh = o3d.geometry.TriangleMesh.create_sphere(radius=0.05)
         elif rand_n == 1:
             # Create a box
-            mesh = o3d.geometry.TriangleMesh.create_box(width=0.1, height=0.1, depth=0.1)
+            mesh = o3d.geometry.TriangleMesh.create_box(
+                width=0.1, height=0.1, depth=0.1)
         elif rand_n == 2:
             # Create a cylinder
-            mesh = o3d.geometry.TriangleMesh.create_cylinder(radius=0.05, height=0.2)
+            mesh = o3d.geometry.TriangleMesh.create_cylinder(
+                radius=0.05, height=0.2)
 
         mesh.translate(np.random.rand(3))
         mesh.rotate(o3d.geometry.get_rotation_matrix_from_xyz(
             np.random.rand(3) * np.pi))
         combined_mesh += mesh
-    
-    combined_mesh.paint_uniform_color((0.5, 0.5, 0.5))  # Set a uniform color for the mesh
-        
+
+    # Set a uniform color for the mesh
+    combined_mesh.paint_uniform_color((0.5, 0.5, 0.5))
+
     return combined_mesh
+
 
 # Example usage
 if __name__ == "__main__":
@@ -341,23 +352,25 @@ if __name__ == "__main__":
     ppsqmm = 0.5
     mesh = create_sample_mesh(k)
 
-    pc = mesh.sample_points_uniformly(int(mesh.get_surface_area() * ppsqmm * 1e6), use_triangle_normal=True)
+    pc = mesh.sample_points_uniformly(
+        int(mesh.get_surface_area() * ppsqmm * 1e6), use_triangle_normal=True)
 
     # Configure region growing
-    config = FovClusteringConfig()
+    config = FOVClusteringConfig()
     config.ppsqmm = ppsqmm  # Points per square millimeter
     config.fov_width = 50*2*0.001*np.sqrt(1/np.pi)
     config.fov_height = 50*2*0.001*np.sqrt(1/np.pi)
     config.dof = 1
 
     # Perform segmentation
-    fovc = FovClustering(config)
+    fc = FOVClustering(config)
 
     points = np.asarray(pc.points)
     normals = np.asarray(pc.normals)
 
-    regions = fovc.partition(points, normals, k)
-    region_colors = np.random.rand(len(regions), 3)  # Random colors for each region
+    regions = fc.partition(points, normals, k)
+    # Random colors for each region
+    region_colors = np.random.rand(len(regions), 3)
     fov_cluster_meshes = [mesh]
 
     for i, region in enumerate(regions):
@@ -366,19 +379,23 @@ if __name__ == "__main__":
         region_normals = np.asarray(region_pc.normals)
 
         # FOV clustering
-        region_fov_clusters = fovc.fov_clustering(region_pc)
+        region_fov_clusters = fc.fov_clustering(region_pc)
         for fov_cluster in region_fov_clusters:
             fov_cluster_pc = region_pc.select_by_index(fov_cluster)
             # Translate slightly by average normal to avoid overlapping
             avg_normal = np.mean(np.asarray(fov_cluster_pc.normals), axis=0)
             fov_cluster_pc.translate(avg_normal * 0.001)  # Translate by
-            fov_cluster_mesh = fov_cluster_pc.compute_convex_hull(joggle_inputs=True)[0]
-            color = region_colors[i] + 0.1*(np.random.rand(3) - 0.5)  # Slightly adjust color
-            color = np.clip(color, 0, 1)  # Ensure color values are between 0 and 1
-            fov_cluster_mesh.paint_uniform_color(color)  # Set color for the FOV cluster
+            fov_cluster_mesh = fov_cluster_pc.compute_convex_hull(joggle_inputs=True)[
+                0]
+            # Slightly adjust color
+            color = region_colors[i] + 0.1*(np.random.rand(3) - 0.5)
+            # Ensure color values are between 0 and 1
+            color = np.clip(color, 0, 1)
+            fov_cluster_mesh.paint_uniform_color(
+                color)  # Set color for the FOV cluster
             fov_cluster_meshes.append(fov_cluster_mesh)
 
     # Visualize the clusters
     print("Visualizing clusters...")
-    o3d.visualization.draw_geometries(fov_cluster_meshes, window_name="FOV Clusters")
-
+    o3d.visualization.draw_geometries(
+        fov_cluster_meshes, window_name="FOV Clusters")

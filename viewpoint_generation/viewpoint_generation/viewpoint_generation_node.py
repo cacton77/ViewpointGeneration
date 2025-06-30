@@ -5,7 +5,7 @@ import rclpy.node
 import numpy as np
 import open3d as o3d
 from rclpy.action import ActionServer
-from viewpoint_generation.partitioner import Partitioner
+from viewpoint_generation.viewpoint_generation.viewpoint_generation import ViewpointGeneration
 from rcl_interfaces.msg import SetParametersResult
 from ament_index_python.packages import get_package_prefix
 
@@ -55,8 +55,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('regions.fov_clustering.k-means.normal_weight', 1.0),
                 ('regions.fov_clustering.k-means.number_of_runs', 10),
                 ('regions.fov_clustering.k-means.maximum_iterations', 100),
-                ('viewpoints.nothing', ''),
-                ('traversal.nothing', ''),
+                ('viewpoints.traversal', '')
                 ('settings.cuda_enabled', False)
             ]
         )
@@ -138,7 +137,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
             mesh_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
 
-        success, message = self.partitioner.set_mesh_file(mesh_file, mesh_units)
+        success, message = self.partitioner.set_mesh_file(
+            mesh_file, mesh_units)
 
         if not success:
             mesh_file_param = rclpy.parameter.Parameter(
@@ -159,14 +159,16 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     rclpy.Parameter.Type.STRING,
                     ''
                 )
-                
+
                 number_of_points_param = rclpy.parameter.Parameter(
                     'model.point_cloud.sampling.number_of_points',
                     rclpy.Parameter.Type.INTEGER,
-                    self.get_parameter('model.point_cloud.sampling.number_of_points').get_parameter_value().integer_value
+                    self.get_parameter(
+                        'model.point_cloud.sampling.number_of_points').get_parameter_value().integer_value
                 )
-                
-                self.set_parameters([point_cloud_file_param, number_of_points_param])
+
+                self.set_parameters(
+                    [point_cloud_file_param, number_of_points_param])
 
             # # Update planning scene with the new mesh
             # with self.planning_scene_monitor.read_write() as scene:
@@ -254,7 +256,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ''
             )
             self.set_parameters([curvature_file_param])
-
 
             return False
         else:
@@ -378,7 +379,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
             # Set the point cloud of the partitioner
             pcd_file = message
-            success, message = self.partitioner.set_point_cloud_file(pcd_file, 'm')
+            success, message = self.partitioner.set_point_cloud_file(
+                pcd_file, 'm')
 
             # Update the point cloud units to meters
             point_cloud_units_param = rclpy.parameter.Parameter(
@@ -454,7 +456,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: True if successful, False otherwise.
         """
 
-        success, message = self.partitioner.set_min_cluster_size(min_cluster_size)
+        success, message = self.partitioner.set_min_cluster_size(
+            min_cluster_size)
 
         if not success:
             self.get_logger().error(message)
@@ -470,7 +473,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: True if successful, False otherwise.
         """
 
-        success, message = self.partitioner.set_max_cluster_size(max_cluster_size)
+        success, message = self.partitioner.set_max_cluster_size(
+            max_cluster_size)
 
         if not success:
             self.get_logger().error(message)
@@ -486,7 +490,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: True if successful, False otherwise.
         """
 
-        success, message = self.partitioner.set_normal_angle_threshold(normal_angle_threshold)
+        success, message = self.partitioner.set_normal_angle_threshold(
+            normal_angle_threshold)
 
         if not success:
             self.get_logger().error(message)
@@ -502,7 +507,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: True if successful, False otherwise.
         """
 
-        success, message = self.partitioner.set_curvature_threshold(curvature_threshold)
+        success, message = self.partitioner.set_curvature_threshold(
+            curvature_threshold)
 
         if not success:
             self.get_logger().error(message)
@@ -541,7 +547,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
         response.message = message
 
         return response
-
 
     def region_growth_callback(self, request, response):
         """

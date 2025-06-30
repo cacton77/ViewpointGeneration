@@ -12,12 +12,13 @@ import open3d.visualization.rendering as rendering
 from matplotlib import colormaps
 from open3d.geometry import PointCloud, TriangleMesh
 
-from viewpoint_generation.curvature import *
-from viewpoint_generation.region_growth import *
-from viewpoint_generation.fov_clustering import *
+from curvature import *
+from region_growth import *
+from fov_clustering import *
+from viewpoint_projection import *
 
 
-class Partitioner():
+class ViewpointGeneration():
 
     mesh_file = None
     mesh_units = 'm'
@@ -57,7 +58,7 @@ class Partitioner():
         curvature_threshold=0.1,
         knn_neighbors=30
     )
-    fovc_config = FovClusteringConfig(
+    fc_config = FOVClusteringConfig(
         fov_height=0.02,
         fov_width=0.03,
         dof=0.02,
@@ -70,9 +71,13 @@ class Partitioner():
         number_of_runs=10,
         maximum_iterations=100
     )
+    vp_config = ViewpointProjectionConfig(
+        focal_distance=0.3
+    )
 
     rg = RegionGrowing(region_growing_config)
-    fovc = FovClustering()
+    fc = FOVClustering(fc_config)
+    vp = ViewpointProjection(vp_config)
 
     def __init__(self):
         pass
@@ -238,7 +243,8 @@ class Partitioner():
         point_cloud_dir = mesh_dir + '/' + mesh_name + '_point_cloud'
         # Name the point_cloud file after the mesh file name with N_points appended and save as a ply file
         point_cloud_file = point_cloud_dir + '/' + mesh_name + '_' + \
-            self.mesh_units + '_point_cloud_' + str(int(N_points)) + 'points.ply'
+            self.mesh_units + '_point_cloud_' + \
+            str(int(N_points)) + 'points.ply'
         # Create the directory if it does not exist
         if not os.path.exists(point_cloud_dir):
             os.makedirs(point_cloud_dir)
@@ -261,7 +267,7 @@ class Partitioner():
         self.region_growing_config.knn_neighbors = k
         self.rg.config = self.region_growing_config
         return True, f'KNN neighbors set to {k}.'
-    
+
     def set_seed_threshold(self, seed_threshold):
         if seed_threshold <= 0:
             return False, 'Seed threshold must be greater than 0.'
@@ -275,7 +281,7 @@ class Partitioner():
         self.region_growing_config.min_cluster_size = min_cluster_size
         self.rg.config = self.region_growing_config
         return True, f'Minimum cluster size set to {min_cluster_size}.'
-    
+
     def set_max_cluster_size(self, max_cluster_size):
         if max_cluster_size <= 0:
             return False, 'Maximum cluster size must be greater than 0.'
@@ -296,7 +302,8 @@ class Partitioner():
         if normal_angle_threshold <= 0 or normal_angle_threshold > 180:
             return False, 'Angle threshold must be between 0 and 180 degrees.'
 
-        self.region_growing_config.normal_angle_threshold = normal_angle_threshold * np.pi / 180.0  # Convert to radians
+        self.region_growing_config.normal_angle_threshold = normal_angle_threshold * \
+            np.pi / 180.0  # Convert to radians
         self.rg.config = self.region_growing_config
 
         return True, f'Region growth angle threshold set to {normal_angle_threshold} degrees.'
@@ -331,11 +338,11 @@ class Partitioner():
         if fov_height <= 0 or fov_width <= 0 or dof <= 0 or focal_distance <= 0:
             return False, 'FOV height, width, DOF and focal distance must be greater than 0.'
 
-        self.fovc_config.fov_height = fov_height
-        self.fovc_config.fov_width = fov_width
-        self.fovc_config.dof = dof
+        self.fc_config.fov_height = fov_height
+        self.fc_config.fov_width = fov_width
+        self.fc_config.dof = dof
 
-        self.fovc.config = self.fovc_config
+        self.fc.config = self.fc_config
 
         # TODO: Set viewpoint generation config parameter focal_distance
 
@@ -428,7 +435,7 @@ class Partitioner():
     def region_growth(self):
         if self.curvatures_file is None:
             return False, 'No curvature file loaded. Please run curvature estimation first.'
-        
+
         regions_dict = {'regions': {}, 'order': []}
 
         clusters, noise_points = self.rg.segment(self.point_cloud)
@@ -443,7 +450,7 @@ class Partitioner():
         return True, self.regions_file
 
     def save_regions_dict(self, regions_dict):
-         # Save the regions to a json file named after the point cloud curvature file stripped of the  .npy extension
+        # Save the regions to a json file named after the point cloud curvature file stripped of the  .npy extension
         curvatures_dir = self.curvatures_file.rsplit('/', 1)[0]
         curvatures_name = self.curvatures_file.rsplit(
             '/', 1)[-1].rsplit('.', 1)[0]
@@ -479,11 +486,100 @@ class Partitioner():
             region_point_cloud = self.point_cloud.select_by_index(
                 region['points'])
             # Perform FOV clustering
-            fov_clusters = self.fovc.fov_clustering(region_point_cloud)
+            fov_clusters = self.fc.fov_clustering(region_point_cloud)
             self.regions_dict['regions'][region_id]['fov_clusters'] = {}
             for i, fov_cluster in enumerate(fov_clusters):
-                self.regions_dict['regions'][region_id]['fov_clusters'][i] = {'points': fov_cluster}
+                self.regions_dict['regions'][region_id]['fov_clusters'][i] = {
+                    'points': fov_cluster}
 
         self.regions_file = self.save_regions_dict(self.regions_dict)
 
         return True, self.regions_file
+
+
+# Utility functions
+def create_sample_mesh(k: int = 3, ppsqmm: float = 1000) -> o3d.geometry.PointCloud:
+    """Create a sample point cloud for testing."""
+
+    # Randomly create k primitive shapes
+    combined_mesh = o3d.geometry.TriangleMesh()
+    for i in range(k):
+        rand_n = np.random.randint(0, 3)
+        if rand_n == 0:
+            # Create a sphere
+            mesh = o3d.geometry.TriangleMesh.create_sphere(radius=0.05)
+        elif rand_n == 1:
+            # Create a box
+            mesh = o3d.geometry.TriangleMesh.create_box(
+                width=0.1, height=0.1, depth=0.1)
+        elif rand_n == 2:
+            # Create a cylinder
+            mesh = o3d.geometry.TriangleMesh.create_cylinder(
+                radius=0.05, height=0.2)
+
+        mesh.translate(np.random.rand(3))
+        mesh.rotate(o3d.geometry.get_rotation_matrix_from_xyz(
+            np.random.rand(3) * np.pi))
+        combined_mesh += mesh
+
+    # Set a uniform color for the mesh
+    combined_mesh.paint_uniform_color((0.5, 0.5, 0.5))
+
+    return combined_mesh
+
+
+# Example usage
+if __name__ == "__main__":
+    # Create sample point cloud
+    print("Creating sample point cloud...")
+    k = 5
+    ppsqmm = 0.5
+    mesh = create_sample_mesh(k)
+
+    pc = mesh.sample_points_uniformly(
+        int(mesh.get_surface_area() * ppsqmm * 1e6), use_triangle_normal=True)
+
+    # Configure region growing
+    config = FOVClusteringConfig()
+    config.ppsqmm = ppsqmm  # Points per square millimeter
+    config.fov_width = 50*2*0.001*np.sqrt(1/np.pi)
+    config.fov_height = 50*2*0.001*np.sqrt(1/np.pi)
+    config.dof = 1
+
+    # Perform segmentation
+    fc = FOVClustering(config)
+
+    points = np.asarray(pc.points)
+    normals = np.asarray(pc.normals)
+
+    regions = fc.partition(points, normals, k)
+    # Random colors for each region
+    region_colors = np.random.rand(len(regions), 3)
+    fov_cluster_meshes = [mesh]
+
+    for i, region in enumerate(regions):
+        region_pc = pc.select_by_index(regions[i])
+        region_points = np.asarray(region_pc.points)
+        region_normals = np.asarray(region_pc.normals)
+
+        # FOV clustering
+        region_fov_clusters = fc.fov_clustering(region_pc)
+        for fov_cluster in region_fov_clusters:
+            fov_cluster_pc = region_pc.select_by_index(fov_cluster)
+            # Translate slightly by average normal to avoid overlapping
+            avg_normal = np.mean(np.asarray(fov_cluster_pc.normals), axis=0)
+            fov_cluster_pc.translate(avg_normal * 0.001)  # Translate by
+            fov_cluster_mesh = fov_cluster_pc.compute_convex_hull(joggle_inputs=True)[
+                0]
+            # Slightly adjust color
+            color = region_colors[i] + 0.1*(np.random.rand(3) - 0.5)
+            # Ensure color values are between 0 and 1
+            color = np.clip(color, 0, 1)
+            fov_cluster_mesh.paint_uniform_color(
+                color)  # Set color for the FOV cluster
+            fov_cluster_meshes.append(fov_cluster_mesh)
+
+    # Visualize the clusters
+    print("Visualizing clusters...")
+    o3d.visualization.draw_geometries(
+        fov_cluster_meshes, window_name="FOV Clusters")

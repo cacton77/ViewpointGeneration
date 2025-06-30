@@ -40,10 +40,7 @@ viewpoint_generation_node:
 
 
     viewpoints:
-      nothing: ''
-
-    traversal:
-      nothing: ''
+      traversal: ''
 
     settings:
       cuda_enabled: False
