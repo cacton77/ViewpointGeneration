@@ -89,7 +89,7 @@ def generate_launch_description():
 
     ld.add_action(config_file_arg)  # Don't forget to add the argument!
     ld.add_action(gui_client)
-    # ld.add_action(rqt_configure)
+    ld.add_action(rqt_configure)
     ld.add_action(viewpoint_generation_node)
 
     return ld

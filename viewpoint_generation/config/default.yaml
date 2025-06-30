@@ -10,13 +10,12 @@ viewpoint_generation_node:
         sampling:
           ppsqmm: 4.
           number_of_points: 100000
-
-    camera:
-      fov:
-        width: 0.02
-        height: 0.03
-      dof: 0.02
-      focal_distance: 0.35
+      camera:
+        fov:
+          width: 0.02
+          height: 0.03
+        dof: 0.02
+        focal_distance: 0.35
 
     regions:
       file: ""

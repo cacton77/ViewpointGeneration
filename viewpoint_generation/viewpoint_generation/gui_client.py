@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 import sys
+import copy
 import time
 import json
 import random
@@ -31,14 +32,22 @@ class GUIClient():
     MENU_PREFERENCES = 10
     MENU_SHOW_AXES = 11
     MENU_SHOW_GRID = 12
-    MENU_SHOW_MODEL = 13
-    MENU_SHOW_POINT_CLOUDS = 14
-    MENU_SHOW_REGIONS = 15
-    MENU_SHOW_VIEWPOINT = 16
-    MENU_SHOW_SETTINGS = 17
-    MENU_SHOW_ERRORS = 18
-    MENU_SHOW_PATH = 19
-    MENU_ABOUT = 21
+    MENU_SHOW_MESH = 13
+    MENU_SHOW_POINT_CLOUD = 14
+    MENU_SHOW_CURVATURES = 15
+    MENU_SHOW_REGIONS = 16
+    MENU_SHOW_NOISE_POINTS = 17
+    MENU_SHOW_FOV_CLUSTERS = 18
+    MENU_SHOW_VIEWPOINT = 19
+    MENU_SHOW_SETTINGS = 20
+    MENU_SHOW_ERRORS = 21
+    MENU_SHOW_PATH = 22
+    MENU_ABOUT = 23
+
+    camera_updated = False
+    camera_fov_width = 0.03
+    camera_fov_height = 0.02
+    last_intersection_point = None
 
     def __init__(self):
         self.app = gui.Application.instance
@@ -92,6 +101,10 @@ class GUIClient():
         self.setup_multi_directional_lighting()
         # self.window.add_child(self.parameter_panel)
         self.window.set_on_layout(self._on_layout)
+
+        camera = self.scene_widget.scene.camera
+        view_matrix = camera.get_view_matrix()
+        self.current_view_matrix = view_matrix
 
         self.last_draw_time = time.time()
 
@@ -270,13 +283,21 @@ class GUIClient():
             view_menu.add_menu("Ground Plane", ground_plane_menu)
             view_menu.add_separator()
             # Object display options
-            view_menu.add_item("Show Model", self.MENU_SHOW_MODEL)
-            view_menu.set_checked(self.MENU_SHOW_MODEL, True)
+            view_menu.add_item("Show Model", self.MENU_SHOW_MESH)
+            view_menu.set_checked(self.MENU_SHOW_MESH, True)
             view_menu.add_item("Show Point Clouds",
-                               self.MENU_SHOW_POINT_CLOUDS)
-            view_menu.set_checked(self.MENU_SHOW_POINT_CLOUDS, True)
+                               self.MENU_SHOW_POINT_CLOUD)
+            view_menu.set_checked(self.MENU_SHOW_POINT_CLOUD, False)
+            view_menu.add_item("Show Curvatures",
+                               self.MENU_SHOW_CURVATURES)
+            view_menu.set_checked(self.MENU_SHOW_CURVATURES, False)
             view_menu.add_item("Show Regions", self.MENU_SHOW_REGIONS)
-            view_menu.set_checked(self.MENU_SHOW_REGIONS, True)
+            view_menu.set_checked(self.MENU_SHOW_REGIONS, False)
+            view_menu.add_item("Show Noise Points", self.MENU_SHOW_NOISE_POINTS)
+            view_menu.set_checked(self.MENU_SHOW_NOISE_POINTS, False)
+            view_menu.add_item("Show FOV Clusters", self.MENU_SHOW_FOV_CLUSTERS)
+            view_menu.set_checked(self.MENU_SHOW_FOV_CLUSTERS, False)
+
             view_menu.add_item("Show Path", self.MENU_SHOW_PATH)
             view_menu.set_checked(self.MENU_SHOW_PATH, False)
             view_menu.add_separator()
@@ -340,12 +361,18 @@ class GUIClient():
         #     self.MENU_SHOW_AXES, self._on_menu_show_axes)
         # w.set_on_menu_item_activated(
         #     self.MENU_SHOW_GRID, self._on_menu_show_grid)
-        # w.set_on_menu_item_activated(
-        #     self.MENU_SHOW_MODEL, self._on_menu_show_model)
-        # w.set_on_menu_item_activated(
-        #     self.MENU_SHOW_POINT_CLOUDS, self._on_menu_show_point_clouds)
-        # w.set_on_menu_item_activated(
-        #     self.MENU_SHOW_REGIONS, self._on_menu_show_regions)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_MESH, self._on_menu_show_mesh)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_POINT_CLOUD, self._on_menu_show_point_cloud)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_CURVATURES, self._on_menu_show_curvatures)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_REGIONS, self._on_menu_show_regions)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_FOV_CLUSTERS, self._on_menu_show_fov_clusters)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_NOISE_POINTS, self._on_menu_show_noise_points)
         # w.set_on_menu_item_activated(
         #     self.MENU_SHOW_PATH, self._on_menu_show_path)
         # w.set_on_menu_item_activated(self.MENU_SHOW_VIEWPOINT,
@@ -355,6 +382,84 @@ class GUIClient():
         # w.set_on_menu_item_activated(
         #     self.MENU_ABOUT, self._on_menu_about)
         # ----
+
+    def _on_menu_show_mesh(self):
+        show = not gui.Application.instance.menubar.is_checked(self.MENU_SHOW_MESH)
+        self.show_mesh(show)
+
+    def _on_menu_show_point_cloud(self):
+        show = not gui.Application.instance.menubar.is_checked(self.MENU_SHOW_POINT_CLOUD)
+        self.show_point_cloud(show)
+
+    def _on_menu_show_curvatures(self):
+        show = not gui.Application.instance.menubar.is_checked(self.MENU_SHOW_CURVATURES)
+        self.show_curvatures(show)
+        
+    def _on_menu_show_regions(self):
+        show = not gui.Application.instance.menubar.is_checked(self.MENU_SHOW_REGIONS)
+        self.show_regions(show)
+        
+    def _on_menu_show_fov_clusters(self):
+        show = not gui.Application.instance.menubar.is_checked(self.MENU_SHOW_FOV_CLUSTERS)
+        self.show_fov_clusters(show)
+
+    def _on_menu_show_noise_points(self):
+        show = not gui.Application.instance.menubar.is_checked(self.MENU_SHOW_NOISE_POINTS)
+        self.show_noise_points(show)
+
+    def show_mesh(self, show=True):
+        # Show/hide mesh.
+        self.scene_widget.scene.show_geometry('mesh', show)
+
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_MESH, show)
+
+    def show_point_cloud(self, show=True):
+        # Show/hide original point cloud. Hide curvatures, regions, and noise points if true.
+        self.scene_widget.scene.show_geometry('point_cloud', show)
+        if show:
+            self.show_curvatures(False)
+            self.show_regions(False)
+            self.show_noise_points(False)
+
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_POINT_CLOUD, show)
+
+    def show_curvatures(self, show=True):
+        # Show/hide curvatures. If showing, hide regions and noise points.
+        self.scene_widget.scene.show_geometry('curvatures', show)
+        if show:
+            self.show_point_cloud(False)
+            self.show_regions(False)
+            self.show_noise_points(False)
+
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_CURVATURES, show)
+
+    def show_regions(self, show=True):
+        self.scene_widget.scene.show_geometry('regions', show)
+        if show:
+            self.show_point_cloud(False)
+            self.show_curvatures(False)
+            self.show_noise_points(True)
+
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_REGIONS, show)
+
+    def show_fov_clusters(self, show=True):
+        self.scene_widget.scene.show_geometry('fov_clusters', show)
+        if show:
+            self.show_point_cloud(False)
+            self.show_curvatures(False)
+            self.show_regions(False)
+        
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_FOV_CLUSTERS, show)
+
+    def show_noise_points(self, show=True):
+        self.scene_widget.scene.show_geometry('noise_points', show)
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_NOISE_POINTS, show)
 
     def init_gui(self):
         """Initialize the Open3D GUI"""
@@ -825,6 +930,12 @@ class GUIClient():
                                 self.import_curvature(param_value)
                             elif 'regions.file' in param_name:
                                 self.import_regions(param_value)
+                            elif 'model.camera.fov.height' in param_name:
+                                self.camera_fov_height = param_value
+                                self.camera_updated = True
+                            elif 'model.camera.fov.width' in param_name:
+                                self.camera_fov_width = param_value
+                                self.camera_updated = True
 
                             # Turn update flag off after updating
                             value['update_flag'] = False
@@ -878,6 +989,14 @@ class GUIClient():
                 bb = mesh.get_axis_aligned_bounding_box()
                 self.scene_widget.look_at(
                     bb.get_center(), bb.get_max_bound() * 1.5, np.array([0, 0, 1]))
+
+                self.show_mesh(True)
+                self.show_point_cloud(False)
+                self.show_curvatures(False)
+                self.show_regions(False)
+                self.show_fov_clusters(False)
+                self.show_noise_points(False)
+
         except Exception as e:
             print(f"Error loading mesh from {file_path}: {e}")
 
@@ -901,6 +1020,8 @@ class GUIClient():
 
                 # Remove previous point cloud if exists
                 self.scene_widget.scene.remove_geometry("point_cloud")
+                self.scene_widget.scene.remove_geometry("curvatures")
+                self.scene_widget.scene.remove_geometry("regions")
                 self.scene_widget.scene.remove_geometry("fov_clusters")
                 self.scene_widget.scene.remove_geometry("noise_points")
                 self.scene_widget.scene.add_geometry(
@@ -908,11 +1029,14 @@ class GUIClient():
 
             self.point_cloud = point_cloud  # Store the point cloud for later use
 
+            self.show_point_cloud(True)
+
         except Exception as e:
             print(f"Error loading point cloud from {file_path}: {e}")
 
     def import_curvature(self, file_path):
         """ Load curvature data from file and color point cloud based on curvature data"""
+        curvatures_cloud = copy.deepcopy(self.point_cloud)
         try:
             curvature = np.load(file_path)
 
@@ -928,20 +1052,24 @@ class GUIClient():
                 val = 1 - normalized_curvature[i]
                 # color = np.array(list(cmap(val)))[0, 0:3]  # Get RGB values
                 color = np.array(list(cmap(val)))[0:3]
-                np.asarray(self.point_cloud.colors)[i] = color
+                np.asarray(curvatures_cloud.colors)[i] = color
 
             # Remove previous point cloud if exists
-            self.scene_widget.scene.remove_geometry("point_cloud")
+            self.scene_widget.scene.remove_geometry("curvatures")
+            self.scene_widget.scene.remove_geometry("regions")
             self.scene_widget.scene.remove_geometry("fov_clusters")
             self.scene_widget.scene.remove_geometry("noise_points")
             self.scene_widget.scene.add_geometry(
-                "point_cloud", self.point_cloud, Materials.point_cloud_material)
+                "curvatures", curvatures_cloud, Materials.point_cloud_material)
+
+            self.show_curvatures(True)
 
         except Exception as e:
             print(f"Error loading curvature data from {file_path}: {e}")
 
     def import_regions(self, file_path):
         """ Load regions from file and paint point cloud based on regions """
+        regions_cloud = copy.deepcopy(self.point_cloud)
         try:
 
             self.point_cloud.paint_uniform_color((1, 1, 1))
@@ -955,9 +1083,9 @@ class GUIClient():
             for region, dict in regions_dict['regions'].items():
                 region_indices = dict['points']
                 region_point_cloud = self.point_cloud.select_by_index(region_indices)
-
                 region_color = np.random.rand(3)
-                # If dict has 'fov_clusters' key
+
+                # If dict has 'fov_clusters' key, process and display them
                 if 'fov_clusters' in dict:
                     show_clusters = True
                     # Iterate over each cluster in fov_clusters
@@ -977,36 +1105,40 @@ class GUIClient():
                         fov_mesh.translate(avg_normal * 0.005)
 
                         fov_meshes += fov_mesh
-
                 else:
                     show_clusters = False
-                    # If no fov_clusters, use points directly
-                    for point_idx in region_indices:
-                        colors[point_idx] = region_color
+                    region_point_cloud.paint_uniform_color(region_color)
+                    regions_cloud += region_point_cloud
 
-                    for point_idx in regions_dict['noise_points']:
-                        colors[point_idx] = [0.5, 0.5, 0.5]
-
-                    self.point_cloud.colors = o3d.utility.Vector3dVector(colors)
-
-            if show_clusters:
-                noise_point_cloud = self.point_cloud.select_by_index(regions_dict['noise_points'])
+            if not show_clusters:
+                # Create noise point cloud
+                noise_points = regions_dict['noise_points']
+                noise_point_cloud = self.point_cloud.select_by_index(noise_points)
                 noise_point_cloud.paint_uniform_color([1.0, 0.0, 0.0])  # Red for noise points
 
-            # self.scene_widget.scene.add_geometry(
-            #     "point_cloud", self.point_cloud, Materials.point_cloud_material)
-            self.scene_widget.scene.remove_geometry("point_cloud")
-            self.scene_widget.scene.remove_geometry("fov_clusters")
-            self.scene_widget.scene.remove_geometry("noise_points")
+
             if show_clusters:
+                self.show_regions(False)
+                self.show_noise_points(False)
                 self.scene_widget.scene.add_geometry(
                     f"fov_clusters",
                     fov_meshes, Materials.fov_cluster_material)
+                
+                self.show_fov_clusters(True)
+
+            else:
+                noise_point_cloud = self.point_cloud.select_by_index(regions_dict['noise_points'])
+                noise_point_cloud.paint_uniform_color([1.0, 0.0, 0.0])  # Red for noise points
+
+                self.scene_widget.scene.remove_geometry("regions")
+                self.scene_widget.scene.remove_geometry("fov_clusters")
+                self.scene_widget.scene.remove_geometry("noise_points")
+                self.scene_widget.scene.add_geometry(
+                    "regions", regions_cloud, Materials.point_cloud_material)
                 self.scene_widget.scene.add_geometry(
                     "noise_points", noise_point_cloud, Materials.point_cloud_material)
-            else:
-                self.scene_widget.scene.add_geometry(
-                    "point_cloud", self.point_cloud, Materials.point_cloud_material)
+
+                self.show_regions(True)
 
             print(
                 f"Loaded regions from {file_path} and updated point cloud colors")
@@ -1087,6 +1219,11 @@ class GUIClient():
         # Get camera info
         camera = self.scene_widget.scene.camera
         view_matrix = camera.get_view_matrix()
+        # Check if view_matrix has changed
+        if np.array_equal(view_matrix, self.current_view_matrix):
+            return {'hit': False}
+
+        self.current_view_matrix = view_matrix
         inv_view_matrix = np.linalg.inv(view_matrix)
         
         camera_position = inv_view_matrix[:3, 3]
@@ -1108,6 +1245,7 @@ class GUIClient():
             t = result['t_hit'][0].item()
             if t < np.inf:
                 intersection_point = camera_position + t * camera_forward
+                self.last_intersection_point = intersection_point 
                 return {'point': intersection_point, 'distance': t, 'hit': True}
         
         return {'hit': False}
@@ -1115,14 +1253,23 @@ class GUIClient():
     def add_cylinder_pointing_at_camera_simple(self, intersection_result, cylinder_name="ray_cylinder"):
         """Simple version using Open3D's align_vector_to_vector"""
         
-        if not intersection_result['hit']:
+        if not (intersection_result['hit'] or self.camera_updated):
             return False
+
+        self.camera_updated = False
         
         scene = self.scene_widget.scene
         camera = scene.camera
         
         # Get intersection point and camera position
-        intersection_point = intersection_result['point']
+        if not intersection_result['hit']:
+            # If no intersection, use the last intersection point
+            if hasattr(self, 'last_intersection_point'):
+                intersection_point = self.last_intersection_point
+            else:
+                return False
+        else:
+            intersection_point = intersection_result['point']
         view_matrix = camera.get_view_matrix()
         inv_view_matrix = np.linalg.inv(view_matrix)
         camera_position = inv_view_matrix[:3, 3]
@@ -1133,12 +1280,17 @@ class GUIClient():
         
         # Create cylinder
         height = 5.0
-        cylinder = o3d.geometry.TriangleMesh.create_cylinder(radius=10.0, height=2*height)
+        camera_radius = min(self.camera_fov_width, self.camera_fov_height) / 2.0
+        # Create a cylinder with the specified radius and height
+        cylinder = o3d.geometry.TriangleMesh.create_cylinder(radius=1000*camera_radius, height=2*height)
         # Crop top and bottom of cylinder
         cylinder = cylinder.crop(o3d.geometry.AxisAlignedBoundingBox(
             min_bound=(-20, -20, -height/2),
             max_bound=(20, 20, height/2)
         ))
+        # Scale down along z-axis and translate up by height/2
+        # cylinder.scale(0.1, center=(0, 0, 0))
+        # cylinder.translate((0, 0, height/2))
         reticle = o3d.geometry.TriangleMesh.create_sphere(radius=1)
         cylinder += reticle
         
@@ -1176,15 +1328,10 @@ class GUIClient():
         cylinder.translate(intersection_point)
         
         # Color and add to scene
-        cylinder.paint_uniform_color([0.0, 1.0, 0.0])  # Green
         cylinder.compute_vertex_normals()
         
-        material = Materials.mesh_material
-        material.shader = "defaultUnlit"
-        material.base_color = [0.0, 1.0, 0.0, 1.0]
-        
         scene.remove_geometry(cylinder_name)  # Remove previous cylinder if exists
-        scene.add_geometry(cylinder_name, cylinder, material)
+        scene.add_geometry(cylinder_name, cylinder, Materials.fov_material)
         return True
 
     def set_mouse_orbit_center_to_intersection(self, intersection_result):

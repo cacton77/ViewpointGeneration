@@ -16,7 +16,7 @@ class Materials:
     point_cloud_material = rendering.MaterialRecord()
     point_cloud_material.shader = "defaultUnlit"
     point_cloud_material.point_size = 10.0
-    point_cloud_material.base_color = [1.0, 1.0, 1.0, 1.0]
+    point_cloud_material.base_color = [0.7, 0.7, 0.7, 1.0]
 
     curvature_colormap = 'RdYlGn'
     regions_colormap = 'plasma'
@@ -24,4 +24,8 @@ class Materials:
     fov_cluster_material = rendering.MaterialRecord()
     fov_cluster_material.shader = "defaultUnlit"
     fov_cluster_material.base_color = [1.0, 1.0, 1.0, 1.0]
+
+    fov_material = rendering.MaterialRecord()
+    fov_material.shader = "defaultUnlit"
+    fov_material.base_color = [1.0, 1.0, 1.0, 1.0]
     

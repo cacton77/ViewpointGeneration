@@ -36,9 +36,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('model.point_cloud.units', 'm'),
                 ('model.point_cloud.sampling.ppsqmm', 1.),
                 ('model.point_cloud.sampling.number_of_points', 100000),
+                ('model.camera.fov.width', 0.02),
+                ('model.camera.fov.height', 0.03),
+                ('model.camera.dof', 0.02),
+                ('model.camera.focal_distance', 0.35),
+                ('regions.file', ''),
                 ('regions.region_growth.curvature.knn_neighbors', 30),
                 ('regions.region_growth.curvature.file', ''),
-                ('regions.file', ''),
                 ('regions.region_growth.seed_threshold', 15.0),
                 ('regions.region_growth.min_cluster_size', 10),
                 ('regions.region_growth.max_cluster_size', 100000),
@@ -53,10 +57,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('regions.fov_clustering.k-means.maximum_iterations', 100),
                 ('viewpoints.nothing', ''),
                 ('traversal.nothing', ''),
-                ('camera.fov.width', 0.02),
-                ('camera.fov.height', 0.03),
-                ('camera.dof', 0.02),
-                ('camera.focal_distance', 0.35),
                 ('settings.cuda_enabled', False)
             ]
         )
@@ -88,13 +88,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.set_max_cluster_size(self.get_parameter(
             'regions.region_growth.max_cluster_size').get_parameter_value().integer_value)
         self.partitioner.fov_width = self.get_parameter(
-            'camera.fov.width').get_parameter_value().double_value
+            'model.camera.fov.width').get_parameter_value().double_value
         self.partitioner.fov_height = self.get_parameter(
-            'camera.fov.height').get_parameter_value().double_value
+            'model.camera.fov.height').get_parameter_value().double_value
         self.partitioner.dof = self.get_parameter(
-            'camera.dof').get_parameter_value().double_value
+            'model.camera.dof').get_parameter_value().double_value
         self.partitioner.focal_distance = self.get_parameter(
-            'camera.focal_distance').get_parameter_value().double_value
+            'model.camera.focal_distance').get_parameter_value().double_value
         self.partitioner.cuda_enabled = self.get_parameter(
             'settings.cuda_enabled').get_parameter_value().bool_value
 
@@ -571,6 +571,17 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         return response
 
+    def set_camera_parameters(self, fov_width, fov_height, dof, focal_distance):
+        success, message = self.partitioner.set_camera_parameters(
+            fov_width, fov_height, dof, focal_distance)
+
+        if not success:
+            self.get_logger().error(message)
+            return False
+        else:
+            self.get_logger().info(message)
+            return True
+
     def fov_clustering_callback(self, request, response):
         """
         Callback for the FOV clustering service.
@@ -664,14 +675,62 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     param.value)
             elif param.name == 'regions.region_growth.normal_angle_threshold':
                 success = self.set_normal_angle_threshold(param.value)
-            elif param.name == 'camera.fov.height':
-                self.partitioner.fov_height = param.value
-            elif param.name == 'camera.fov.width':
-                self.partitioner.fov_width = param.value
-            elif param.name == 'camera.dof':
-                self.partitioner.dof = param.value
-            elif param.name == 'camera.focal_distance':
-                self.partitioner.focal_distance = param.value
+            elif param.name == 'model.camera.fov.height':
+                fov_height = param.value
+                fov_width = self.get_parameter(
+                    'model.camera.fov.width').get_parameter_value().double_value
+                dof = self.get_parameter(
+                    'model.camera.dof').get_parameter_value().double_value
+                focal_distance = self.get_parameter(
+                    'model.camera.focal_distance').get_parameter_value().double_value
+                self.set_camera_parameters(
+                    fov_height=fov_height,
+                    fov_width=fov_width,
+                    dof=dof,
+                    focal_distance=focal_distance
+                )
+            elif param.name == 'model.camera.fov.width':
+                fov_height = self.get_parameter(
+                    'model.camera.fov.height').get_parameter_value().double_value
+                fov_width = param.value
+                dof = self.get_parameter(
+                    'model.camera.dof').get_parameter_value().double_value
+                focal_distance = self.get_parameter(
+                    'model.camera.focal_distance').get_parameter_value().double_value
+                self.set_camera_parameters(
+                    fov_height=fov_height,
+                    fov_width=fov_width,
+                    dof=dof,
+                    focal_distance=focal_distance
+                )
+            elif param.name == 'model.camera.dof':
+                fov_height = self.get_parameter(
+                    'model.camera.fov.height').get_parameter_value().double_value
+                fov_width = self.get_parameter(
+                    'model.camera.fov.width').get_parameter_value().double_value
+                dof = param.value
+                focal_distance = self.get_parameter(
+                    'model.camera.focal_distance').get_parameter_value().double_value
+                self.set_camera_parameters(
+                    fov_height=fov_height,
+                    fov_width=fov_width,
+                    dof=dof,
+                    focal_distance=focal_distance
+                )
+            elif param.name == 'model.camera.focal_distance':
+                fov_height = self.get_parameter(
+                    'model.camera.fov.height').get_parameter_value().double_value
+                fov_width = self.get_parameter(
+                    'model.camera.fov.width').get_parameter_value().double_value
+                dof = self.get_parameter(
+                    'model.camera.dof').get_parameter_value().double_value
+                focal_distance = param.value
+                self.set_camera_parameters(
+                    fov_height=fov_height,
+                    fov_width=fov_width,
+                    dof=dof,
+                    focal_distance=focal_distance
+                )
             elif param.name == 'settings.cuda_enabled':
                 success = self.enable_cuda_callback(param.value)
 

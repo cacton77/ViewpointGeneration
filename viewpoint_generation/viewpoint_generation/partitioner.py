@@ -317,6 +317,30 @@ class Partitioner():
 
         return True, f'Region growth curvature threshold set to {100*curvature_threshold} percent.'
 
+    def set_camera_parameters(self, fov_height, fov_width, dof, focal_distance):
+        """
+        Set the camera parameters for FOV clustering.
+        Args:
+            fov_height (float): Height of the field of view in meters.
+            fov_width (float): Width of the field of view in meters.
+            dof (float): Depth of field in meters.
+            focal_distance (float): Focal distance in meters.
+        Returns:
+            bool: True if the camera parameters were set successfully, False otherwise.
+        """
+        if fov_height <= 0 or fov_width <= 0 or dof <= 0 or focal_distance <= 0:
+            return False, 'FOV height, width, DOF and focal distance must be greater than 0.'
+
+        self.fovc_config.fov_height = fov_height
+        self.fovc_config.fov_width = fov_width
+        self.fovc_config.dof = dof
+
+        self.fovc.config = self.fovc_config
+
+        # TODO: Set viewpoint generation config parameter focal_distance
+
+        return True, f'Camera parameters set to FOV height: {fov_height} m, FOV width: {fov_width} m, DOF: {dof} m.'
+
     def estimate_curvature(self):
         """ Estimate the curvature of the point cloud using the nearest neighbors. """
 
