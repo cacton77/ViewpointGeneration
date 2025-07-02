@@ -69,6 +69,10 @@ class ROSThread(Node):
                                                         f'{self.target_node_name}/fov_clustering',
                                                         callback_group=services_cb_group
                                                         )
+        self.viewpoint_projection_client = self.create_client(Trigger,
+                                                              f'{self.target_node_name}/viewpoint_projection',
+                                                              callback_group=services_cb_group
+                                                              )
 
         # Wait for services to be available
         self.wait_for_services()
@@ -95,8 +99,6 @@ class ROSThread(Node):
                 f'Waiting for {self.target_node_name}/set_parameters service...')
 
         self.get_logger().info('All parameter services are available!')
-
-
 
     def sample_point_cloud(self):
         """Trigger the sampling service"""
@@ -168,7 +170,7 @@ class ROSThread(Node):
         request = Trigger.Request()
         future = self.fov_clustering_client.call_async(request)
         future.add_done_callback(self.fov_clustering_future_callback)
-        
+
     def fov_clustering_future_callback(self, future):
         """Callback for the FOV clustering service future"""
         if future.result() is not None:
@@ -178,7 +180,27 @@ class ROSThread(Node):
         else:
             self.get_logger().error('Failed to trigger FOV clustering')
             return False
-        
+
+    def project_viewpoints(self):
+        """Trigger the viewpoint projection service"""
+        if not self.viewpoint_projection_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().error('Viewpoint projection service not available')
+            return False
+
+        request = Trigger.Request()
+        future = self.viewpoint_projection_client.call_async(request)
+        future.add_done_callback(self.project_viewpoints_future_callback)
+
+    def project_viewpoints_future_callback(self, future):
+        """Callback for the viewpoint projection service future"""
+        if future.result() is not None:
+            self.get_logger().info('Viewpoint projection triggered successfully')
+            self.get_all_parameters()
+            return True
+        else:
+            self.get_logger().error('Failed to trigger viewpoint projection')
+            return False
+
     def expand_dict_keys(self):
         """
         Expand a flat dictionary with period-delimited keys into a nested dictionary structure.
@@ -307,7 +329,7 @@ class ROSThread(Node):
 
                 param_value = self.extract_parameter_value(value)
 
-                # If name is model.mesh.file and starts with 'package://', replace it with the package path
+                # If param name ends in '.file' and starts with 'package://', replace it with the package path
                 if name.endswith('.file') and isinstance(param_value, str) and param_value.startswith('package://'):
                     package_name, relative_path = param_value.split(
                         'package://', 1)[1].split('/', 1)
@@ -318,7 +340,7 @@ class ROSThread(Node):
                 if name in self.parameters_dict:
                     update_flag = self.parameters_dict[name]['value'] != param_value
                     # self.get_logger().info(
-                        # f'Parameter {name} updated: {update_flag} (old: \'{self.parameters_dict[name]["value"]}\', new: \'{param_value}\')')
+                    # f'Parameter {name} updated: {update_flag} (old: \'{self.parameters_dict[name]["value"]}\', new: \'{param_value}\')')
                 else:
                     update_flag = True
 
@@ -380,6 +402,7 @@ class ROSThread(Node):
             self.get_logger().info(f"Name: {info['name']}")
             self.get_logger().info(f"Type: {info['type']}")
             self.get_logger().info(f"Value: {info['value']}")
+            self.get_logger().info(f"Update: {info['update_flag']}")
             self.get_logger().info('-' * 30)
 
     def set_parameter(self, param_name, new_value):

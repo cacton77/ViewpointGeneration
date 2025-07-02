@@ -13,9 +13,14 @@ class Materials:
     mesh_material.shader = "defaultLit"
     mesh_material.base_color = [0.1, 0.1, 0.1, 1.0]
 
+    bounding_box_material = rendering.MaterialRecord()
+    bounding_box_material.shader = "defaultUnlit"
+    bounding_box_material.base_color = [0.8, 0.8, 0.8, 1.0]
+    bounding_box_material.line_width = 2.0
+
     point_cloud_material = rendering.MaterialRecord()
     point_cloud_material.shader = "defaultUnlit"
-    point_cloud_material.point_size = 10.0
+    point_cloud_material.point_size = 7.0
     point_cloud_material.base_color = [0.7, 0.7, 0.7, 1.0]
 
     curvature_colormap = 'RdYlGn'
@@ -28,4 +33,3 @@ class Materials:
     fov_material = rendering.MaterialRecord()
     fov_material.shader = "defaultUnlit"
     fov_material.base_color = [1.0, 1.0, 1.0, 1.0]
-    

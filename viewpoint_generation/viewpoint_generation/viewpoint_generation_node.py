@@ -56,6 +56,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('regions.fov_clustering.k-means.number_of_runs', 10),
                 ('regions.fov_clustering.k-means.maximum_iterations', 100),
                 ('viewpoints.traversal', ''),
+                ('viewpoints.projection.nothing', ''),
                 ('settings.cuda_enabled', False)
             ]
         )
@@ -80,6 +81,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
             'regions.region_growth.curvature.knn_neighbors').get_parameter_value().integer_value)
         self.set_curvature_file(self.get_parameter(
             'regions.region_growth.curvature.file').get_parameter_value().string_value)
+        self.set_regions_file(self.get_parameter(
+            'regions.file').get_parameter_value().string_value)
         self.set_seed_threshold(self.get_parameter(
             'regions.region_growth.seed_threshold').get_parameter_value().double_value)
         self.set_min_cluster_size(self.get_parameter(
@@ -111,6 +114,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # FOV Clustering Service
         self.create_service(Trigger, node_name + '/fov_clustering',
                             self.fov_clustering_callback)
+        # Viewpoint Projection Service
+        self.create_service(Trigger, node_name + '/viewpoint_projection',
+                            self.viewpoint_projection_callback)
 
         # Action Server
         # self._action_server = ActionServer(
@@ -220,13 +226,15 @@ class ViewpointGenerationNode(rclpy.node.Node):
             return False
         else:
             self.get_logger().info(message)
-            # Clear the curvature file and regions file parameters
-            curvature_file_param = rclpy.parameter.Parameter(
-                'regions.region_growth.curvature.file',
-                rclpy.Parameter.Type.STRING,
-                ''
-            )
-            self.set_parameters([curvature_file_param])
+
+            if self.initialized:
+                # Clear the curvature file parameter
+                curvature_file_param = rclpy.parameter.Parameter(
+                    'regions.region_growth.curvature.file',
+                    rclpy.Parameter.Type.STRING,
+                    ''
+                )
+                self.set_parameters([curvature_file_param])
 
             return True
 
@@ -245,7 +253,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
             curvature_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
 
-        success, message = self.viewpoint_generation.set_curvature_file(curvature_file)
+        success, message = self.viewpoint_generation.set_curvature_file(
+            curvature_file)
 
         if not success:
             self.get_logger().error(message)
@@ -269,6 +278,40 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     ''
                 )
                 self.set_parameters([regions_file_param])
+
+            return True
+
+    def set_regions_file(self, regions_file):
+        """
+        Helper function to set the regions file for the partitioner.
+        :param regions_file: The path to the regions file.
+        :return: None
+        """
+
+        # If regions_file begins with "package://package_name", replace it with the path to the package
+        if regions_file.startswith('package://'):
+            package_name, relative_path = regions_file.split(
+                'package://')[1].split('/', 1)
+            package_path = get_package_prefix(package_name)
+            regions_file = os.path.join(
+                package_path, 'share', package_name, relative_path)
+
+        success, message = self.viewpoint_generation.set_regions_file(
+            regions_file)
+
+        if not success:
+            self.get_logger().error(message)
+
+            regions_file_param = rclpy.parameter.Parameter(
+                'regions.file',
+                rclpy.Parameter.Type.STRING,
+                ''
+            )
+            self.set_parameters([regions_file_param])
+
+            return False
+        else:
+            self.get_logger().info(message)
 
             return True
 
@@ -440,7 +483,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: True if successful, False otherwise.
         """
 
-        success, message = self.viewpoint_generation.set_seed_threshold(seed_threshold)
+        success, message = self.viewpoint_generation.set_seed_threshold(
+            seed_threshold)
 
         if not success:
             self.get_logger().error(message)
@@ -616,6 +660,38 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         return response
 
+    def viewpoint_projection_callback(self, request, response):
+        """
+        Callback for the viewpoint projection service.
+        :param request: The request object.
+        :param response: The response object.
+        :return: The response object.
+            success (bool): True if viewpoint projection was successful, False otherwise.
+            message (str): Returns the file path of the projected viewpoints if successful, or an error message if not.
+        """
+        self.get_logger().info('Projecting viewpoints...')
+
+        success, message = self.viewpoint_generation.project_viewpoints()
+
+        if success:
+            self.get_logger().info(
+                f"Viewpoint projection completed successfully. Viewpoints file: {message}")
+            # Set the viewpoints file parameter with the projected viewpoints file
+            # Set the regions file parameter with the FOV clustering result
+            regions_file_param = rclpy.parameter.Parameter(
+                'regions.file',
+                rclpy.Parameter.Type.STRING,
+                message
+            )
+            self.set_parameters([regions_file_param])
+        else:
+            self.get_logger().error("Viewpoint projection failed.")
+
+        response.success = success
+        response.message = message
+
+        return response
+
     def execute_callback(self, goal_handle):
         self.get_logger().info('Executing goal...')
 
@@ -665,6 +741,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 success = self.set_sampling_ppsqmm(param.value)
             elif param.name == 'model.point_cloud.sampling.number_of_points':
                 success = self.set_sampling_number_of_points(param.value)
+            elif param.name == 'regions.file':
+                success = self.set_regions_file(param.value)
             elif param.name == 'regions.region_growth.curvature.knn_neighbors':
                 success = self.set_knn_neighbors(param.value)
             elif param.name == 'regions.region_growth.curvature.file':

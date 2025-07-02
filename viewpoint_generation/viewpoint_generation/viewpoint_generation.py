@@ -426,11 +426,32 @@ class ViewpointGeneration():
             return True, 'Curvature file cleared.'
 
         if not os.path.exists(curvature_file):
-            return False, f'Curvature file does not exist: {curvature_file}'
+            return False, f'Curvature file does not exist: \'{curvature_file}\'.'
 
         self.curvatures = np.load(curvature_file)
 
-        return True, f'Curvature file set to {curvature_file}.'
+        return True, f'Curvature file set to \'{curvature_file}\'.'
+
+    def set_regions_file(self, regions_file):
+        """
+        Set the regions file to be used for region growing.
+        Args:
+            regions_file (str): Path to the regions file.
+        Returns:
+            bool: True if the regions file was set successfully, False otherwise.
+        """
+        if regions_file == '':
+            self.regions_file = None
+            self.regions_dict = None
+            return True, 'Regions file cleared.'
+
+        if not os.path.exists(regions_file):
+            return False, f'Regions file does not exist: \'{regions_file}\'.'
+
+        with open(regions_file, 'r') as f:
+            self.regions_dict = json.load(f)
+
+        return True, f'Regions file set to \'{regions_file}\'.'
 
     def region_growth(self):
         if self.curvatures_file is None:
@@ -441,7 +462,7 @@ class ViewpointGeneration():
         clusters, noise_points = self.rg.segment(self.point_cloud)
 
         for i, cluster in enumerate(clusters):
-            regions_dict['regions'][i] = {'points': cluster, 'viewpoint': None}
+            regions_dict['regions'][i] = {'points': cluster}
             regions_dict['noise_points'] = noise_points
 
         self.regions_file = self.save_regions_dict(regions_dict)
@@ -492,6 +513,34 @@ class ViewpointGeneration():
                 self.regions_dict['regions'][region_id]['fov_clusters'][i] = {
                     'points': fov_cluster}
 
+        self.regions_file = self.save_regions_dict(self.regions_dict)
+
+        return True, self.regions_file
+
+    def project_viewpoints(self):
+        """
+        Project viewpoints for each FOV cluster in the regions.
+        Returns:
+            bool: True if viewpoint projection was successful, False otherwise.
+        """
+        if self.regions_file is None:
+            return False, 'No region file loaded. Please run region growth first.'
+
+        # Iterate through regions in the region dictionary
+        for region_id, region in self.regions_dict['regions'].items():
+            if 'fov_clusters' not in region:
+                continue
+
+            for fov_cluster_id, fov_cluster in region['fov_clusters'].items():
+                fov_points = self.point_cloud.select_by_index(
+                    fov_cluster['points'])
+                # Project viewpoint for the FOV cluster
+                viewpoint = self.vp.project(
+                    np.asarray(fov_points.points), np.asarray(fov_points.normals)).tolist()
+                # Store the viewpoint in the region dictionary
+                self.regions_dict['regions'][region_id]['fov_clusters'][fov_cluster_id]['viewpoint'] = viewpoint
+
+        # Save the updated regions dictionary with viewpoints
         self.regions_file = self.save_regions_dict(self.regions_dict)
 
         return True, self.regions_file
