@@ -5,12 +5,12 @@ import rclpy.node
 import numpy as np
 import open3d as o3d
 from rclpy.action import ActionServer
-from viewpoint_generation.viewpoint_generation.viewpoint_generation import ViewpointGeneration
+from viewpoint_generation.viewpoint_generation import ViewpointGeneration
 from rcl_interfaces.msg import SetParametersResult
 from ament_index_python.packages import get_package_prefix
 
 from std_srvs.srv import Trigger
-from viewpoint_generation_interfaces.action import ViewpointGeneration
+# from viewpoint_generation_interfaces.action import ViewpointGeneration
 
 from moveit.planning import MoveItPy
 
@@ -55,7 +55,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('regions.fov_clustering.k-means.normal_weight', 1.0),
                 ('regions.fov_clustering.k-means.number_of_runs', 10),
                 ('regions.fov_clustering.k-means.maximum_iterations', 100),
-                ('viewpoints.traversal', '')
+                ('viewpoints.traversal', ''),
                 ('settings.cuda_enabled', False)
             ]
         )
@@ -65,7 +65,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # self.planning_scene_monitor = self.moveit_py.get_planning_scene_monitor()
 
         # Viewpoint Generation Helpers
-        self.partitioner = Partitioner()
+        self.viewpoint_generation = ViewpointGeneration()
 
         self.set_mesh_file(self.get_parameter('model.mesh.file').get_parameter_value().string_value,
                            self.get_parameter('model.mesh.units').get_parameter_value().string_value)
@@ -86,15 +86,15 @@ class ViewpointGenerationNode(rclpy.node.Node):
             'regions.region_growth.min_cluster_size').get_parameter_value().integer_value)
         self.set_max_cluster_size(self.get_parameter(
             'regions.region_growth.max_cluster_size').get_parameter_value().integer_value)
-        self.partitioner.fov_width = self.get_parameter(
+        self.viewpoint_generation.fov_width = self.get_parameter(
             'model.camera.fov.width').get_parameter_value().double_value
-        self.partitioner.fov_height = self.get_parameter(
+        self.viewpoint_generation.fov_height = self.get_parameter(
             'model.camera.fov.height').get_parameter_value().double_value
-        self.partitioner.dof = self.get_parameter(
+        self.viewpoint_generation.dof = self.get_parameter(
             'model.camera.dof').get_parameter_value().double_value
-        self.partitioner.focal_distance = self.get_parameter(
+        self.viewpoint_generation.focal_distance = self.get_parameter(
             'model.camera.focal_distance').get_parameter_value().double_value
-        self.partitioner.cuda_enabled = self.get_parameter(
+        self.viewpoint_generation.cuda_enabled = self.get_parameter(
             'settings.cuda_enabled').get_parameter_value().bool_value
 
         self.add_on_set_parameters_callback(self.parameter_callback)
@@ -113,11 +113,11 @@ class ViewpointGenerationNode(rclpy.node.Node):
                             self.fov_clustering_callback)
 
         # Action Server
-        self._action_server = ActionServer(
-            self,
-            ViewpointGeneration,
-            'viewpoint_generation',
-            self.execute_callback)
+        # self._action_server = ActionServer(
+        #     self,
+        #     ViewpointGeneration,
+        #     'viewpoint_generation',
+        #     self.execute_callback)
 
         self.block_next_param_callback = False
         self.initialized = True
@@ -137,7 +137,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             mesh_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
 
-        success, message = self.partitioner.set_mesh_file(
+        success, message = self.viewpoint_generation.set_mesh_file(
             mesh_file, mesh_units)
 
         if not success:
@@ -204,7 +204,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             point_cloud_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
 
-        success, message = self.partitioner.set_point_cloud_file(
+        success, message = self.viewpoint_generation.set_point_cloud_file(
             point_cloud_file, point_cloud_units)
 
         if not success:
@@ -245,7 +245,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             curvature_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
 
-        success, message = self.partitioner.set_curvature_file(curvature_file)
+        success, message = self.viewpoint_generation.set_curvature_file(curvature_file)
 
         if not success:
             self.get_logger().error(message)
@@ -279,7 +279,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: True if successful, False otherwise.
         """
 
-        success = self.partitioner.enable_cuda(enable)
+        success = self.viewpoint_generation.enable_cuda(enable)
 
         if not success:
             self.get_logger().error(
@@ -306,7 +306,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             return False
 
-        success, N_points = self.partitioner.set_ppsqmm(ppsqmm)
+        success, N_points = self.viewpoint_generation.set_ppsqmm(ppsqmm)
 
         if not success:
             self.get_logger().error(
@@ -339,7 +339,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             return False
 
-        success, ppsqmm = self.partitioner.set_sampling_number_of_points(
+        success, ppsqmm = self.viewpoint_generation.set_sampling_number_of_points(
             number_of_points)
 
         if not success:
@@ -371,7 +371,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         self.get_logger().info('Sampling point cloud...')
 
-        success, message = self.partitioner.sample_point_cloud()
+        success, message = self.viewpoint_generation.sample_point_cloud()
 
         if success:
             self.get_logger().info(
@@ -379,7 +379,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
             # Set the point cloud of the partitioner
             pcd_file = message
-            success, message = self.partitioner.set_point_cloud_file(
+            success, message = self.viewpoint_generation.set_point_cloud_file(
                 pcd_file, 'm')
 
             # Update the point cloud units to meters
@@ -416,7 +416,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: True if successful, False otherwise.
         """
 
-        success, message = self.partitioner.set_knn_neighbors(
+        success, message = self.viewpoint_generation.set_knn_neighbors(
             number_of_neighbors)
 
         if not success:
@@ -440,7 +440,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: True if successful, False otherwise.
         """
 
-        success, message = self.partitioner.set_seed_threshold(seed_threshold)
+        success, message = self.viewpoint_generation.set_seed_threshold(seed_threshold)
 
         if not success:
             self.get_logger().error(message)
@@ -456,7 +456,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: True if successful, False otherwise.
         """
 
-        success, message = self.partitioner.set_min_cluster_size(
+        success, message = self.viewpoint_generation.set_min_cluster_size(
             min_cluster_size)
 
         if not success:
@@ -473,7 +473,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: True if successful, False otherwise.
         """
 
-        success, message = self.partitioner.set_max_cluster_size(
+        success, message = self.viewpoint_generation.set_max_cluster_size(
             max_cluster_size)
 
         if not success:
@@ -490,7 +490,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: True if successful, False otherwise.
         """
 
-        success, message = self.partitioner.set_normal_angle_threshold(
+        success, message = self.viewpoint_generation.set_normal_angle_threshold(
             normal_angle_threshold)
 
         if not success:
@@ -507,7 +507,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: True if successful, False otherwise.
         """
 
-        success, message = self.partitioner.set_curvature_threshold(
+        success, message = self.viewpoint_generation.set_curvature_threshold(
             curvature_threshold)
 
         if not success:
@@ -528,7 +528,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         """
         self.get_logger().info('Estimating curvature...')
 
-        success, message = self.partitioner.estimate_curvature()
+        success, message = self.viewpoint_generation.estimate_curvature()
 
         if success:
             self.get_logger().info(
@@ -557,7 +557,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         """
         self.get_logger().info('Performing region growth...')
 
-        success, message = self.partitioner.region_growth()
+        success, message = self.viewpoint_generation.region_growth()
 
         if success:
             self.get_logger().info(
@@ -577,7 +577,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         return response
 
     def set_camera_parameters(self, fov_width, fov_height, dof, focal_distance):
-        success, message = self.partitioner.set_camera_parameters(
+        success, message = self.viewpoint_generation.set_camera_parameters(
             fov_width, fov_height, dof, focal_distance)
 
         if not success:
@@ -596,7 +596,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         """
         self.get_logger().info('Performing FOV clustering...')
 
-        success, message = self.partitioner.fov_clustering()
+        success, message = self.viewpoint_generation.fov_clustering()
 
         if success:
             self.get_logger().info(

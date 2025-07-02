@@ -421,6 +421,7 @@ class GUIClient():
             self.show_curvatures(False)
             self.show_regions(False)
             self.show_noise_points(False)
+            self.show_fov_clusters(False)
 
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_POINT_CLOUD, show)
@@ -442,6 +443,7 @@ class GUIClient():
             self.show_point_cloud(False)
             self.show_curvatures(False)
             self.show_noise_points(True)
+            self.show_fov_clusters(False)
 
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_REGIONS, show)

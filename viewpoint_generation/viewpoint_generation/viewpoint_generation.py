@@ -12,10 +12,10 @@ import open3d.visualization.rendering as rendering
 from matplotlib import colormaps
 from open3d.geometry import PointCloud, TriangleMesh
 
-from curvature import *
-from region_growth import *
-from fov_clustering import *
-from viewpoint_projection import *
+from viewpoint_generation.curvature import *
+from viewpoint_generation.region_growth import *
+from viewpoint_generation.fov_clustering import *
+from viewpoint_generation.viewpoint_projection import *
 
 
 class ViewpointGeneration():
