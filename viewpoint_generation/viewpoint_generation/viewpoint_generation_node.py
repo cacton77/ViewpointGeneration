@@ -653,7 +653,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             self.set_parameters([regions_file_param])
         else:
-            self.get_logger().error("FOV clustering failed.")
+            self.get_logger().error(f"FOV clustering failed: {message}")
 
         response.success = success
         response.message = message
@@ -685,7 +685,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             self.set_parameters([regions_file_param])
         else:
-            self.get_logger().error("Viewpoint projection failed.")
+            self.get_logger().error(f"Viewpoint projection failed: {message}")
 
         response.success = success
         response.message = message

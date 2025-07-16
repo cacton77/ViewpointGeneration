@@ -341,12 +341,13 @@ class ViewpointGeneration():
         self.fc_config.fov_height = fov_height
         self.fc_config.fov_width = fov_width
         self.fc_config.dof = dof
+        self.vp_config.focal_distance = focal_distance
 
         self.fc.config = self.fc_config
 
         # TODO: Set viewpoint generation config parameter focal_distance
 
-        return True, f'Camera parameters set to FOV height: {fov_height} m, FOV width: {fov_width} m, DOF: {dof} m.'
+        return True, f'Camera parameters set to FOV height: {fov_height} m, FOV width: {fov_width} m, DOF: {dof} m, focal distance: {focal_distance} m.'
 
     def estimate_curvature(self):
         """ Estimate the curvature of the point cloud using the nearest neighbors. """
@@ -451,6 +452,8 @@ class ViewpointGeneration():
         with open(regions_file, 'r') as f:
             self.regions_dict = json.load(f)
 
+        self.regions_file = regions_file
+
         return True, f'Regions file set to \'{regions_file}\'.'
 
     def region_growth(self):
@@ -472,10 +475,10 @@ class ViewpointGeneration():
 
     def save_regions_dict(self, regions_dict):
         # Save the regions to a json file named after the point cloud curvature file stripped of the  .npy extension
-        curvatures_dir = self.curvatures_file.rsplit('/', 1)[0]
-        curvatures_name = self.curvatures_file.rsplit(
+        point_cloud_dir = self.point_cloud_file.rsplit('/', 1)[0]
+        point_cloud_file = self.point_cloud_file.rsplit(
             '/', 1)[-1].rsplit('.', 1)[0]
-        regions_file = curvatures_dir + '/' + curvatures_name + '_' + \
+        regions_file = point_cloud_dir + '/' + point_cloud_file + '_' + \
             str(self.region_growing_config.seed_threshold) + '_' + \
             str(self.region_growing_config.min_cluster_size) + '_' + \
             str(self.region_growing_config.max_cluster_size) + '_' + \
@@ -485,8 +488,8 @@ class ViewpointGeneration():
             datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + \
             '_viewpoints.json'
         # Create the directory if it does not exist
-        if not os.path.exists(curvatures_dir):
-            os.makedirs(curvatures_dir)
+        if not os.path.exists(point_cloud_dir):
+            os.makedirs(point_cloud_dir)
         # Save the region dictionary to a json file
         with open(regions_file, 'w') as f:
             json.dump(regions_dict, f, indent=4)
@@ -535,10 +538,14 @@ class ViewpointGeneration():
                 fov_points = self.point_cloud.select_by_index(
                     fov_cluster['points'])
                 # Project viewpoint for the FOV cluster
+                origin = np.mean(np.asarray(fov_points.points), axis=0).tolist()
                 viewpoint = self.vp.project(
                     np.asarray(fov_points.points), np.asarray(fov_points.normals)).tolist()
                 # Store the viewpoint in the region dictionary
-                self.regions_dict['regions'][region_id]['fov_clusters'][fov_cluster_id]['viewpoint'] = viewpoint
+                self.regions_dict['regions'][region_id]['fov_clusters'][fov_cluster_id]['viewpoint'] = {
+                    'viewpoint': viewpoint,
+                    'center_point': origin
+                }
 
         # Save the updated regions dictionary with viewpoints
         self.regions_file = self.save_regions_dict(self.regions_dict)

@@ -25,6 +25,7 @@ class ViewpointProjection:
         # Apply a simple translation to simulate projection
         translation = np.array(surface_normal) * self.config.focal_distance
         projected_point = np.array(center_point) + translation
+        projected_point = np.array(center_point)
 
         return projected_point
 

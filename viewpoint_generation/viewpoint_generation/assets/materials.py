@@ -18,6 +18,10 @@ class Materials:
     bounding_box_material.base_color = [0.8, 0.8, 0.8, 1.0]
     bounding_box_material.line_width = 2.0
 
+    text_material = rendering.MaterialRecord()
+    text_material.shader = "defaultUnlit"
+    text_material.base_color = [1.0, 1.0, 1.0, 1.0]
+
     point_cloud_material = rendering.MaterialRecord()
     point_cloud_material.shader = "defaultUnlit"
     point_cloud_material.point_size = 7.0
@@ -29,6 +33,10 @@ class Materials:
     fov_cluster_material = rendering.MaterialRecord()
     fov_cluster_material.shader = "defaultUnlit"
     fov_cluster_material.base_color = [1.0, 1.0, 1.0, 1.0]
+
+    viewpoint_material = rendering.MaterialRecord()
+    viewpoint_material.shader = "defaultUnlit"
+    viewpoint_material.base_color = [1.0, 1.0, 1.0, 1.0]
 
     fov_material = rendering.MaterialRecord()
     fov_material.shader = "defaultUnlit"

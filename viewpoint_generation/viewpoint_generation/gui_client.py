@@ -40,7 +40,7 @@ class GUIClient():
     MENU_SHOW_REGIONS = 18
     MENU_SHOW_NOISE_POINTS = 19
     MENU_SHOW_FOV_CLUSTERS = 20
-    MENU_SHOW_VIEWPOINT = 21
+    MENU_SHOW_VIEWPOINTS = 21
     MENU_SHOW_SETTINGS = 22
     MENU_SHOW_ERRORS = 23
     MENU_SHOW_PATH = 24
@@ -309,15 +309,13 @@ class GUIClient():
             view_menu.add_item("Show FOV Clusters",
                                self.MENU_SHOW_FOV_CLUSTERS)
             view_menu.set_checked(self.MENU_SHOW_FOV_CLUSTERS, False)
+            view_menu.add_item("Show Viewpoints", self.MENU_SHOW_VIEWPOINTS)
+            view_menu.set_checked(self.MENU_SHOW_VIEWPOINTS, False)
 
             view_menu.add_item("Show Path", self.MENU_SHOW_PATH)
             view_menu.set_checked(self.MENU_SHOW_PATH, False)
             view_menu.add_separator()
             # Panel display options
-            view_menu.add_item("Viewpoint Generation",
-                               self.MENU_SHOW_VIEWPOINT)
-            view_menu.set_checked(
-                self.MENU_SHOW_VIEWPOINT, True)
             view_menu.add_item("Lighting & Materials",
                                self.MENU_SHOW_SETTINGS)
             view_menu.set_checked(
@@ -391,8 +389,8 @@ class GUIClient():
             self.MENU_SHOW_NOISE_POINTS, self._on_menu_show_noise_points)
         # w.set_on_menu_item_activated(
         #     self.MENU_SHOW_PATH, self._on_menu_show_path)
-        # w.set_on_menu_item_activated(self.MENU_SHOW_VIEWPOINT,
-        #                              self._on_menu_toggle_viewpoint_generation_panel)
+        w.set_on_menu_item_activated(self.MENU_SHOW_VIEWPOINTS,
+                                     self._on_menu_show_viewpoints)
         # w.set_on_menu_item_activated(self.MENU_SHOW_SETTINGS,
         #                              self._on_menu_toggle_settings_panel)
         # w.set_on_menu_item_activated(
@@ -435,6 +433,11 @@ class GUIClient():
         show = not gui.Application.instance.menubar.is_checked(
             self.MENU_SHOW_FOV_CLUSTERS)
         self.show_fov_clusters(show)
+
+    def _on_menu_show_viewpoints(self):
+        show = not gui.Application.instance.menubar.is_checked(
+            self.MENU_SHOW_VIEWPOINTS)
+        self.show_viewpoints(show)
 
     def _on_menu_show_noise_points(self):
         show = not gui.Application.instance.menubar.is_checked(
@@ -507,6 +510,13 @@ class GUIClient():
 
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_FOV_CLUSTERS, show)
+
+    def show_viewpoints(self, show=True):
+        """Show or hide the viewpoints in the scene."""
+        self.scene_widget.scene.show_geometry('viewpoints', show)
+
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_VIEWPOINTS, show)
 
     def show_noise_points(self, show=True):
         self.scene_widget.scene.show_geometry('noise_points', show)
@@ -1044,10 +1054,11 @@ class GUIClient():
                     mesh.scale(25.4, center=(0, 0, 0))
 
                 # Create model bounding box
-                bb = mesh.get_axis_aligned_bounding_box()
+                bbox = mesh.get_axis_aligned_bounding_box()
+
                 self.scene_widget.scene.remove_geometry("model_bounding_box")
                 self.scene_widget.scene.add_geometry(
-                    "model_bounding_box", bb, Materials.bounding_box_material)
+                    "model_bounding_box", bbox, Materials.bounding_box_material)
 
                 self.scene_widget.scene.remove_geometry(
                     "mesh")  # Remove previous mesh if exists
@@ -1075,6 +1086,7 @@ class GUIClient():
 
         except Exception as e:
             print(f"Error loading mesh from {file_path}: {e}")
+
 
     def import_point_cloud(self, file_path):
         print(f"Importing point cloud from {file_path}")
@@ -1159,7 +1171,9 @@ class GUIClient():
 
             np.random.seed(42)  # For reproducibility
             fov_meshes = o3d.geometry.TriangleMesh()
+            viewpoint_meshes = o3d.geometry.TriangleMesh()
             show_clusters = False
+            show_viewpoints = False
             for region, region_dict in regions_dict['regions'].items():
                 region_indices = region_dict['points']
                 region_point_cloud = self.point_cloud.select_by_index(
@@ -1190,11 +1204,26 @@ class GUIClient():
                         fov_mesh.translate(avg_normal * 0.005)
 
                         if 'viewpoint' in fov_cluster_dict:
+                            show_viewpoints = True
                             viewpoint_mesh = o3d.geometry.TriangleMesh.create_sphere(
                                 radius=1)
-                            viewpoint = 1000*fov_cluster_dict['viewpoint']
-                            viewpoint_mesh.translate(viewpoint)
-                            fov_meshes += viewpoint_mesh
+                            origin = 1000*np.array(fov_cluster_dict['viewpoint']['origin'])
+                            viewpoint = np.array(fov_cluster_dict['viewpoint']['viewpoint'])
+                            viewpoint_mesh.translate(origin)
+
+                            # mesh_units = self.ros_thread.parameters_dict['model.mesh.units']['value']
+                            # if mesh_units == 'mm':
+                            #     viewpoint_mesh.scale(1000.0, center=(0, 0, 0))
+                            # elif mesh_units == 'cm':
+                            #     viewpoint_mesh.scale(100.0, center=(0, 0, 0))
+                            # elif mesh_units == 'm':
+                            #     viewpoint_mesh.scale(1.0, center=(0, 0, 0))
+                            # elif mesh_units == 'in':
+                            #     viewpoint_mesh.scale(39.3701, center=(0, 0, 0))
+
+                            viewpoint_mesh.paint_uniform_color(
+                                fov_cluster_color)
+                            viewpoint_meshes += viewpoint_mesh
 
                         fov_meshes += fov_mesh
 
@@ -1212,6 +1241,7 @@ class GUIClient():
             self.scene_widget.scene.remove_geometry("fov_clusters")
             self.scene_widget.scene.remove_geometry("noise_points")
             self.scene_widget.scene.remove_geometry("fov_clusters")
+            self.scene_widget.scene.remove_geometry("viewpoints")
 
             self.scene_widget.scene.add_geometry(
                 "regions", regions_cloud, Materials.point_cloud_material)
@@ -1219,15 +1249,22 @@ class GUIClient():
                 "noise_points", noise_point_cloud, Materials.point_cloud_material)
             self.scene_widget.scene.add_geometry(
                 "fov_clusters", fov_meshes, Materials.fov_cluster_material)
+            self.scene_widget.scene.add_geometry(
+                "viewpoints", viewpoint_meshes, Materials.viewpoint_material)
 
             if show_clusters:
                 self.show_regions(False)
                 self.show_noise_points(False)
                 self.show_fov_clusters(True)
+                if show_viewpoints:
+                    self.show_viewpoints(True)
+                else:
+                    self.show_viewpoints(False)
             else:
                 self.show_regions(True)
                 self.show_noise_points(True)
                 self.show_fov_clusters(False)
+                self.show_viewpoints(False)
 
             print(
                 f"Loaded regions from {file_path} and updated point cloud colors")
