@@ -152,29 +152,32 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 rclpy.Parameter.Type.STRING,
                 ''
             )
-            self.set_parameters([mesh_file_param])
+            # self.block_next_param_callback = True
+            # self.set_parameters([mesh_file_param])
             self.get_logger().error(message)
             return False
-        if success:
+        else:
             self.get_logger().info(message)
 
+            mesh_file_param = rclpy.parameter.Parameter(
+                'model.mesh.file',
+                rclpy.Parameter.Type.STRING,
+                mesh_file
+            )
+            mesh_units_param = rclpy.parameter.Parameter(
+                'model.mesh.units',
+                rclpy.Parameter.Type.STRING,
+                mesh_units
+            )
+            self.block_next_param_callback = True
+            self.set_parameters([mesh_file_param])
+            self.block_next_param_callback = True
+            self.set_parameters([mesh_units_param])
+
             if self.initialized:
-                # Clear the point cloud and curvature file parameters
-                point_cloud_file_param = rclpy.parameter.Parameter(
-                    'model.point_cloud.file',
-                    rclpy.Parameter.Type.STRING,
-                    ''
-                )
+                self.set_point_cloud_file(point_cloud_file='', point_cloud_units='')
 
-                number_of_points_param = rclpy.parameter.Parameter(
-                    'model.point_cloud.sampling.number_of_points',
-                    rclpy.Parameter.Type.INTEGER,
-                    self.get_parameter(
-                        'model.point_cloud.sampling.number_of_points').get_parameter_value().integer_value
-                )
 
-                self.set_parameters(
-                    [point_cloud_file_param, number_of_points_param])
 
             # # Update planning scene with the new mesh
             # with self.planning_scene_monitor.read_write() as scene:
@@ -226,16 +229,25 @@ class ViewpointGenerationNode(rclpy.node.Node):
             return False
         else:
             self.get_logger().info(message)
+            point_cloud_file_param = rclpy.parameter.Parameter(
+                'model.point_cloud.file',
+                rclpy.Parameter.Type.STRING,
+                point_cloud_file
+            )
+            point_cloud_units_param = rclpy.parameter.Parameter(
+                'model.point_cloud.units',
+                rclpy.Parameter.Type.STRING,
+                point_cloud_units
+            )
+            self.block_next_param_callback = True
+            self.set_parameters([point_cloud_file_param])
+            self.block_next_param_callback = True
+            self.set_parameters([point_cloud_units_param])
 
             if self.initialized:
                 # Clear the curvature file parameter
-                curvature_file_param = rclpy.parameter.Parameter(
-                    'regions.region_growth.curvature.file',
-                    rclpy.Parameter.Type.STRING,
-                    ''
-                )
-                self.set_parameters([curvature_file_param])
-
+                self.set_curvature_file(curvature_file='')
+                
             return True
 
     def set_curvature_file(self, curvature_file):
@@ -270,14 +282,18 @@ class ViewpointGenerationNode(rclpy.node.Node):
         else:
             self.get_logger().info(message)
 
+            curvature_file_param = rclpy.parameter.Parameter(
+                'regions.region_growth.curvature.file',
+                rclpy.Parameter.Type.STRING,
+                curvature_file
+            )
+            self.block_next_param_callback = True
+            self.set_parameters([curvature_file_param])
+
             if self.initialized:
                 # Clear the regions file parameter
-                regions_file_param = rclpy.parameter.Parameter(
-                    'regions.file',
-                    rclpy.Parameter.Type.STRING,
-                    ''
-                )
-                self.set_parameters([regions_file_param])
+                self.set_regions_file(regions_file='')
+                
 
             return True
 
@@ -312,6 +328,14 @@ class ViewpointGenerationNode(rclpy.node.Node):
             return False
         else:
             self.get_logger().info(message)
+
+            regions_file_param = rclpy.parameter.Parameter(
+                'regions.file',
+                rclpy.Parameter.Type.STRING,
+                regions_file
+            )
+            self.block_next_param_callback = True
+            self.set_parameters([regions_file_param])
 
             return True
 
@@ -714,15 +738,24 @@ class ViewpointGenerationNode(rclpy.node.Node):
         return result
 
     def parameter_callback(self, params):
+        """ Callback for parameter changes.
+        :param params: List of parameters that have changed.
+        :return: SetParametersResult indicating success or failure.
+        """
+
+        # If we are blocking the next parameter callback, return success
         if self.block_next_param_callback:
             self.block_next_param_callback = False
             return SetParametersResult(successful=True)
 
         success = True
 
+        # Iterate through the parameters and set the corresponding values
+        # based on the parameter name
         for param in params:
             if param.name == 'model.mesh.file':
-                success = self.set_mesh_file(param.value, self.get_parameter(
+                success = self.set_mesh_file(param.value, 
+                    self.get_parameter(
                     'model.mesh.units').get_parameter_value().string_value)
             elif param.name == 'model.mesh.units':
                 success = self.set_mesh_file(

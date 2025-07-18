@@ -17,17 +17,17 @@ class ViewpointProjection:
         """
         Projects the point cloud to a viewpoint based on the focal distance.
         """
-        projected_points = []
-        center_point = np.mean(surface_points, axis=0)
-        center_normal = np.mean(surface_normals, axis=0)
+        origin = np.mean(surface_points, axis=0)
+        origin_normal = np.mean(surface_normals, axis=0)
         # Normalize the average normal vector
-        surface_normal = center_normal / np.linalg.norm(center_normal)
+        surface_normal = origin_normal / np.linalg.norm(origin_normal)
         # Apply a simple translation to simulate projection
         translation = np.array(surface_normal) * self.config.focal_distance
-        projected_point = np.array(center_point) + translation
-        projected_point = np.array(center_point)
+        viewpoint = np.array(origin) + translation
+        direction = viewpoint - origin
+        direction = direction / np.linalg.norm(direction)
 
-        return projected_point
+        return origin, viewpoint, direction
 
     def check_occlusion(self, viewpoint: list, surface_points: list, raycasting_scene: o3d.t.geometry.RaycastingScene):
         """

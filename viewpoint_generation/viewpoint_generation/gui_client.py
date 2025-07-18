@@ -49,7 +49,7 @@ class GUIClient():
     camera_updated = False
     camera_fov_width = 0.03
     camera_fov_height = 0.02
-    last_intersection_point = None
+    last_intersection_point = np.array([0.0, 0.0, 0.0], dtype=np.float32)
 
     def __init__(self):
         self.app = gui.Application.instance
@@ -514,6 +514,7 @@ class GUIClient():
     def show_viewpoints(self, show=True):
         """Show or hide the viewpoints in the scene."""
         self.scene_widget.scene.show_geometry('viewpoints', show)
+        self.scene_widget.scene.show_geometry('region_view_meshes', show)
 
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_VIEWPOINTS, show)
@@ -604,25 +605,24 @@ class GUIClient():
         if section_name == 'sampling':
             button = gui.Button("Sample Point Cloud")
             button.set_on_clicked(lambda: self.ros_thread.sample_point_cloud())
-            button_horiz.add_child(button)
+            content.add_child(button)
         elif section_name == 'curvature':
             button = gui.Button("Compute Curvature")
             button.set_on_clicked(lambda: self.ros_thread.estimate_curvature())
-            button_horiz.add_child(button)
+            content.add_child(button)
         elif section_name == 'region_growth':
             button = gui.Button("Run Region Growth")
             button.set_on_clicked(lambda: self.ros_thread.region_growth())
-            button_horiz.add_child(button)
+            content.add_child(button)
         elif section_name == 'fov_clustering':
             button = gui.Button("Run FOV Clustering")
             button.set_on_clicked(lambda: self.ros_thread.fov_clustering())
-            button_horiz.add_child(button)
+            content.add_child(button)
         elif section_name == 'projection':
             button = gui.Button("Project Viewpoints")
             button.set_on_clicked(lambda: self.ros_thread.project_viewpoints())
-            button_horiz.add_child(button)
+            content.add_child(button)
 
-        content.add_child(button_horiz)
         collapsible.add_child(content)
 
         # Expand by default for first level
@@ -688,6 +688,23 @@ class GUIClient():
                 file_layout.add_child(browse_button)
 
                 grid.add_child(file_layout)
+            elif 'unit' in param_name.lower():
+                # Create a dropdown for unit selection
+                layout = gui.Horiz(0.25 * em)
+                widget = gui.Combobox()
+                units = ['m', 'cm', 'mm', 'in', 'ft']
+                for unit in units:
+                    widget.add_item(unit)
+                widget.selected_index = units.index(param_value)
+
+                def on_unit_changed(selected_text, selected_index):
+                    """Handle unit selection change"""
+                    self.on_parameter_changed(param_name, selected_text)
+
+                widget.set_on_selection_changed(on_unit_changed)
+
+                layout.add_child(widget)
+                grid.add_child(layout)
             else:
                 widget = gui.TextEdit()
                 widget.text_value = str(param_value)
@@ -996,7 +1013,7 @@ class GUIClient():
                             self.camera_updated = True
 
                         parameters_dict[param_name]['update_flag'] = False
-                        print(f"Updated {param_name} to {param_value}")
+                        print(f"Updated \'{param_name}\' to \'{param_value}\'")
 
         if parameters_updated:
             print("------------------------------------")
@@ -1083,13 +1100,19 @@ class GUIClient():
                 self.show_regions(False)
                 self.show_fov_clusters(False)
                 self.show_noise_points(False)
+                self.show_viewpoints(False)
 
         except Exception as e:
             print(f"Error loading mesh from {file_path}: {e}")
 
 
     def import_point_cloud(self, file_path):
+        if file_path is None or file_path == "":
+            print("Point cloud empty or not specified.")
+            return
+
         print(f"Importing point cloud from {file_path}")
+
         try:
             point_cloud = o3d.io.read_point_cloud(file_path)
             if point_cloud.is_empty():
@@ -1107,21 +1130,21 @@ class GUIClient():
                 elif pcd_units == 'in':
                     point_cloud.scale(25.4, center=(0, 0, 0))
 
-                # Remove previous point cloud if exists
-                self.scene_widget.scene.remove_geometry("point_cloud")
-                self.scene_widget.scene.remove_geometry("curvatures")
-                self.scene_widget.scene.remove_geometry("regions")
-                self.scene_widget.scene.remove_geometry("fov_clusters")
-                self.scene_widget.scene.remove_geometry("noise_points")
-                self.scene_widget.scene.add_geometry(
-                    "point_cloud", point_cloud, Materials.point_cloud_material)
+            # Remove previous point cloud if exists
+            self.scene_widget.scene.remove_geometry("point_cloud")
+            self.scene_widget.scene.remove_geometry("curvatures")
+            self.scene_widget.scene.remove_geometry("regions")
+            self.scene_widget.scene.remove_geometry("fov_clusters")
+            self.scene_widget.scene.remove_geometry("noise_points")
+            self.scene_widget.scene.add_geometry(
+                "point_cloud", point_cloud, Materials.point_cloud_material)
 
             self.point_cloud = point_cloud  # Store the point cloud for later use
 
-            self.show_point_cloud(True)
-
         except Exception as e:
             print(f"Error loading point cloud from {file_path}: {e}")
+
+        self.show_point_cloud(True)
 
     def import_curvature(self, file_path):
         print(f"Importing curvature data from {file_path}")
@@ -1158,6 +1181,10 @@ class GUIClient():
             print(f"Error loading curvature data from {file_path}: {e}")
 
     def import_regions(self, file_path):
+        if file_path is None or file_path == "":
+            print("Regions file empty or not specified.")
+            return
+        
         print(f"Importing regions from {file_path}")
         """ Load regions from file and paint point cloud based on regions """
         regions_cloud = copy.deepcopy(self.point_cloud)
@@ -1172,6 +1199,8 @@ class GUIClient():
             np.random.seed(42)  # For reproducibility
             fov_meshes = o3d.geometry.TriangleMesh()
             viewpoint_meshes = o3d.geometry.TriangleMesh()
+            region_view_clouds = o3d.geometry.PointCloud()
+            region_view_meshes = o3d.geometry.TriangleMesh()
             show_clusters = False
             show_viewpoints = False
             for region, region_dict in regions_dict['regions'].items():
@@ -1179,6 +1208,11 @@ class GUIClient():
                 region_point_cloud = self.point_cloud.select_by_index(
                     region_indices)
                 region_color = np.random.rand(3)
+
+                region_view_cloud = o3d.geometry.PointCloud()
+                region_points = np.asarray(region_point_cloud.points)
+                region_view_points = []
+                region_view_normals = []
 
                 # If dict has 'fov_clusters' key, process and display them
                 if 'fov_clusters' in region_dict:
@@ -1200,35 +1234,52 @@ class GUIClient():
                         fov_mesh.paint_uniform_color(fov_cluster_color)
                         fov_mesh.compute_vertex_normals()
                         avg_normal = np.mean(np.asarray(
-                            fov_mesh.vertex_normals), axis=0)
+                            fov_point_cloud.normals), axis=0)
                         fov_mesh.translate(avg_normal * 0.005)
 
                         if 'viewpoint' in fov_cluster_dict:
                             show_viewpoints = True
                             viewpoint_mesh = o3d.geometry.TriangleMesh.create_sphere(
-                                radius=1)
+                                radius=5)
+                            viewpoint_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame(
+                                size=6, origin=[0, 0, 0])
                             origin = 1000*np.array(fov_cluster_dict['viewpoint']['origin'])
-                            viewpoint = np.array(fov_cluster_dict['viewpoint']['viewpoint'])
-                            viewpoint_mesh.translate(origin)
+                            viewpoint = 1000*np.array(fov_cluster_dict['viewpoint']['viewpoint'])
+                            direction = np.array(fov_cluster_dict['viewpoint']['direction'])
+                            # Rotate viewpoint_mesh to match the direction
+                            viewpoint_mesh.rotate(
+                                o3d.geometry.get_rotation_matrix_from_xyz(np.array([
+                                    np.arctan2(direction[1], direction[0]),
+                                    np.arctan2(direction[2], np.linalg.norm(direction[:2])),
+                                    0])
+                                ),
+                                center=(0, 0, 0)
+                            )
 
-                            # mesh_units = self.ros_thread.parameters_dict['model.mesh.units']['value']
-                            # if mesh_units == 'mm':
-                            #     viewpoint_mesh.scale(1000.0, center=(0, 0, 0))
-                            # elif mesh_units == 'cm':
-                            #     viewpoint_mesh.scale(100.0, center=(0, 0, 0))
-                            # elif mesh_units == 'm':
-                            #     viewpoint_mesh.scale(1.0, center=(0, 0, 0))
-                            # elif mesh_units == 'in':
-                            #     viewpoint_mesh.scale(39.3701, center=(0, 0, 0))
+                            # Add to region view points
+                            region_view_points.append(viewpoint.tolist())
+                            region_view_normals.append(direction.tolist())
 
-                            viewpoint_mesh.paint_uniform_color(
-                                fov_cluster_color)
+                            viewpoint_mesh.translate(viewpoint)
+
+                            viewpoint_mesh.paint_uniform_color([1.0, 1.0, 1.0])
                             viewpoint_meshes += viewpoint_mesh
 
                         fov_meshes += fov_mesh
 
                 region_point_cloud.paint_uniform_color(region_color)
                 regions_cloud += region_point_cloud
+
+                # Region View Surface
+                if show_viewpoints:
+                    region_view_cloud.points = o3d.utility.Vector3dVector(np.array(region_view_points))
+                    region_view_cloud.normals = o3d.utility.Vector3dVector(np.array(region_view_normals))
+                    if len(region_view_cloud.points) > 4:
+                        region_view_mesh = region_view_cloud.compute_convex_hull(
+                            joggle_inputs=True)[0]
+                        region_view_mesh.paint_uniform_color(region_color)
+                        region_view_meshes += region_view_mesh
+                        region_view_clouds += region_view_cloud
 
             # Create noise point cloud
             noise_points = regions_dict['noise_points']
@@ -1242,6 +1293,7 @@ class GUIClient():
             self.scene_widget.scene.remove_geometry("noise_points")
             self.scene_widget.scene.remove_geometry("fov_clusters")
             self.scene_widget.scene.remove_geometry("viewpoints")
+            self.scene_widget.scene.remove_geometry("region_view_meshes")
 
             self.scene_widget.scene.add_geometry(
                 "regions", regions_cloud, Materials.point_cloud_material)
@@ -1251,6 +1303,8 @@ class GUIClient():
                 "fov_clusters", fov_meshes, Materials.fov_cluster_material)
             self.scene_widget.scene.add_geometry(
                 "viewpoints", viewpoint_meshes, Materials.viewpoint_material)
+            self.scene_widget.scene.add_geometry(
+                "region_view_meshes", region_view_meshes, Materials.region_view_material)
 
             if show_clusters:
                 self.show_regions(False)
@@ -1258,6 +1312,10 @@ class GUIClient():
                 self.show_fov_clusters(True)
                 if show_viewpoints:
                     self.show_viewpoints(True)
+                    # Set camera view to fit the mesh
+                    bb = viewpoint_meshes.get_axis_aligned_bounding_box()
+                    self.scene_widget.look_at(
+                        bb.get_center(), bb.get_max_bound(), np.array([0, 0, 1]))
                 else:
                     self.show_viewpoints(False)
             else:
@@ -1378,33 +1436,27 @@ class GUIClient():
     def add_cylinder_pointing_at_camera_simple(self, intersection_result, cylinder_name="ray_cylinder"):
         """Simple version using Open3D's align_vector_to_vector"""
 
-        if not intersection_result['hit']:
-            return False
-        if not self.camera_updated:
-            return False
-
         self.camera_updated = False
 
         scene = self.scene_widget.scene
         camera = scene.camera
 
+        view_matrix = camera.get_view_matrix()
+        inv_view_matrix = np.linalg.inv(view_matrix)
+        camera_position = inv_view_matrix[:3, 3]
+        camera_forward = -inv_view_matrix[:3, 2]
+        camera_forward = camera_forward / np.linalg.norm(camera_forward)
+
         # Get intersection point and camera position
         if not intersection_result['hit']:
             # If no intersection, use the last intersection point
             if hasattr(self, 'last_intersection_point'):
-                intersection_point = self.last_intersection_point
+                # Set intersection to a point at a distance of 350mm away from the camera
+                intersection_point = camera_position + 100 * camera_forward
             else:
                 return False
         else:
             intersection_point = intersection_result['point']
-        view_matrix = camera.get_view_matrix()
-        inv_view_matrix = np.linalg.inv(view_matrix)
-        camera_position = inv_view_matrix[:3, 3]
-
-        # Calculate direction from intersection point to camera
-        direction_to_camera = camera_position - intersection_point
-        direction_to_camera = direction_to_camera / \
-            np.linalg.norm(direction_to_camera)
 
         # Create cylinder
         height = 5.0
@@ -1434,13 +1486,13 @@ class GUIClient():
 
         # Manual rotation calculation (simple version)
         # If vectors are not parallel, calculate rotation
-        if not np.allclose(default_direction, direction_to_camera):
+        if not np.allclose(default_direction, camera_forward):
             # Use cross product for rotation axis
-            rotation_axis = np.cross(default_direction, direction_to_camera)
+            rotation_axis = np.cross(default_direction, camera_forward)
             if np.linalg.norm(rotation_axis) > 1e-6:
                 rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
                 # Calculate angle
-                dot_product = np.dot(default_direction, direction_to_camera)
+                dot_product = np.dot(default_direction, camera_forward)
                 angle = np.arccos(np.clip(dot_product, -1.0, 1.0))
 
                 # Create rotation matrix manually
@@ -1465,8 +1517,9 @@ class GUIClient():
         cylinder.compute_vertex_normals()
 
         # Remove previous cylinder if exists
-        scene.remove_geometry('reticle')
-        scene.add_geometry('reticle', cylinder, Materials.fov_material)
+        if np.equal(intersection_point, self.last_intersection_point).all():
+            scene.remove_geometry('reticle')
+            scene.add_geometry('reticle', cylinder, Materials.fov_material)
         return True
 
     def set_mouse_orbit_center_to_intersection(self, intersection_result):

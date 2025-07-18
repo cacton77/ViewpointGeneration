@@ -34,6 +34,10 @@ class Materials:
     fov_cluster_material.shader = "defaultUnlit"
     fov_cluster_material.base_color = [1.0, 1.0, 1.0, 1.0]
 
+    region_view_material = rendering.MaterialRecord()
+    region_view_material.shader = "defaultLitTransparency"
+    region_view_material.base_color = [1.0, 1.0, 1.0, 0.25]
+
     viewpoint_material = rendering.MaterialRecord()
     viewpoint_material.shader = "defaultUnlit"
     viewpoint_material.base_color = [1.0, 1.0, 1.0, 1.0]

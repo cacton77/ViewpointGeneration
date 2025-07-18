@@ -105,7 +105,7 @@ class ViewpointGeneration():
         if mesh_file == '':
             return False, 'No triangle mesh file provided.'
 
-        if mesh_file is not self.mesh_file:
+        if mesh_file is not self.mesh_file or units is not self.mesh_units:
             if mesh_file == '':
                 return False, 'No triangle mesh file provided.'
 
@@ -235,6 +235,7 @@ class ViewpointGeneration():
             return False, 'Number of points to sample must be greater than 0.'
 
         print('Number of points to sample:', N_points)
+        print(f'Mesh units: {self.mesh_units}')
 
         # Save the sampled point cloud to a file under a directory named after the mesh file in the same directory as the mesh file
         mesh_dir = self.mesh_file.rsplit('/', 1)[0]
@@ -534,18 +535,29 @@ class ViewpointGeneration():
             if 'fov_clusters' not in region:
                 continue
 
+            region_points = self.point_cloud.select_by_index(
+                region['points'])
+
             for fov_cluster_id, fov_cluster in region['fov_clusters'].items():
-                fov_points = self.point_cloud.select_by_index(
-                    fov_cluster['points'])
+                fov_points = region_points.select_by_index(fov_cluster['points'])
                 # Project viewpoint for the FOV cluster
-                origin = np.mean(np.asarray(fov_points.points), axis=0).tolist()
-                viewpoint = self.vp.project(
-                    np.asarray(fov_points.points), np.asarray(fov_points.normals)).tolist()
+                origin, viewpoint, direction = self.vp.project(
+                    np.asarray(fov_points.points), np.asarray(fov_points.normals))
                 # Store the viewpoint in the region dictionary
                 self.regions_dict['regions'][region_id]['fov_clusters'][fov_cluster_id]['viewpoint'] = {
-                    'viewpoint': viewpoint,
-                    'center_point': origin
+                    'origin': origin.tolist(),
+                    'viewpoint': viewpoint.tolist(),
+                    'direction': direction.tolist()
                 }
+                # Visualize the projected viewpoint
+                # viewpoint_mesh = o3d.geometry.TriangleMesh.create_sphere(radius=0.005)
+                # viewpoint_mesh.translate(viewpoint)
+                # viewpoint_mesh.paint_uniform_color((1, 0, 0))  # Red color
+                # o3d.visualization.draw_geometries(
+                #     [viewpoint_mesh, fov_points],
+                #     window_name=f'Region {region_id} FOV Cluster {fov_cluster_id} Viewpoint Projection',
+                #     mesh_show_back_face=True
+                # )
 
         # Save the updated regions dictionary with viewpoints
         self.regions_file = self.save_regions_dict(self.regions_dict)
