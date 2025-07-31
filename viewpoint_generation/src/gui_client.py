@@ -78,6 +78,10 @@ class GUIClient():
         self.update_delay = -1  # Set to -1 to use tick event
         self.window.set_on_tick_event(self.on_main_window_tick_event)
 
+        self.parameter_widgets = {}
+        self.init_gui()
+        self.init_menu_bar()
+
         # 3D SCENE ################################################################
         self.scene_widget = gui.SceneWidget()
         self.scene_widget.scene = o3d.visualization.rendering.Open3DScene(
@@ -96,10 +100,6 @@ class GUIClient():
 
         self.window.add_child(self.scene_widget)
 
-        self.parameter_widgets = {}
-
-        self.init_gui()
-        self.init_menu_bar()
         self.setup_multi_directional_lighting()
         # self.window.add_child(self.parameter_panel)
         self.window.set_on_layout(self._on_layout)
@@ -526,6 +526,7 @@ class GUIClient():
 
     def init_gui(self):
         """Initialize the Open3D GUI"""
+
         # Get theme for consistent styling
         theme = self.window.theme
         em = theme.font_size
@@ -746,6 +747,20 @@ class GUIClient():
 
         # Add tab widget DIRECTLY to window - no intermediate layout
         self.window.add_child(self.main_layout)
+
+        # Create a log layout with widget
+        self.log_layout = gui.Vert(0.5 * em, gui.Margins(0.5 * em))
+        self.log_layout.background_color = Materials.panel_color
+        self.log_widget = gui.ListView()
+        self.log_widget.set_max_visible_items(5)
+
+        collapsible_log = gui.CollapsableVert(
+            "Log", 0.25 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        collapsible_log.add_child(self.log_widget)
+
+        self.log_layout.add_child(collapsible_log)
+
+        self.window.add_child(self.log_layout)
 
     def create_tab_panel(self, tab_name, tab_data, em):
         """Create a scrollable panel for a tab - ONLY scrolling here"""
@@ -1105,7 +1120,6 @@ class GUIClient():
         except Exception as e:
             print(f"Error loading mesh from {file_path}: {e}")
 
-
     def import_point_cloud(self, file_path):
         if file_path is None or file_path == "":
             print("Point cloud empty or not specified.")
@@ -1184,7 +1198,7 @@ class GUIClient():
         if file_path is None or file_path == "":
             print("Regions file empty or not specified.")
             return
-        
+
         print(f"Importing regions from {file_path}")
         """ Load regions from file and paint point cloud based on regions """
         regions_cloud = copy.deepcopy(self.point_cloud)
@@ -1243,14 +1257,20 @@ class GUIClient():
                                 radius=5)
                             viewpoint_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame(
                                 size=6, origin=[0, 0, 0])
-                            origin = 1000*np.array(fov_cluster_dict['viewpoint']['origin'])
-                            viewpoint = 1000*np.array(fov_cluster_dict['viewpoint']['viewpoint'])
-                            direction = np.array(fov_cluster_dict['viewpoint']['direction'])
+                            origin = 1000 * \
+                                np.array(
+                                    fov_cluster_dict['viewpoint']['origin'])
+                            viewpoint = 1000 * \
+                                np.array(
+                                    fov_cluster_dict['viewpoint']['viewpoint'])
+                            direction = np.array(
+                                fov_cluster_dict['viewpoint']['direction'])
                             # Rotate viewpoint_mesh to match the direction
                             viewpoint_mesh.rotate(
                                 o3d.geometry.get_rotation_matrix_from_xyz(np.array([
                                     np.arctan2(direction[1], direction[0]),
-                                    np.arctan2(direction[2], np.linalg.norm(direction[:2])),
+                                    np.arctan2(
+                                        direction[2], np.linalg.norm(direction[:2])),
                                     0])
                                 ),
                                 center=(0, 0, 0)
@@ -1272,8 +1292,10 @@ class GUIClient():
 
                 # Region View Surface
                 if show_viewpoints:
-                    region_view_cloud.points = o3d.utility.Vector3dVector(np.array(region_view_points))
-                    region_view_cloud.normals = o3d.utility.Vector3dVector(np.array(region_view_normals))
+                    region_view_cloud.points = o3d.utility.Vector3dVector(
+                        np.array(region_view_points))
+                    region_view_cloud.normals = o3d.utility.Vector3dVector(
+                        np.array(region_view_normals))
                     if len(region_view_cloud.points) > 4:
                         region_view_mesh = region_view_cloud.compute_convex_hull(
                             joggle_inputs=True)[0]
@@ -1554,6 +1576,12 @@ class GUIClient():
         print(f"Mouse orbit center set to: {intersection_point}")
         return True
 
+    def update_log(self):
+        log = self.ros_thread.log
+        self.log_widget.set_items(log)
+        self.log_widget.selected_index = len(
+            log) - 1  # Select the last log entry
+
     def update_scene(self):
 
         self.update_all_widgets_from_dict()
@@ -1561,6 +1589,9 @@ class GUIClient():
         intersection_result = self.cast_ray_from_center()
 
         self.add_cylinder_pointing_at_camera_simple(intersection_result)
+
+        # Update rosout log
+        self.update_log()
 
         lockon = False
         if lockon:
@@ -1589,17 +1620,19 @@ class GUIClient():
 
         self.scene_widget.frame = r
 
-        width = 22 * em
-        # Set height to preferred size with a maximum of 80% of the window height
-        height = self.main_layout.calc_preferred_size(
+        # Place log layout at the bottom of the window
+        height = self.log_layout.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height
-        if height > r.height - 5 * em:
-            height = r.height - 5 * em
+        self.log_layout.frame = gui.Rect(
+            0.5 * em, r.height - height + 0.5 * em, r.width - em, height)
+
+        width = 22 * em
+        height = r.height - height - 2 * em
 
         right_margin = 0.25 * em
-        # Place main layout on the right side in the middle of the window
+        # Place main layout between bottom of header and top of log layout on right side
         self.main_layout.frame = gui.Rect(
-            r.width - width - right_margin, 0.5 * r.height - height/2 + em, width, height)
+            r.width - width - right_margin, 2 * em, width, height)
 
 
 def main(args=None):

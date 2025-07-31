@@ -1,11 +1,11 @@
-ARG BASE_IMAGE=ros2_humble-image
+ARG BASE_IMAGE=osrf/ros:humble-desktop-full
 FROM ${BASE_IMAGE}
 
 ARG ROS_DISTRO=humble
 ENV ROS_DISTRO=${ROS_DISTRO}
 
 # Install MoveIt2 build dependencies
-RUN sudo apt-get update && sudo apt-get install -y \
+RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     git \
@@ -21,7 +21,7 @@ RUN sudo apt-get update && sudo apt-get install -y \
     ros-humble-stomp \
     ros-humble-topic-tools \
     ros-humble-rmf-utils \
-    && sudo rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
 # Set up colcon mixins
 RUN colcon mixin add default https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml && \
@@ -31,9 +31,9 @@ RUN colcon mixin add default https://raw.githubusercontent.com/colcon/colcon-mix
 RUN rosdep update
 
 # Remove any existing MoveIt debians to avoid conflicts
-RUN sudo apt-get update && \
-    sudo apt-get remove -y ros-${ROS_DISTRO}-moveit* || true && \
-    sudo rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get remove -y ros-${ROS_DISTRO}-moveit* || true && \
+    rm -rf /var/lib/apt/lists/*
 
 # Create workspace and clone MoveIt2
 RUN mkdir -p /workspaces/moveit2_ws/src
@@ -52,7 +52,7 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     --skip-keys='ros-humble-ros-testing ros-humble-stomp ros-humble-topic-tools ros-humble-osqp-vendor ros-humble-launch-pytest ros-humble-rmf-utils ros-humble-ament-clang-format' || \
     echo 'Some dependencies failed to install but continuing with build...'"
 
-RUN sudo ln -sf /usr/include/sys/types.h /usr/include/types.h
+RUN ln -sf /usr/include/sys/types.h /usr/include/types.h
 
 # Build the workspace without tests and with overrides
 WORKDIR /workspaces/moveit2_ws
@@ -63,4 +63,7 @@ RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     --allow-overriding moveit moveit_common moveit_configs_utils moveit_core moveit_hybrid_planning moveit_kinematics moveit_msgs moveit_planners moveit_planners_ompl moveit_resources_fanuc_moveit_config moveit_resources_panda_moveit_config moveit_ros_move_group moveit_ros_perception moveit_ros_planning moveit_ros_planning_interface moveit_ros_visualization moveit_servo moveit_simple_controller_manager"
 
 # Make sure that the workspace is always sourced
-RUN echo "source /workspaces/moveit2_ws/install/setup.bash" | sudo tee --append /etc/bash.bashrc
+RUN echo "source /workspaces/moveit2_ws/install/setup.bash" >> /etc/bash.bashrc
+
+# Create a shared workspace directory for host mounting
+RUN mkdir -p /workspaces/shared

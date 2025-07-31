@@ -11,7 +11,7 @@ from std_srvs.srv import Trigger
 from rcl_interfaces.msg import ParameterDescriptor, ParameterType
 from rcl_interfaces.srv import GetParameters, SetParameters, ListParameters
 from rcl_interfaces.msg import ParameterValue
-from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterValue, ParameterType
+from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterValue, ParameterType, Log
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from ament_index_python.packages import get_package_prefix
 
@@ -74,10 +74,23 @@ class ROSThread(Node):
                                                               callback_group=services_cb_group
                                                               )
 
+        # ROSOUT log subscription
+        rosout_sub = self.create_subscription(
+            Log,
+            '/rosout',
+            self.rosout_callback,
+            10
+        )
+        self.log = []
+
         # Wait for services to be available
         self.wait_for_services()
 
         self.get_all_parameters()
+
+    def rosout_callback(self, msg):
+        text = f"[{msg.name}] {msg.msg}" if msg.name else msg.msg
+        self.log.append(text)
 
     def wait_for_services(self):
         """Wait for all required services to be available"""

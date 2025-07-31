@@ -25,8 +25,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'viewpoint_generation_node = viewpoint_generation.viewpoint_generation_node:main',
-            'gui_client = viewpoint_generation.gui_client:main',
+            'viewpoint_generation_node = src.viewpoint_generation_node:main',
+            'gui_client = src.gui_client:main',
         ],
     },
 )
