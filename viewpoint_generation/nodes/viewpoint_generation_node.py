@@ -68,6 +68,11 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Viewpoint Generation Helpers
         self.viewpoint_generation = ViewpointGeneration()
 
+        self.get_logger().info('---------------------------------------------------------')
+        self.get_logger().info(self.get_parameter('model.mesh.file').get_parameter_value().string_value)
+        self.get_logger().info('---------------------------------------------------------')
+
+
         self.set_mesh_file(self.get_parameter('model.mesh.file').get_parameter_value().string_value,
                            self.get_parameter('model.mesh.units').get_parameter_value().string_value)
         self.set_point_cloud_file(self.get_parameter('model.point_cloud.file').get_parameter_value().string_value,
