@@ -101,6 +101,37 @@ class ViewpointGeneration():
 
         return True
 
+    def get_mesh_dimensions(self):
+        """
+        Get the dimensions of the mesh.
+        Returns:
+            tuple: (width, height, depth) of the mesh in meters.
+        """
+        if self.mesh is None:
+            return None, None, None
+
+        bbox = self.mesh.get_axis_aligned_bounding_box()
+        width = bbox.max_bound[0] - bbox.min_bound[0]
+        depth = bbox.max_bound[1] - bbox.min_bound[1]
+        height = bbox.max_bound[2] - bbox.min_bound[2]
+
+        return width, depth, height
+
+    def get_mesh_vertices_and_triangles(self):
+        """
+        Get the vertices and triangles of the mesh.
+        Returns:
+            tuple: (vertices, triangles) where vertices is a numpy array of shape (N, 3)
+            and triangles is a numpy array of shape (M, 3).
+        """
+        if self.mesh is None:
+            return None, None
+
+        vertices = np.asarray(self.mesh.vertices)
+        triangles = np.asarray(self.mesh.triangles)
+
+        return vertices, triangles
+
     def set_mesh_file(self, mesh_file, units):
         if mesh_file == '':
             return False, 'No triangle mesh file provided.'
@@ -539,7 +570,8 @@ class ViewpointGeneration():
                 region['points'])
 
             for fov_cluster_id, fov_cluster in region['fov_clusters'].items():
-                fov_points = region_points.select_by_index(fov_cluster['points'])
+                fov_points = region_points.select_by_index(
+                    fov_cluster['points'])
                 # Project viewpoint for the FOV cluster
                 origin, viewpoint, direction = self.vp.project(
                     np.asarray(fov_points.points), np.asarray(fov_points.normals))

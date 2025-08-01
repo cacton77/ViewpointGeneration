@@ -15,8 +15,8 @@ from std_srvs.srv import Trigger
 from moveit.planning import MoveItPy
 
 from geometry_msgs.msg import Pose, Point
-from shape_msgs.msg import Mesh, MeshTriangle
-from moveit_msgs.msg import CollisionObject, AttachedCollisionObject
+from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
+from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject
 
 
 class ViewpointGenerationNode(rclpy.node.Node):
@@ -61,9 +61,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
             ]
         )
 
-        # # MoveItPy Initialization
-        # self.moveit_py = MoveItPy()
-        # self.planning_scene_monitor = self.moveit_py.get_planning_scene_monitor()
+        # Create planning scene publisher
+        self.planning_scene_diff_publisher = self.create_publisher(
+            PlanningScene, '/planning_scene', 10)
 
         # Viewpoint Generation Helpers
         self.viewpoint_generation = ViewpointGeneration()
@@ -175,28 +175,62 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.set_parameters([mesh_units_param])
 
             if self.initialized:
-                self.set_point_cloud_file(point_cloud_file='', point_cloud_units='')
+                self.set_point_cloud_file(
+                    point_cloud_file='', point_cloud_units='')
 
+            # Object pose relative to 'object_frame'
+            # Pose will be changed during registration
+            dimensions = self.viewpoint_generation.get_mesh_dimensions()
 
+            box = SolidPrimitive()
+            box.type = SolidPrimitive.BOX
+            # Set dimensions of the box geometry
+            box.dimensions = [dimensions[0], dimensions[1], dimensions[2]]
+            box_pose = Pose()
+            box_pose.position.z = dimensions[2] / 2.0
 
-            # # Update planning scene with the new mesh
-            # with self.planning_scene_monitor.read_write() as scene:
-            #     # Load mesh
-            #     mesh = o3d.io.read_triangle_mesh(mesh_file)
+            # Create a mesh from the file
+            mesh = Mesh()
+            mesh.triangles = []
+            mesh.vertices = []
+            vertices, triangles = self.viewpoint_generation.get_mesh_vertices_and_triangles()
 
-            #     # Convert mesh data
-            #     vertices = np.asarray(mesh.vertices).tolist()
-            #     triangles = np.asarray(mesh.triangles).tolist()
+            for vertex in vertices:
+                point = Point()
+                point.x = vertex[0]
+                point.y = vertex[1]
+                point.z = vertex[2]
+                mesh.vertices.append(point)
 
-            #     # Add collision object (this syntax may vary based on moveit_py version)
-            #     scene.add_collision_mesh(
-            #         'object_mesh',
-            #         'tool0',
-            #         vertices,
-            #         triangles
-            #     )
+            for triangle in triangles:
+                mesh_triangle = MeshTriangle()
+                mesh_triangle.vertex_indices = triangle.astype(
+                    np.uint32).tolist()
+                mesh.triangles.append(mesh_triangle)
 
-            return True
+            # Pose of object relative to 'object_frame'
+            # Will be changed by Yusen's point cloud registration
+            pose = Pose()
+
+            # Update planning scene with the new mesh
+            attached_object = AttachedCollisionObject()
+            attached_object.link_name = 'object_frame'
+            attached_object.object.header.frame_id = 'object_frame'
+            attached_object.object.pose = pose
+            attached_object.object.id = 'object'
+            # attached_object.object.primitives = [box]
+            # attached_object.object.primitive_poses = [box_pose]
+            attached_object.object.meshes = [mesh]
+            attached_object.object.mesh_poses = [Pose()]
+            attached_object.object.operation = CollisionObject.ADD
+            attached_object.touch_links = ['turntable_disc_link']
+
+            planning_scene = PlanningScene()
+            planning_scene.world.collision_objects = [attached_object.object]
+            planning_scene.is_diff = True
+
+            self.planning_scene_diff_publisher.publish(planning_scene)
+            self.get_logger().info(f'Planning scene updated!')
 
     def set_point_cloud_file(self, point_cloud_file, point_cloud_units):
         """
@@ -247,7 +281,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             if self.initialized:
                 # Clear the curvature file parameter
                 self.set_curvature_file(curvature_file='')
-                
+
             return True
 
     def set_curvature_file(self, curvature_file):
@@ -293,7 +327,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
             if self.initialized:
                 # Clear the regions file parameter
                 self.set_regions_file(regions_file='')
-                
 
             return True
 
@@ -754,9 +787,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # based on the parameter name
         for param in params:
             if param.name == 'model.mesh.file':
-                success = self.set_mesh_file(param.value, 
-                    self.get_parameter(
-                    'model.mesh.units').get_parameter_value().string_value)
+                success = self.set_mesh_file(param.value,
+                                             self.get_parameter(
+                                                 'model.mesh.units').get_parameter_value().string_value)
             elif param.name == 'model.mesh.units':
                 success = self.set_mesh_file(
                     self.get_parameter(

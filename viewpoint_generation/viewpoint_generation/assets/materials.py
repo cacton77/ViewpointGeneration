@@ -45,3 +45,9 @@ class Materials:
     fov_material = rendering.MaterialRecord()
     fov_material.shader = "defaultUnlit"
     fov_material.base_color = [1.0, 1.0, 1.0, 1.0]
+
+    tabletop_material = rendering.MaterialRecord()
+    tabletop_material.shader = "defaultLitTransparency"
+    tabletop_material.base_color = [1.0, 1.0, 1.0, 0.75]
+    tabletop_diameter = 100.0  # Diameter in mm
+    tabletop_thickness = 2.0  # Thickness in mm

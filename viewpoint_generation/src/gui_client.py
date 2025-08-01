@@ -96,6 +96,13 @@ class GUIClient():
         self.scene_widget.look_at(
             np.array([0, 0, 0]), np.array([1, 1, 1]), np.array([0, 0, 1]))
 
+        # Add 100mm diameter cylinder at origin
+        cylinder = o3d.geometry.TriangleMesh.create_cylinder(
+            radius=Materials.tabletop_diameter/2, height=Materials.tabletop_thickness)
+        cylinder.translate(np.array([0, 0, -Materials.tabletop_thickness/2]))
+        self.scene_widget.scene.add_geometry(
+            "tabletop", cylinder, Materials.tabletop_material)
+
         self.ray_casting_scene = o3d.t.geometry.RaycastingScene()
 
         self.window.add_child(self.scene_widget)
