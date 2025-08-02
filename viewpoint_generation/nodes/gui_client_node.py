@@ -51,6 +51,8 @@ class GUIClient():
     camera_fov_height = 0.02
     last_intersection_point = np.array([0.0, 0.0, 0.0], dtype=np.float32)
 
+    cluster_names = []
+
     def __init__(self):
         self.app = gui.Application.instance
         self.window = self.app.create_window(
@@ -752,8 +754,6 @@ class GUIClient():
             tab_panel = self.create_tab_panel(tab_name, tab_data, em)
             self.main_layout.add_tab(tab_name.title(), tab_panel)
 
-        # Add tab widget DIRECTLY to window - no intermediate layout
-        self.window.add_child(self.main_layout)
 
         # Create a log layout with widget
         self.log_layout = gui.Vert(0.5 * em, gui.Margins(0.5 * em))
@@ -764,10 +764,33 @@ class GUIClient():
         collapsible_log = gui.CollapsableVert(
             "Log", 0.25 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         collapsible_log.add_child(self.log_widget)
+        collapsible_log.set_is_open(False)
 
         self.log_layout.add_child(collapsible_log)
 
+        # Viewpoint Traversal Layout
+        self.viewpoint_traversal_layout = gui.Vert(
+            0.5 * em, gui.Margins(0.5 * em))
+        self.viewpoint_traversal_layout.background_color = Materials.panel_color
+        # Create a UI slider for selection of Viewpoints with 3 buttons to its right
+        self.viewpoint_slider = gui.Slider(gui.Slider.INT)
+        self.viewpoint_slider.set_limits(0, 100)  # Example range
+
+        def _on_viewpoint_slider_changed(value):
+            """Handle viewpoint slider change"""
+            # Update the viewpoint based on slider value
+            region_index, viewpoint_index = self.traversal_order[int(value)]
+            self.ros_thread.set_current_region(region_index)
+            self.ros_thread.set_current_viewpoint(viewpoint_index)
+
+            return gui.Widget.EventCallbackResult.HANDLED
+
+        self.viewpoint_slider.set_on_value_changed(_on_viewpoint_slider_changed)
+        self.viewpoint_traversal_layout.add_child(self.viewpoint_slider)
+
+        self.window.add_child(self.main_layout)
         self.window.add_child(self.log_layout)
+        self.window.add_child(self.viewpoint_traversal_layout)
 
     def create_tab_panel(self, tab_name, tab_data, em):
         """Create a scrollable panel for a tab - ONLY scrolling here"""
@@ -1215,16 +1238,22 @@ class GUIClient():
 
             regions_dict = json.load(open(file_path, 'r'))
 
-            colors = np.zeros((len(self.point_cloud.points), 3))
+            np.random.seed(42)  # For reproducible colors
 
-            np.random.seed(42)  # For reproducibility
-            fov_meshes = o3d.geometry.TriangleMesh()
+            # Initialize empty geometries for visualization
+            fov_meshes = []
             viewpoint_meshes = o3d.geometry.TriangleMesh()
             region_view_clouds = o3d.geometry.PointCloud()
             region_view_meshes = o3d.geometry.TriangleMesh()
+
             show_clusters = False
             show_viewpoints = False
-            for region, region_dict in regions_dict['regions'].items():
+
+            traversal_order = []
+            region_order = regions_dict['order']
+
+            for region_id in region_order:
+                region_dict = regions_dict['regions'][str(region_id)]
                 region_indices = region_dict['points']
                 region_point_cloud = self.point_cloud.select_by_index(
                     region_indices)
@@ -1235,30 +1264,34 @@ class GUIClient():
                 region_view_points = []
                 region_view_normals = []
 
-                # If dict has 'fov_clusters' key, process and display them
-                if 'fov_clusters' in region_dict:
+                # If dict has 'clusters' key, process and display them
+                if 'clusters' in region_dict:
                     show_clusters = True
-                    # Iterate over each cluster in fov_clusters
-                    for fov_cluster_id, fov_cluster_dict in region_dict['fov_clusters'].items():
-                        fov_cluster_points = fov_cluster_dict['points']
-                        fov_cluster_color = region_color + \
+
+                    cluster_order = region_dict['order']
+                    print(cluster_order)
+                    for cluster_id in cluster_order:
+                        traversal_order.append((region_id, cluster_id))
+                        cluster_dict = region_dict['clusters'][str(cluster_id)]
+                        cluster_point_indices = cluster_dict['points']
+                        cluster_color = region_color + \
                             0.1*(np.random.rand(3) - 0.5)
-                        fov_cluster_color = np.clip(fov_cluster_color, 0, 1)
+                        cluster_color = np.clip(cluster_color, 0, 1)
 
                         fov_point_cloud = region_point_cloud.select_by_index(
-                            fov_cluster_points)
+                            cluster_point_indices)
                         # Remove outliers from fov_point_cloud
                         fov_point_cloud, _ = fov_point_cloud.remove_statistical_outlier(
                             nb_neighbors=20, std_ratio=2.0)
                         fov_mesh = fov_point_cloud.compute_convex_hull(joggle_inputs=True)[
                             0]
-                        fov_mesh.paint_uniform_color(fov_cluster_color)
+                        fov_mesh.paint_uniform_color(cluster_color)
                         fov_mesh.compute_vertex_normals()
                         avg_normal = np.mean(np.asarray(
                             fov_point_cloud.normals), axis=0)
                         fov_mesh.translate(avg_normal * 0.005)
 
-                        if 'viewpoint' in fov_cluster_dict:
+                        if 'viewpoint' in cluster_dict:
                             show_viewpoints = True
                             viewpoint_mesh = o3d.geometry.TriangleMesh.create_sphere(
                                 radius=5)
@@ -1266,12 +1299,12 @@ class GUIClient():
                                 size=6, origin=[0, 0, 0])
                             origin = 1000 * \
                                 np.array(
-                                    fov_cluster_dict['viewpoint']['origin'])
+                                    cluster_dict['viewpoint']['origin'])
                             viewpoint = 1000 * \
                                 np.array(
-                                    fov_cluster_dict['viewpoint']['viewpoint'])
+                                    cluster_dict['viewpoint']['viewpoint'])
                             direction = np.array(
-                                fov_cluster_dict['viewpoint']['direction'])
+                                cluster_dict['viewpoint']['direction'])
                             # Rotate viewpoint_mesh to match the direction
                             viewpoint_mesh.rotate(
                                 o3d.geometry.get_rotation_matrix_from_xyz(np.array([
@@ -1292,7 +1325,7 @@ class GUIClient():
                             viewpoint_mesh.paint_uniform_color([1.0, 1.0, 1.0])
                             viewpoint_meshes += viewpoint_mesh
 
-                        fov_meshes += fov_mesh
+                        fov_meshes.append(fov_mesh)
 
                 region_point_cloud.paint_uniform_color(region_color)
                 regions_cloud += region_point_cloud
@@ -1319,6 +1352,9 @@ class GUIClient():
 
             self.scene_widget.scene.remove_geometry("regions")
             self.scene_widget.scene.remove_geometry("fov_clusters")
+            for cluster_name in self.cluster_names:
+                self.scene_widget.scene.remove_geometry(cluster_name)
+            self.cluster_names.clear()
             self.scene_widget.scene.remove_geometry("noise_points")
             self.scene_widget.scene.remove_geometry("fov_clusters")
             self.scene_widget.scene.remove_geometry("viewpoints")
@@ -1328,8 +1364,11 @@ class GUIClient():
                 "regions", regions_cloud, Materials.point_cloud_material)
             self.scene_widget.scene.add_geometry(
                 "noise_points", noise_point_cloud, Materials.point_cloud_material)
-            self.scene_widget.scene.add_geometry(
-                "fov_clusters", fov_meshes, Materials.fov_cluster_material)
+            for i in range(len(fov_meshes)):
+                cluster_name = f"fov_cluster_{i}"
+                self.scene_widget.scene.add_geometry(
+                    cluster_name, fov_meshes[i], Materials.fov_cluster_material)
+                self.cluster_names.append(cluster_name)
             self.scene_widget.scene.add_geometry(
                 "viewpoints", viewpoint_meshes, Materials.viewpoint_material)
             self.scene_widget.scene.add_geometry(
@@ -1347,6 +1386,15 @@ class GUIClient():
                         bb.get_center(), bb.get_max_bound(), np.array([0, 0, 1]))
                 else:
                     self.show_viewpoints(False)
+
+                # Save cluster order for later use
+                self.traversal_order = traversal_order
+                print(f"Traversal order: {self.traversal_order}")
+                # Update the viewpoint slider limits
+                self.viewpoint_slider.set_limits(
+                    1, len(self.traversal_order))
+                self.viewpoint_slider.int_value = 1  # Reset to first viewpoint
+
             else:
                 self.show_regions(True)
                 self.show_noise_points(True)
@@ -1548,7 +1596,7 @@ class GUIClient():
         # Remove previous cylinder if exists
         if np.equal(intersection_point, self.last_intersection_point).all():
             scene.remove_geometry('reticle')
-            scene.add_geometry('reticle', cylinder, Materials.fov_material)
+            scene.add_geometry('reticle', cylinder, Materials.reticle_material)
         return True
 
     def set_mouse_orbit_center_to_intersection(self, intersection_result):
@@ -1628,18 +1676,26 @@ class GUIClient():
         self.scene_widget.frame = r
 
         # Place log layout at the bottom of the window
-        height = self.log_layout.calc_preferred_size(
+        log_height = self.log_layout.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height
         self.log_layout.frame = gui.Rect(
-            0.5 * em, r.height - height + 0.5 * em, r.width - em, height)
+            0.5 * em, r.height - log_height + 0.5 * em, r.width - em, log_height)
 
-        width = 22 * em
-        height = r.height - height - 2 * em
+        main_width = 22 * em
+        main_height = r.height - log_height - 2 * em
 
         right_margin = 0.25 * em
         # Place main layout between bottom of header and top of log layout on right side
         self.main_layout.frame = gui.Rect(
-            r.width - width - right_margin, 2 * em, width, height)
+            r.width - main_width - right_margin, 2 * em, main_width, main_height)
+        
+        # Place viewpoint traversal layout above log layout to the left of main layout
+        vpt_height = self.viewpoint_traversal_layout.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).height
+        vpt_width = r.width - main_width - em
+        self.viewpoint_traversal_layout.frame = gui.Rect(
+            0.5 * em, r.height - log_height + 0.5 * em - vpt_height, vpt_width, vpt_height)
+        
 
 
 def main(args=None):

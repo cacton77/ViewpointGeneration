@@ -1,11 +1,11 @@
-viewpoint_generation_node:
+viewpoint_generation:
   ros__parameters:
     model:
       mesh:
-        file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_1.stl"
+        file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade.stl"
         units: 'mm'
       point_cloud:
-        file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_1_point_cloud/turbine_blade_1_mm_point_cloud_156336points.ply"
+        file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_156335points.ply"
         units: 'm'
         sampling:
           ppsqmm: 4.
@@ -18,10 +18,10 @@ viewpoint_generation_node:
         focal_distance: 0.1
 
     regions:
-      file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_1_point_cloud/turbine_blade_1_mm_point_cloud_156336points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-07-31_12-39-19_viewpoints.json"
+      file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_156335points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-01_16-22-35_viewpoints.json"
       region_growth:
         curvature:
-          file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_1_point_cloud/turbine_blade_1_mm_point_cloud_156336points_10nn_curvatures.npy"
+          file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_156335points_10nn_curvatures.npy"
           knn_neighbors: 10
         seed_threshold: 0.1
         min_cluster_size: 100

@@ -25,7 +25,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
     initialized = False
 
     def __init__(self):
-        node_name = 'viewpoint_generation_node'
+        node_name = 'viewpoint_generation'
         super().__init__(node_name)
         self.declare_parameters(
             namespace='',
@@ -64,14 +64,27 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Create planning scene publisher
         self.planning_scene_diff_publisher = self.create_publisher(
             PlanningScene, '/planning_scene', 10)
+        self.get_logger().info('Planning scene publisher created.')
+
+
+        # Sample PCD Service
+        self.create_service(Trigger, node_name + '/sample_point_cloud',
+                            self.sample_point_cloud_callback)
+        # Estimate Curvature Service
+        self.create_service(Trigger, node_name + '/estimate_curvature',
+                            self.estimate_curvature_callback)
+        # Region Growth Service
+        self.create_service(Trigger, node_name + '/region_growth',
+                            self.region_growth_callback)
+        # FOV Clustering Service
+        self.create_service(Trigger, node_name + '/fov_clustering',
+                            self.fov_clustering_callback)
+        # Viewpoint Projection Service
+        self.create_service(Trigger, node_name + '/viewpoint_projection',
+                            self.viewpoint_projection_callback)
 
         # Viewpoint Generation Helpers
         self.viewpoint_generation = ViewpointGeneration()
-
-        self.get_logger().info('---------------------------------------------------------')
-        self.get_logger().info(self.get_parameter('model.mesh.file').get_parameter_value().string_value)
-        self.get_logger().info('---------------------------------------------------------')
-
 
         self.set_mesh_file(self.get_parameter('model.mesh.file').get_parameter_value().string_value,
                            self.get_parameter('model.mesh.units').get_parameter_value().string_value)
@@ -106,22 +119,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
             'settings.cuda_enabled').get_parameter_value().bool_value
 
         self.add_on_set_parameters_callback(self.parameter_callback)
-
-        # Sample PCD Service
-        self.create_service(Trigger, node_name + '/sample_point_cloud',
-                            self.sample_point_cloud_callback)
-        # Estimate Curvature Service
-        self.create_service(Trigger, node_name + '/estimate_curvature',
-                            self.estimate_curvature_callback)
-        # Region Growth Service
-        self.create_service(Trigger, node_name + '/region_growth',
-                            self.region_growth_callback)
-        # FOV Clustering Service
-        self.create_service(Trigger, node_name + '/fov_clustering',
-                            self.fov_clustering_callback)
-        # Viewpoint Projection Service
-        self.create_service(Trigger, node_name + '/viewpoint_projection',
-                            self.viewpoint_projection_callback)
 
         # Action Server
         # self._action_server = ActionServer(
@@ -236,6 +233,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
             self.planning_scene_diff_publisher.publish(planning_scene)
             self.get_logger().info(f'Planning scene updated!')
+
+            return True
 
     def set_point_cloud_file(self, point_cloud_file, point_cloud_units):
         """

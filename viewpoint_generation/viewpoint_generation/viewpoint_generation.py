@@ -492,13 +492,15 @@ class ViewpointGeneration():
         if self.curvatures_file is None:
             return False, 'No curvature file loaded. Please run curvature estimation first.'
 
-        regions_dict = {'regions': {}, 'order': []}
+        regions_dict = {'regions': {}}
 
         clusters, noise_points = self.rg.segment(self.point_cloud)
 
         for i, cluster in enumerate(clusters):
             regions_dict['regions'][i] = {'points': cluster}
             regions_dict['noise_points'] = noise_points
+
+        regions_dict['order'] = list(regions_dict['regions'].keys())
 
         self.regions_file = self.save_regions_dict(regions_dict)
         self.regions_dict = regions_dict
@@ -543,10 +545,13 @@ class ViewpointGeneration():
                 region['points'])
             # Perform FOV clustering
             fov_clusters = self.fc.fov_clustering(region_point_cloud)
-            self.regions_dict['regions'][region_id]['fov_clusters'] = {}
+            self.regions_dict['regions'][region_id]['clusters'] = {}
             for i, fov_cluster in enumerate(fov_clusters):
-                self.regions_dict['regions'][region_id]['fov_clusters'][i] = {
+                self.regions_dict['regions'][region_id]['clusters'][i] = {
                     'points': fov_cluster}
+        
+            # Assign default order
+            self.regions_dict['regions'][region_id]['order'] = list(self.regions_dict['regions'][region_id]['clusters'].keys())
 
         self.regions_file = self.save_regions_dict(self.regions_dict)
 
@@ -563,20 +568,20 @@ class ViewpointGeneration():
 
         # Iterate through regions in the region dictionary
         for region_id, region in self.regions_dict['regions'].items():
-            if 'fov_clusters' not in region:
+            if 'clusters' not in region:
                 continue
 
             region_points = self.point_cloud.select_by_index(
                 region['points'])
 
-            for fov_cluster_id, fov_cluster in region['fov_clusters'].items():
+            for fov_cluster_id, fov_cluster in region['clusters'].items():
                 fov_points = region_points.select_by_index(
                     fov_cluster['points'])
                 # Project viewpoint for the FOV cluster
                 origin, viewpoint, direction = self.vp.project(
                     np.asarray(fov_points.points), np.asarray(fov_points.normals))
                 # Store the viewpoint in the region dictionary
-                self.regions_dict['regions'][region_id]['fov_clusters'][fov_cluster_id]['viewpoint'] = {
+                self.regions_dict['regions'][region_id]['clusters'][fov_cluster_id]['viewpoint'] = {
                     'origin': origin.tolist(),
                     'viewpoint': viewpoint.tolist(),
                     'direction': direction.tolist()

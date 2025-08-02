@@ -28,7 +28,7 @@ class ROSThread(Node):
 
         # Target node name (change this to your target node)
         # Replace with actual node name
-        self.target_node_name = '/viewpoint_generation_node'
+        self.target_node_name = '/viewpoint_generation'
 
         # Create service clients
         self.list_params_client = self.create_client(
@@ -97,17 +97,17 @@ class ROSThread(Node):
         self.get_logger().info('Waiting for parameter services...')
 
         # Wait for list parameters service
-        while not self.list_params_client.wait_for_service(timeout_sec=1.0):
+        while not self.list_params_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
                 f'Waiting for {self.target_node_name}/list_parameters service...')
 
         # Wait for get parameters service
-        while not self.get_params_client.wait_for_service(timeout_sec=1.0):
+        while not self.get_params_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
                 f'Waiting for {self.target_node_name}/get_parameters service...')
 
         # Wait for set parameters service
-        while not self.set_params_client.wait_for_service(timeout_sec=1.0):
+        while not self.set_params_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
                 f'Waiting for {self.target_node_name}/set_parameters service...')
 
@@ -115,7 +115,7 @@ class ROSThread(Node):
 
     def sample_point_cloud(self):
         """Trigger the sampling service"""
-        if not self.sampling_client.wait_for_service(timeout_sec=1.0):
+        if not self.sampling_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().error('Sampling service not available')
             return False
 
@@ -136,7 +136,7 @@ class ROSThread(Node):
 
     def estimate_curvature(self):
         """Trigger the curvature estimation service"""
-        if not self.estimate_curvature_client.wait_for_service(timeout_sec=1.0):
+        if not self.estimate_curvature_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().error('Curvature estimation service not available')
             return False
 
@@ -156,7 +156,7 @@ class ROSThread(Node):
 
     def region_growth(self):
         """Trigger the region growth service"""
-        if not self.region_growth_client.wait_for_service(timeout_sec=1.0):
+        if not self.region_growth_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().error('Region growth service not available')
             return False
 
@@ -213,6 +213,13 @@ class ROSThread(Node):
         else:
             self.get_logger().error('Failed to trigger viewpoint projection')
             return False
+        
+    def set_current_region(self, region_index):
+        self.current_region_index = region_index
+
+        
+    def set_current_viewpoint(self, viewpoint_index):
+        self.current_viewpoint_index = region_index
 
     def expand_dict_keys(self):
         """

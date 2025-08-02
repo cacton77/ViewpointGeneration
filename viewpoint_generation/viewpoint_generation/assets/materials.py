@@ -46,6 +46,10 @@ class Materials:
     fov_material.shader = "defaultUnlit"
     fov_material.base_color = [1.0, 1.0, 1.0, 1.0]
 
+    reticle_material = rendering.MaterialRecord()
+    reticle_material.shader = "defaultUnlit"
+    reticle_material.base_color = [204/255, 108/255, 231/255, 1.0]
+
     tabletop_material = rendering.MaterialRecord()
     tabletop_material.shader = "defaultLitTransparency"
     tabletop_material.base_color = [1.0, 1.0, 1.0, 0.75]
