@@ -1,5 +1,6 @@
 import rclpy
 # moveit python library
+from rclpy.node import Node
 from moveit.core.robot_state import RobotState
 from moveit.planning import (
     MoveItPy,
@@ -10,50 +11,61 @@ from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 from geometry_msgs.msg import PoseStamped
 
 
-class ViewpointTraversalNode(MoveItPy):
+class ViewpointTraversalNode(Node):
 
     def __init__(self):
         node_name = 'viewpoint_traversal'
         super().__init__(node_name)
+        self.robot = MoveItPy('moveit_py')
+
         try:
-            self.planning_component = self.get_planning_component(
+            self.get_logger().info("Initializing MoveItPy")
+            print("Initializing MoveItPy")
+            self.planning_component = self.robot.get_planning_component(
                 'disc_to_ur5e')
         except Exception as e:
-            get_logger(node_name).error(
+            self.get_logger().error(
                 f"Failed to get planning component: {e}")
             rclpy.shutdown()
             return
 
-    # Create a service to move to a specific pose
+        print("Planning component initialized successfully")
+        # Create a service to move to a specific pose
         self.srv = self.create_service(
             MoveToPoseStamped,
-            node_name + 'move_to_pose_stamped',
+            'viewpoint_traversal/move_to_pose_stamped',
             self.move_to_pose_stamped_callback
         )
+        print("Service 'move_to_pose_stamped' created successfully")
 
     def move_to_pose_stamped_callback(self, request, response):
         # Create a RobotState object
         robot_state = RobotState(self.robot_model)
-
+        print("DEBUG: RobotState object created successfully")
         # Set the pose from the request
-        pose_goal = request
+        self.robot.planning_component.set_goal_state(
+            pose_stamped_msg=request.pose)
+
+        print("DEBUG: Goal state set to the requested pose")
 
         # Log the request
         self.get_logger().info(f"Received request: {request}")
 
+        # Log the request
+        self.get_logger().info(f"Received request: {request}")
+        print("DEBUG: Request pose:", request.pose)
         # Set the robot state to the current state
         robot_state.set_to_default_values()
+        print("DEBUG: Robot state set to default values")
+        # Plan and execute
+        success = self.robot.plan_and_execute()
+        print("DEBUG: Plan and execute called, success:", success)
 
-        # Plan to the specified pose
-        plan_request = MultiPipelinePlanRequestParameters(
-            robot_state=robot_state,
-            target_pose=pose_goal,
-            group_name='disc_to_ur5e'
-        )
+        # Prepare the response
+        response.success = success
+        response.message = "Motion completed successfully" if success else "Motion failed"
 
-        self.planning_component.set_goal_state(pose_stamped_msg=pose_goal)
-
-        self.plan_and_execute()
+        return response
 
     # Function for planning and executing a trajectories
     def plan_and_execute(self, single_plan_parameters=None, multi_plan_parameters=None):
@@ -95,7 +107,7 @@ class ViewpointTraversalNode(MoveItPy):
             robot_trajectory = plan_result.trajectory
             # Check if the controller name is correct
             self.execute(robot_trajectory, controllers=[
-                         'inspection_cell_controller'])
+                'inspection_cell_controller'])
         else:
             self.get_logger().error("No trajectory found to execute")
             return False
