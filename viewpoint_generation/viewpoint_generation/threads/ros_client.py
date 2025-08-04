@@ -15,10 +15,27 @@ from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterValue, Parame
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from ament_index_python.packages import get_package_prefix
 
+from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 
 class ROSThread(Node):
     def __init__(self, stream_id=0):
-        super().__init__('gui_node')
+        super().__init__('gui')
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('show_axes', True),
+                ('show_grid', True),
+                ('show_model_bounding_box', False),
+                ('show_reticle', True),
+                ('show_ground_plane', True),
+            ]
+        )
+
+        self.show_axes = self.get_parameter('show_axes').get_parameter_value().bool_value
+        self.show_grid = self.get_parameter('show_grid').get_parameter_value().bool_value
+        self.show_model_bounding_box = self.get_parameter('show_model_bounding_box').get_parameter_value().bool_value
+        self.show_reticle = self.get_parameter('show_reticle').get_parameter_value().bool_value
+
         self.t = threading.Thread(target=self.update, args=())
         self.t.daemon = True  # daemon threads run in background
 
@@ -74,6 +91,14 @@ class ROSThread(Node):
                                                               callback_group=services_cb_group
                                                               )
 
+        # Create client for viewpoint traversal service
+        self.traversal_node_name = 'viewpoint_traversal'
+        self.move_to_pose_stamped_client = self.create_client(MoveToPoseStamped,
+                                                             f'{self.traversal_node_name}/move_to_pose_stamped',
+                                                             callback_group=services_cb_group
+                                                             )
+
+
         # ROSOUT log subscription
         rosout_sub = self.create_subscription(
             Log,
@@ -91,6 +116,27 @@ class ROSThread(Node):
     def rosout_callback(self, msg):
         text = f"[{msg.name}] {msg.msg}" if msg.name else msg.msg
         self.log.append(text)
+
+    def set_param(self, param_name, new_value):
+        """ Set a parameter of this node """
+        if type(new_value) is bool:
+            param_type = rclpy.Parameter.Type.BOOL
+        elif type(new_value) is int:
+            param_type = rclpy.Parameter.Type.INTEGER
+        elif type(new_value) is float:
+            param_type = rclpy.Parameter.Type.DOUBLE
+        elif type(new_value) is str:
+            param_type = rclpy.Parameter.Type.STRING
+        else:
+            self.get_logger().error(
+                f'Unsupported parameter type: {type(new_value)} for {param_name}')
+            return
+        param = rclpy.parameter.Parameter(
+                param_name,
+                param_type,
+                new_value
+            )
+        self.set_parameters([param])
 
     def wait_for_services(self):
         """Wait for all required services to be available"""
@@ -110,6 +156,29 @@ class ROSThread(Node):
         while not self.set_params_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
                 f'Waiting for {self.target_node_name}/set_parameters service...')
+            
+        # Wait for viewpoint generation services
+        while not self.sampling_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().info(
+                f'Waiting for {self.target_node_name}/sample_point_cloud service...')
+        while not self.estimate_curvature_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().info(
+                f'Waiting for {self.target_node_name}/estimate_curvature service...')
+        while not self.region_growth_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().info(
+                f'Waiting for {self.target_node_name}/region_growth service...')
+        while not self.fov_clustering_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().info(
+                f'Waiting for {self.target_node_name}/fov_clustering service...')
+        while not self.viewpoint_projection_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().info(
+                f'Waiting for {self.target_node_name}/viewpoint_projection service...')
+        
+        self.get_logger().info(
+                f'Waiting for {self.traversal_node_name}/move_to_pose_stamped service...')
+        if not self.move_to_pose_stamped_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warning(
+                f'{self.traversal_node_name}/move_to_pose_stamped service not available, viewpoint traversal will not work')
 
         self.get_logger().info('All parameter services are available!')
 
@@ -219,7 +288,7 @@ class ROSThread(Node):
 
         
     def set_current_viewpoint(self, viewpoint_index):
-        self.current_viewpoint_index = region_index
+        self.current_viewpoint_index = viewpoint_index
 
     def expand_dict_keys(self):
         """

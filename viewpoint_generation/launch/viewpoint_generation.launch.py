@@ -27,8 +27,7 @@ def generate_launch_description():
         package="viewpoint_generation",
         name="viewpoint_generation",
         executable="viewpoint_generation_node",
-        # parameters=[config],
-        parameters=['/workspaces/isaac_ros-dev/install/viewpoint_generation/share/viewpoint_generation/config/default.yaml'],
+        parameters=[config],
         output="screen",
         emulate_tty=True
     )
@@ -42,12 +41,13 @@ def generate_launch_description():
     gui_client_node = Node(
         package='viewpoint_generation',
         executable='gui_client_node',
-        name='gui_client',
+        name='gui',
+        parameters=[config],
         output='screen',)
 
     ld.add_action(config_file_arg)  # Don't forget to add the argument!
     ld.add_action(gui_client_node)
-    # ld.add_action(rqt_configure)
+    ld.add_action(rqt_configure)
     ld.add_action(viewpoint_generation_node)
 
     return ld

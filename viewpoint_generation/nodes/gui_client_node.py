@@ -51,6 +51,7 @@ class GUIClient():
     camera_fov_height = 0.02
     last_intersection_point = np.array([0.0, 0.0, 0.0], dtype=np.float32)
 
+    region_names = []
     cluster_names = []
 
     def __init__(self):
@@ -292,7 +293,7 @@ class GUIClient():
             view_menu.set_checked(self.MENU_SHOW_GRID, True)
             view_menu.add_item("Show Model Bounding Box",
                                self.MENU_SHOW_MODEL_BB)
-            view_menu.set_checked(self.MENU_SHOW_MODEL_BB, True)
+            view_menu.set_checked(self.MENU_SHOW_MODEL_BB, self.ros_thread.show_model_bounding_box)
             view_menu.add_item("Show Reticle", self.MENU_SHOW_RETICLE)
             view_menu.set_checked(self.MENU_SHOW_RETICLE, True)
             ground_plane_menu = gui.Menu()
@@ -376,10 +377,10 @@ class GUIClient():
         #     self.MENU_QUIT, self._on_menu_quit)
         # w.set_on_menu_item_activated(
         #     self.MENU_PREFERENCES, self._on_menu_preferences)
-        # w.set_on_menu_item_activated(
-        #     self.MENU_SHOW_AXES, self._on_menu_show_axes)
-        # w.set_on_menu_item_activated(
-        #     self.MENU_SHOW_GRID, self._on_menu_show_grid)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_AXES, self._on_menu_show_axes)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_GRID, self._on_menu_show_grid)
         w.set_on_menu_item_activated(
             self.MENU_SHOW_MODEL_BB, self._on_menu_show_model_bounding_box)
         w.set_on_menu_item_activated(
@@ -405,6 +406,18 @@ class GUIClient():
         # w.set_on_menu_item_activated(
         #     self.MENU_ABOUT, self._on_menu_about)
         # ----
+
+    def _on_menu_show_axes(self):
+        show = not gui.Application.instance.menubar.is_checked(
+            self.MENU_SHOW_AXES)
+
+        self.show_axes(show)
+
+    def _on_menu_show_grid(self):
+        show = not gui.Application.instance.menubar.is_checked(
+            self.MENU_SHOW_GRID)
+
+        self.show_grid(show)
 
     def _on_menu_show_model_bounding_box(self):
         show = not gui.Application.instance.menubar.is_checked(
@@ -453,21 +466,40 @@ class GUIClient():
             self.MENU_SHOW_NOISE_POINTS)
         self.show_noise_points(show)
 
+    def show_axes(self, show=True):
+        self.scene_widget.scene.show_axes(True)
+
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_AXES, show)
+        self.ros_thread.show_axes = show
+        self.ros_thread.set_param('show_axes', show)
+
+    def show_grid(self, show=True):
+        self.scene_widget.scene.show_ground_plane(
+            show, o3d.visualization.rendering.Scene.GroundPlane.XY)
+
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_GRID, show)
+        
+        self.ros_thread.show_grid = show
+        self.ros_thread.set_param('show_grid', show)
+
     def show_model_bounding_box(self, show=True):
         # Show/hide model bounding box.
-        if show:
-            self.scene_widget.scene.show_geometry('model_bounding_box', True)
-        else:
-            self.scene_widget.scene.show_geometry('model_bounding_box', False)
+        self.scene_widget.scene.show_geometry('model_bounding_box', show)
 
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_MODEL_BB, show)
+        self.ros_thread.show_model_bounding_box = show
+        self.ros_thread.set_param('show_model_bounding_box', show)
 
     def show_reticle(self, show=True):
         self.scene_widget.scene.show_geometry('reticle', show)
 
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_RETICLE, show)
+        self.ros_thread.show_reticle = show
+        self.ros_thread.set_param('show_reticle', show)
 
     def show_mesh(self, show=True):
         # Show/hide mesh.
@@ -500,7 +532,9 @@ class GUIClient():
             self.MENU_SHOW_CURVATURES, show)
 
     def show_regions(self, show=True):
-        self.scene_widget.scene.show_geometry('regions', show)
+        for region_name in self.region_names:
+            self.scene_widget.scene.show_geometry(
+                f'{region_name}_view_mesh', show)
         if show:
             self.show_point_cloud(False)
             self.show_curvatures(False)
@@ -511,7 +545,9 @@ class GUIClient():
             self.MENU_SHOW_REGIONS, show)
 
     def show_fov_clusters(self, show=True):
-        self.scene_widget.scene.show_geometry('fov_clusters', show)
+        for cluster_name in self.cluster_names:
+            self.scene_widget.scene.show_geometry(
+                f"{cluster_name}_viewpoint", show)
         if show:
             self.show_point_cloud(False)
             self.show_curvatures(False)
@@ -522,12 +558,18 @@ class GUIClient():
 
     def show_viewpoints(self, show=True):
         """Show or hide the viewpoints in the scene."""
-        self.scene_widget.scene.show_geometry('viewpoints', show)
-        self.scene_widget.scene.show_geometry('region_view_meshes', show)
+        for cluster_name in self.cluster_names:
+            self.scene_widget.scene.show_geometry(
+                f"{cluster_name}_viewpoint", show)
 
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_VIEWPOINTS, show)
-
+        
+    def show_region_view_manifolds(self, show=True):
+        for region_name in self.region_names:
+            self.scene_widget.scene.show_geometry(
+                f'{region_name}_view_mesh', show)
+        
     def show_noise_points(self, show=True):
         self.scene_widget.scene.show_geometry('noise_points', show)
         gui.Application.instance.menubar.set_checked(
@@ -779,7 +821,7 @@ class GUIClient():
         def _on_viewpoint_slider_changed(value):
             """Handle viewpoint slider change"""
             # Update the viewpoint based on slider value
-            region_index, viewpoint_index = self.traversal_order[int(value)]
+            region_index, viewpoint_index = self.traversal_order[int(value - 1)]
             self.ros_thread.set_current_region(region_index)
             self.ros_thread.set_current_viewpoint(viewpoint_index)
 
@@ -1058,7 +1100,7 @@ class GUIClient():
                             self.camera_updated = True
 
                         parameters_dict[param_name]['update_flag'] = False
-                        print(f"Updated \'{param_name}\' to \'{param_value}\'")
+                        # print(f"Updated \'{param_name}\' to \'{param_value}\'")
 
         if parameters_updated:
             print("------------------------------------")
@@ -1125,7 +1167,7 @@ class GUIClient():
                 self.scene_widget.scene.remove_geometry(
                     "mesh")  # Remove previous mesh if exists
                 self.scene_widget.scene.remove_geometry("point_cloud")
-                self.scene_widget.scene.remove_geometry("fov_clusters")
+                self.clear_clusters()
                 self.scene_widget.scene.remove_geometry("noise_points")
                 self.scene_widget.scene.add_geometry(
                     "mesh", mesh, Materials.mesh_material)
@@ -1178,7 +1220,7 @@ class GUIClient():
             self.scene_widget.scene.remove_geometry("point_cloud")
             self.scene_widget.scene.remove_geometry("curvatures")
             self.scene_widget.scene.remove_geometry("regions")
-            self.scene_widget.scene.remove_geometry("fov_clusters")
+            self.clear_clusters()
             self.scene_widget.scene.remove_geometry("noise_points")
             self.scene_widget.scene.add_geometry(
                 "point_cloud", point_cloud, Materials.point_cloud_material)
@@ -1214,7 +1256,7 @@ class GUIClient():
             # Remove previous point cloud if exists
             self.scene_widget.scene.remove_geometry("curvatures")
             self.scene_widget.scene.remove_geometry("regions")
-            self.scene_widget.scene.remove_geometry("fov_clusters")
+            self.clear_clusters()
             self.scene_widget.scene.remove_geometry("noise_points")
             self.scene_widget.scene.add_geometry(
                 "curvatures", curvatures_cloud, Materials.point_cloud_material)
@@ -1241,10 +1283,10 @@ class GUIClient():
             np.random.seed(42)  # For reproducible colors
 
             # Initialize empty geometries for visualization
+            region_surface_clouds = []
             fov_meshes = []
-            viewpoint_meshes = o3d.geometry.TriangleMesh()
-            region_view_clouds = o3d.geometry.PointCloud()
-            region_view_meshes = o3d.geometry.TriangleMesh()
+            viewpoint_meshes = []
+            region_view_meshes = []
 
             show_clusters = False
             show_viewpoints = False
@@ -1264,12 +1306,14 @@ class GUIClient():
                 region_view_points = []
                 region_view_normals = []
 
+                region_point_cloud.paint_uniform_color(region_color)
+                region_surface_clouds.append(region_point_cloud)
+
                 # If dict has 'clusters' key, process and display them
                 if 'clusters' in region_dict:
                     show_clusters = True
 
                     cluster_order = region_dict['order']
-                    print(cluster_order)
                     for cluster_id in cluster_order:
                         traversal_order.append((region_id, cluster_id))
                         cluster_dict = region_dict['clusters'][str(cluster_id)]
@@ -1323,13 +1367,11 @@ class GUIClient():
                             viewpoint_mesh.translate(viewpoint)
 
                             viewpoint_mesh.paint_uniform_color([1.0, 1.0, 1.0])
-                            viewpoint_meshes += viewpoint_mesh
+                            viewpoint_meshes.append(viewpoint_mesh)
 
                         fov_meshes.append(fov_mesh)
 
-                region_point_cloud.paint_uniform_color(region_color)
-                regions_cloud += region_point_cloud
-
+                
                 # Region View Surface
                 if show_viewpoints:
                     region_view_cloud.points = o3d.utility.Vector3dVector(
@@ -1340,8 +1382,7 @@ class GUIClient():
                         region_view_mesh = region_view_cloud.compute_convex_hull(
                             joggle_inputs=True)[0]
                         region_view_mesh.paint_uniform_color(region_color)
-                        region_view_meshes += region_view_mesh
-                        region_view_clouds += region_view_cloud
+                        region_view_meshes.append(region_view_mesh)
 
             # Create noise point cloud
             noise_points = regions_dict['noise_points']
@@ -1350,29 +1391,32 @@ class GUIClient():
             noise_point_cloud.paint_uniform_color(
                 [1.0, 0.0, 0.0])  # Red for noise points
 
-            self.scene_widget.scene.remove_geometry("regions")
-            self.scene_widget.scene.remove_geometry("fov_clusters")
-            for cluster_name in self.cluster_names:
-                self.scene_widget.scene.remove_geometry(cluster_name)
-            self.cluster_names.clear()
+            self.clear_regions()
             self.scene_widget.scene.remove_geometry("noise_points")
-            self.scene_widget.scene.remove_geometry("fov_clusters")
-            self.scene_widget.scene.remove_geometry("viewpoints")
-            self.scene_widget.scene.remove_geometry("region_view_meshes")
+            self.clear_clusters()
+            self.clear_viewpoints()
+            self.clear_region_view_manifolds()
 
-            self.scene_widget.scene.add_geometry(
-                "regions", regions_cloud, Materials.point_cloud_material)
+            for i in range(len(region_surface_clouds)):
+                region_name = f"region_{i}"
+                self.scene_widget.scene.add_geometry(
+                    f'{region_name}_surface_cloud', region_surface_clouds[i], Materials.point_cloud_material)
+                self.region_names.append(region_name)
             self.scene_widget.scene.add_geometry(
                 "noise_points", noise_point_cloud, Materials.point_cloud_material)
             for i in range(len(fov_meshes)):
-                cluster_name = f"fov_cluster_{i}"
+                cluster_name = f"cluster_{i}"
                 self.scene_widget.scene.add_geometry(
                     cluster_name, fov_meshes[i], Materials.fov_cluster_material)
                 self.cluster_names.append(cluster_name)
-            self.scene_widget.scene.add_geometry(
-                "viewpoints", viewpoint_meshes, Materials.viewpoint_material)
-            self.scene_widget.scene.add_geometry(
-                "region_view_meshes", region_view_meshes, Materials.region_view_material)
+            for i in range(len(viewpoint_meshes)):
+                viewpoint_name = f"cluster_{i}_viewpoint"
+                self.scene_widget.scene.add_geometry(
+                    viewpoint_name, viewpoint_meshes[i], Materials.viewpoint_material)
+            for i in range(len(region_view_meshes)):
+                region_name = f"region_{i}"
+                self.scene_widget.scene.add_geometry(
+                    f'{region_name}_view_mesh', region_view_meshes[i], Materials.region_view_material)
 
             if show_clusters:
                 self.show_regions(False)
@@ -1380,10 +1424,17 @@ class GUIClient():
                 self.show_fov_clusters(True)
                 if show_viewpoints:
                     self.show_viewpoints(True)
+                    self.show_region_view_manifolds(True)
                     # Set camera view to fit the mesh
-                    bb = viewpoint_meshes.get_axis_aligned_bounding_box()
-                    self.scene_widget.look_at(
-                        bb.get_center(), bb.get_max_bound(), np.array([0, 0, 1]))
+                    bbox = self.scene_widget.scene.bounding_box
+    
+                    # Set up camera to view the entire bounding box
+                    self.scene_widget.setup_camera(
+                        60.0,          # Field of view in degrees
+                        bbox,           # Bounding box to fit
+                        bbox.get_center()  # Center point
+                    )
+
                 else:
                     self.show_viewpoints(False)
 
@@ -1407,6 +1458,25 @@ class GUIClient():
         except Exception as e:
             print(f"Error loading regions from {file_path}: {e}")
             return
+
+    def clear_regions(self):
+        for region_name in self.region_names:
+            self.scene_widget.scene.remove_geometry(region_name)
+        self.region_names.clear()
+
+    def clear_region_view_manifolds(self):
+        for region_name in self.region_names:
+            self.scene_widget.scene.remove_geometry(f"{region_name}_view_mesh")
+        self.region_names.clear()
+
+    def clear_clusters(self):
+        for cluster_name in self.cluster_names:
+                self.scene_widget.scene.remove_geometry(cluster_name)
+        self.cluster_names.clear()
+
+    def clear_viewpoints(self):
+        for cluster_name in self.cluster_names:
+            self.scene_widget.scene.remove_geometry(f"{cluster_name}_viewpoint")
 
     def set_widget_value(self, widget, value):
         """Set the value of a widget based on its type"""
@@ -1652,10 +1722,23 @@ class GUIClient():
         if lockon:
             self.set_mouse_orbit_center_to_intersection(intersection_result)
 
+        # Update visible geometry
+        self.show_axes(self.ros_thread.show_axes)
+        self.show_grid(self.ros_thread.show_grid)
+        self.show_model_bounding_box(self.ros_thread.show_model_bounding_box)
+
+        # Paint selected viewpoint green
+        # Get viewpoint index from slider
+        viewpoint_index = self.viewpoint_slider.int_value - 1
+
+
+        # Sleep to maintain FPS
         this_draw_time = time.time()
         if this_draw_time - self.last_draw_time < 1/self.fps:
             time.sleep(1/self.fps - (this_draw_time - self.last_draw_time))
             this_draw_time = time.time()
+
+
 
     def on_main_window_closing(self):
         gui.Application.instance.quit()
