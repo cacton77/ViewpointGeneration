@@ -10,6 +10,7 @@ from moveit.planning import (
 from rclpy.logging import get_logger
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 from geometry_msgs.msg import PoseStamped
+import pprint
 
 
 class ViewpointTraversalNode(Node):
@@ -32,6 +33,10 @@ class ViewpointTraversalNode(Node):
                 f"Failed to get planning component: {e}")
             rclpy.shutdown()
             return
+
+        # Debug: see what parameters are being passed
+        moveit_params = self.get_parameters_by_prefix('')
+        pprint.pprint(dict(moveit_params))
 
         print("Planning component initialized successfully")
         # Create a service to move to a specific pose
@@ -121,28 +126,28 @@ class ViewpointTraversalNode(Node):
 
 
 def main():
-    # rclpy.init()
-    # traversal_node = ViewpointTraversalNode()
-    # rclpy.spin(traversal_node)
+    rclpy.init()
+    traversal_node = ViewpointTraversalNode()
+    rclpy.spin(traversal_node)
 
     ###################################################################
     # MoveItPy Setup
     ###################################################################
-    rclpy.init()
-    logger = get_logger("moveit_py.pose_goal")
+    # rclpy.init()
+    # logger = get_logger("moveit_py.pose_goal")
 
-    # instantiate MoveItPy instance and get planning component
-    robot = MoveItPy(node_name="moveit_py")
-    disc_to_ur5e = robot.get_planning_component("disc_to_ur5e")
-    logger.info("MoveItPy instance created")
-    while True:
-        try:
-            # Create a RobotState object
-            robot_state = RobotState(robot.get_robot_model())
-            logger.info("RobotState object created successfully")
-        except Exception as e:
-            logger.error(f"Failed to create RobotState object: {e}")
-        time.sleep(1)
+    # # instantiate MoveItPy instance and get planning component
+    # robot = MoveItPy(node_name="moveit_py")
+    # disc_to_ur5e = robot.get_planning_component("disc_to_ur5e")
+    # logger.info("MoveItPy instance created")
+    # while True:
+    #     try:
+    #         # Create a RobotState object
+    #         robot_state = RobotState(robot.get_robot_model())
+    #         logger.info("RobotState object created successfully")
+    #     except Exception as e:
+    #         logger.error(f"Failed to create RobotState object: {e}")
+    #     time.sleep(1)
 
 
 if __name__ == '__main__':
