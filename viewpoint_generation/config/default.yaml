@@ -3,6 +3,16 @@ gui:
     show_model_bounding_box: False
     show_grid: False
     show_skybox: True
+    show_mesh: True
+    show_point_cloud: False
+    show_curvatures: False
+    show_regions: False
+    show_noise_points: False
+    show_fov_clusters: False
+    show_viewpoints: False
+    show_region_view_manifolds: False
+    show_reticle: True
+    show_path: False
 
 viewpoint_generation:
   ros__parameters:
@@ -24,7 +34,7 @@ viewpoint_generation:
         focal_distance: 0.1
 
     regions:
-      file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-06_16-15-31_viewpoints.json"
+      file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-07_14-00-54_viewpoints.json"
       region_growth:
         curvature:
           file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_10nn_curvatures.npy"

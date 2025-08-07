@@ -29,6 +29,15 @@ class ROSThread(Node):
                 ('show_model_bounding_box', False),
                 ('show_reticle', True),
                 ('show_skybox', True),
+                ('show_mesh', True),
+                ('show_point_cloud', True),
+                ('show_curvatures', True),
+                ('show_regions', True),
+                ('show_noise_points', True),
+                ('show_fov_clusters', True),
+                ('show_viewpoints', True),
+                ('show_region_view_manifolds', True),
+                ('show_path', False),
             ]
         )
 
@@ -37,6 +46,15 @@ class ROSThread(Node):
         self.show_model_bounding_box = self.get_parameter('show_model_bounding_box').get_parameter_value().bool_value
         self.show_reticle = self.get_parameter('show_reticle').get_parameter_value().bool_value
         self.show_skybox = self.get_parameter('show_skybox').get_parameter_value().bool_value
+        self.show_mesh = self.get_parameter('show_mesh').get_parameter_value().bool_value
+        self.show_point_cloud = self.get_parameter('show_point_cloud').get_parameter_value().bool_value
+        self.show_curvatures = self.get_parameter('show_curvatures').get_parameter_value().bool_value
+        self.show_regions = self.get_parameter('show_regions').get_parameter_value().bool_value
+        self.show_noise_points = self.get_parameter('show_noise_points').get_parameter_value().bool_value
+        self.show_fov_clusters = self.get_parameter('show_fov_clusters').get_parameter_value().bool_value
+        self.show_viewpoints = self.get_parameter('show_viewpoints').get_parameter_value().bool_value
+        self.show_region_view_manifolds = self.get_parameter('show_region_view_manifolds').get_parameter_value().bool_value
+        self.show_path = self.get_parameter('show_path').get_parameter_value().bool_value
 
         self.t = threading.Thread(target=self.update, args=())
         self.t.daemon = True  # daemon threads run in background
@@ -95,8 +113,8 @@ class ROSThread(Node):
 
         # Create client for viewpoint traversal service
         self.traversal_node_name = 'viewpoint_traversal'
-        self.move_to_pose_stamped_client = self.create_client(MoveToPoseStamped,
-                                                             f'{self.traversal_node_name}/move_to_pose_stamped',
+        self.move_to_viewpoint_client = self.create_client(Trigger,
+                                                             f'{self.target_node_name}/move_to_viewpoint',
                                                              callback_group=services_cb_group
                                                              )
 
@@ -176,10 +194,10 @@ class ROSThread(Node):
                 f'Waiting for {self.target_node_name}/viewpoint_projection service...')
         
         self.get_logger().info(
-                f'Waiting for {self.traversal_node_name}/move_to_pose_stamped service...')
-        if not self.move_to_pose_stamped_client.wait_for_service(timeout_sec=1.0):
+                f'Waiting for {self.target_node_name}/move_to_viewpoint service...')
+        if not self.move_to_viewpoint_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().warning(
-                f'{self.traversal_node_name}/move_to_pose_stamped service not available, viewpoint traversal will not work')
+                f'{self.target_node_name}/move_to_viewpoint service not available, viewpoint traversal will not work')
 
         self.get_logger().info('All parameter services are available!')
 
@@ -288,6 +306,24 @@ class ROSThread(Node):
         """Select a viewpoint based on region and cluster indices"""
         self.set_parameter('regions.selected_region', region_index)
         self.set_parameter('regions.selected_cluster', cluster_index)
+
+    def move_to_viewpoint(self):
+        """Move the robot to the selected viewpoint"""
+
+        request = Trigger.Request()
+        future = self.move_to_viewpoint_client.call_async(request)
+        future.add_done_callback(self.move_to_viewpoint_future_callback)
+
+    def move_to_viewpoint_future_callback(self, future):
+        """Callback for the move to viewpoint service future"""
+        if future.result() is not None:
+            if future.result().success:
+                self.get_logger().info('Moved to viewpoint successfully')
+            else:
+                self.get_logger().error(
+                    f'Failed to move to viewpoint: {future.result().message}')
+        else:
+            self.get_logger().error('Failed to call move_to_viewpoint service')
 
     def expand_dict_keys(self):
         """

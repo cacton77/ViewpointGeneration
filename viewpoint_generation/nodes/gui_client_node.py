@@ -41,10 +41,11 @@ class GUIClient():
     MENU_SHOW_NOISE_POINTS = 19
     MENU_SHOW_FOV_CLUSTERS = 20
     MENU_SHOW_VIEWPOINTS = 21
-    MENU_SHOW_SETTINGS = 22
-    MENU_SHOW_ERRORS = 23
-    MENU_SHOW_PATH = 24
-    MENU_ABOUT = 25
+    MENU_SHOW_REGION_VIEW_MANIFOLDS = 22
+    MENU_SHOW_SETTINGS = 23
+    MENU_SHOW_ERRORS = 24
+    MENU_SHOW_PATH = 25
+    MENU_ABOUT = 26
 
     camera_updated = False
     camera_fov_width = 0.03
@@ -91,11 +92,8 @@ class GUIClient():
         self.scene_widget.scene = o3d.visualization.rendering.Open3DScene(
             self.window.renderer)
         self.scene_widget.enable_scene_caching(False)
-        self.scene_widget.scene.show_axes(True)
-        self.scene_widget.scene.show_ground_plane(
-            True, o3d.visualization.rendering.Scene.GroundPlane.XY)
-        self.scene_widget.scene.set_background(
-            [0.1, 0.1, 0.1, 1.0])
+
+        self.scene_widget.scene.set_background(Materials.scene_background_color)
         # Set view
         self.scene_widget.look_at(
             np.array([0, 0, 0]), np.array([1, 1, 1]), np.array([0, 0, 1]))
@@ -104,7 +102,7 @@ class GUIClient():
         cylinder = o3d.geometry.TriangleMesh.create_cylinder(
             radius=Materials.tabletop_diameter/2, height=Materials.tabletop_thickness)
         cylinder.translate(np.array([0, 0, -Materials.tabletop_thickness/2]))
-        self.scene_widget.scene.add_geometry(
+        self.add_geometry(
             "tabletop", cylinder, Materials.tabletop_material)
 
         self.ray_casting_scene = o3d.t.geometry.RaycastingScene()
@@ -296,7 +294,7 @@ class GUIClient():
                                self.MENU_SHOW_MODEL_BB)
             view_menu.set_checked(self.MENU_SHOW_MODEL_BB, self.ros_thread.show_model_bounding_box)
             view_menu.add_item("Show Reticle", self.MENU_SHOW_RETICLE)
-            view_menu.set_checked(self.MENU_SHOW_RETICLE, True)
+            view_menu.set_checked(self.MENU_SHOW_RETICLE, self.ros_thread.show_reticle)
             ground_plane_menu = gui.Menu()
             ground_plane_menu.add_item("XY", 100)
             ground_plane_menu.add_item("XZ", 101)
@@ -305,26 +303,28 @@ class GUIClient():
             view_menu.add_separator()
             # Object display options
             view_menu.add_item("Show Model", self.MENU_SHOW_MESH)
-            view_menu.set_checked(self.MENU_SHOW_MESH, True)
+            view_menu.set_checked(self.MENU_SHOW_MESH, self.ros_thread.show_mesh)
             view_menu.add_item("Show Point Clouds",
                                self.MENU_SHOW_POINT_CLOUD)
-            view_menu.set_checked(self.MENU_SHOW_POINT_CLOUD, False)
+            view_menu.set_checked(self.MENU_SHOW_POINT_CLOUD, self.ros_thread.show_point_cloud)
             view_menu.add_item("Show Curvatures",
                                self.MENU_SHOW_CURVATURES)
-            view_menu.set_checked(self.MENU_SHOW_CURVATURES, False)
+            view_menu.set_checked(self.MENU_SHOW_CURVATURES, self.ros_thread.show_curvatures)
             view_menu.add_item("Show Regions", self.MENU_SHOW_REGIONS)
-            view_menu.set_checked(self.MENU_SHOW_REGIONS, False)
+            view_menu.set_checked(self.MENU_SHOW_REGIONS, self.ros_thread.show_regions)
             view_menu.add_item("Show Noise Points",
                                self.MENU_SHOW_NOISE_POINTS)
-            view_menu.set_checked(self.MENU_SHOW_NOISE_POINTS, False)
+            view_menu.set_checked(self.MENU_SHOW_NOISE_POINTS, self.ros_thread.show_noise_points)
             view_menu.add_item("Show FOV Clusters",
                                self.MENU_SHOW_FOV_CLUSTERS)
-            view_menu.set_checked(self.MENU_SHOW_FOV_CLUSTERS, False)
+            view_menu.set_checked(self.MENU_SHOW_FOV_CLUSTERS, self.ros_thread.show_fov_clusters)
             view_menu.add_item("Show Viewpoints", self.MENU_SHOW_VIEWPOINTS)
-            view_menu.set_checked(self.MENU_SHOW_VIEWPOINTS, False)
+            view_menu.set_checked(self.MENU_SHOW_VIEWPOINTS, self.ros_thread.show_viewpoints)
+            view_menu.add_item("Show Region View Manifolds", self.MENU_SHOW_REGION_VIEW_MANIFOLDS)
+            view_menu.set_checked(self.MENU_SHOW_REGION_VIEW_MANIFOLDS, self.ros_thread.show_region_view_manifolds)
 
             view_menu.add_item("Show Path", self.MENU_SHOW_PATH)
-            view_menu.set_checked(self.MENU_SHOW_PATH, False)
+            view_menu.set_checked(self.MENU_SHOW_PATH, self.ros_thread.show_path)
             view_menu.add_separator()
             # Panel display options
             view_menu.add_item("Lighting & Materials",
@@ -398,15 +398,20 @@ class GUIClient():
             self.MENU_SHOW_FOV_CLUSTERS, self._on_menu_show_fov_clusters)
         w.set_on_menu_item_activated(
             self.MENU_SHOW_NOISE_POINTS, self._on_menu_show_noise_points)
-        # w.set_on_menu_item_activated(
-        #     self.MENU_SHOW_PATH, self._on_menu_show_path)
         w.set_on_menu_item_activated(self.MENU_SHOW_VIEWPOINTS,
                                      self._on_menu_show_viewpoints)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_PATH, self._on_menu_show_path)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_REGION_VIEW_MANIFOLDS,
+            self._on_menu_show_region_view_manifolds)
+        
         # w.set_on_menu_item_activated(self.MENU_SHOW_SETTINGS,
         #                              self._on_menu_toggle_settings_panel)
         # w.set_on_menu_item_activated(
         #     self.MENU_ABOUT, self._on_menu_about)
         # ----
+
 
     def _on_menu_show_axes(self):
         show = not gui.Application.instance.menubar.is_checked(
@@ -467,6 +472,16 @@ class GUIClient():
             self.MENU_SHOW_NOISE_POINTS)
         self.show_noise_points(show)
 
+    def _on_menu_show_region_view_manifolds(self):
+        show = not gui.Application.instance.menubar.is_checked(
+            self.MENU_SHOW_REGION_VIEW_MANIFOLDS)
+        self.show_region_view_manifolds(show)
+
+    def _on_menu_show_path(self):
+        show = not gui.Application.instance.menubar.is_checked(
+            self.MENU_SHOW_PATH)
+        self.show_path(show)
+
     def show_axes(self, show=True):
         self.scene_widget.scene.show_axes(True)
 
@@ -477,7 +492,7 @@ class GUIClient():
 
     def show_grid(self, show=True):
         self.scene_widget.scene.show_ground_plane(
-            show, o3d.visualization.rendering.Scene.GroundPlane.XY)
+            show, o3d.visualization.rendering.Scene.GroundPlane.XZ)
 
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_GRID, show)
@@ -553,7 +568,7 @@ class GUIClient():
     def show_fov_clusters(self, show=True):
         for cluster_name in self.cluster_names:
             self.scene_widget.scene.show_geometry(
-                f"{cluster_name}_viewpoint", show)
+                f"{cluster_name}", show)
         if show:
             self.show_point_cloud(False)
             self.show_curvatures(False)
@@ -575,11 +590,23 @@ class GUIClient():
         for region_name in self.region_names:
             self.scene_widget.scene.show_geometry(
                 f'{region_name}_view_mesh', show)
+    
+    def show_path(self, show=True):
+        """Show or hide the path in the scene."""
+        self.scene_widget.scene.show_geometry('path', show)
+
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_PATH, show)
+        self.ros_thread.show_path = show
+        self.ros_thread.set_param('show_path', show)
         
     def show_noise_points(self, show=True):
         self.scene_widget.scene.show_geometry('noise_points', show)
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_NOISE_POINTS, show)
+
+        self.ros_thread.show_noise_points = show
+        self.ros_thread.set_param('show_noise_points', show)
 
     def init_gui(self):
         """Initialize the Open3D GUI"""
@@ -594,7 +621,7 @@ class GUIClient():
 
         # Create tab widget
         self.tab_widget = gui.TabControl()
-        self.tab_widget.background_color = Materials.panel_color
+        # self.tab_widget.background_color = Materials.panel_color
 
         # Create tabs for each top-level key
         for tab_name, tab_data in self.parameters_dict.items():
@@ -639,20 +666,20 @@ class GUIClient():
                         widget_grid = self.create_parameter_widget(value, em)
                         container.add_child(widget_grid)
                     else:
-                        # This is a nested group, create a collapsible section
-                        section = self.create_collapsible_section(
+                        # This is a nested group, create a collapsable section
+                        section = self.create_collapsable_section(
                             key, value, em, level)
                         container.add_child(section)
 
         return container
 
-    def create_collapsible_section(self, section_name, section_data, em, level):
-        """Create a collapsible section for nested parameters"""
-        # Create a collapsible widget
-        collapsible = gui.CollapsableVert(section_name.replace('_', ' ').title(
+    def create_collapsable_section(self, section_name, section_data, em, level):
+        """Create a collapsable section for nested parameters"""
+        # Create a collapsable widget
+        collapsable = gui.CollapsableVert(section_name.replace('_', ' ').title(
         ), 0.25 * em, gui.Margins(0.25 * em, 0.00 * em, 0.00 * em, 0.00 * em))
 
-        # Add content to the collapsible section
+        # Add content to the collapsable section
         content = self.create_nested_content(
             section_name, section_data, em, level + 1)
 
@@ -662,32 +689,37 @@ class GUIClient():
         # If section_name is 'Sampling', add a button
         if section_name == 'sampling':
             button = gui.Button("Sample Point Cloud")
+            button.background_color = Materials.button_background_color
             button.set_on_clicked(lambda: self.ros_thread.sample_point_cloud())
             content.add_child(button)
         elif section_name == 'curvature':
             button = gui.Button("Compute Curvature")
+            button.background_color = Materials.button_background_color
             button.set_on_clicked(lambda: self.ros_thread.estimate_curvature())
             content.add_child(button)
         elif section_name == 'region_growth':
             button = gui.Button("Run Region Growth")
+            button.background_color = Materials.button_background_color
             button.set_on_clicked(lambda: self.ros_thread.region_growth())
             content.add_child(button)
         elif section_name == 'fov_clustering':
             button = gui.Button("Run FOV Clustering")
+            button.background_color = Materials.button_background_color
             button.set_on_clicked(lambda: self.ros_thread.fov_clustering())
             content.add_child(button)
         elif section_name == 'projection':
             button = gui.Button("Project Viewpoints")
+            button.background_color = Materials.button_background_color
             button.set_on_clicked(lambda: self.ros_thread.project_viewpoints())
             content.add_child(button)
 
-        collapsible.add_child(content)
+        collapsable.add_child(content)
 
         # Expand by default for first level
         if level == 0:
-            collapsible.set_is_open(True)
+            collapsable.set_is_open(True)
 
-        return collapsible
+        return collapsable
 
     def create_parameter_widget(self, param_data, em):
         """Create a widget for a single parameter"""
@@ -701,6 +733,7 @@ class GUIClient():
 
         # Create label
         label = gui.Label(param_name.split('.')[-1].replace('_', ' ').title())
+        label.text_color = Materials.text_color
         grid.add_child(label)
 
         # Create appropriate widget based on type
@@ -730,11 +763,13 @@ class GUIClient():
                 file_layout = gui.Horiz(0.25 * em)
 
                 widget = gui.TextEdit()
+                widget.background_color = Materials.text_edit_background_color
                 widget.text_value = str(param_value)
                 widget.set_on_text_changed(
                     lambda text, name=param_name: self.on_parameter_changed(name, text))
 
                 browse_button = gui.Button("...")
+                browse_button.background_color = Materials.button_background_color
                 browse_button.horizontal_padding_em = 0.5
                 browse_button.vertical_padding_em = 0
                 browse_button.set_on_clicked(
@@ -765,6 +800,7 @@ class GUIClient():
                 grid.add_child(layout)
             else:
                 widget = gui.TextEdit()
+                widget.background_color = Materials.text_edit_background_color
                 widget.text_value = str(param_value)
                 widget.set_on_text_changed(
                     lambda text, name=param_name: self.on_parameter_changed(name, text))
@@ -773,6 +809,7 @@ class GUIClient():
         else:
             # Default to text edit for unknown types
             widget = gui.TextEdit()
+            widget.background_color = Materials.text_edit_background_color
             widget.text_value = str(param_value)
             widget.set_on_text_changed(
                 lambda text, name=param_name: self.on_parameter_changed(name, text))
@@ -809,12 +846,12 @@ class GUIClient():
         self.log_widget = gui.ListView()
         self.log_widget.set_max_visible_items(5)
 
-        collapsible_log = gui.CollapsableVert(
+        collapsable_log = gui.CollapsableVert(
             "Log", 0.25 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        collapsible_log.add_child(self.log_widget)
-        collapsible_log.set_is_open(False)
+        collapsable_log.add_child(self.log_widget)
+        collapsable_log.set_is_open(False)
 
-        self.log_layout.add_child(collapsible_log)
+        self.log_layout.add_child(collapsable_log)
 
         # Viewpoint Traversal Layout
         self.viewpoint_traversal_layout = gui.Vert(
@@ -861,6 +898,8 @@ class GUIClient():
 
         # Add "Move to Viewpoint" button
         move_button = gui.Button("Move to Viewpoint")
+        move_button.background_color = Materials.button_background_color
+        move_button.set_on_clicked(self.ros_thread.move_to_viewpoint)
         horiz.add_child(move_button)
 
         self.viewpoint_traversal_layout.add_child(horiz)
@@ -973,8 +1012,8 @@ class GUIClient():
                         widget_grid = self.create_parameter_widget(value, em)
                         container.add_child(widget_grid)
                     else:
-                        # This is a nested group, create a collapsible section
-                        section = self.create_collapsible_section(
+                        # This is a nested group, create a collapsable section
+                        section = self.create_collapsable_section(
                             key, value, em, level)
                         container.add_child(section)
 
@@ -1008,6 +1047,7 @@ class GUIClient():
             footer.background_color = Materials.panel_color
 
             status_label = gui.Label("Ready")
+            status_label.text_color = Materials.text_color
             footer.add_child(status_label)
 
             # Add some stretch space
@@ -1015,6 +1055,7 @@ class GUIClient():
 
             # Add status info
             info_label = gui.Label("Parameters loaded")
+            info_label.text_color = Materials.text_color
             footer.add_child(info_label)
 
             # Add footer to main layout (fixed at bottom)
@@ -1196,7 +1237,7 @@ class GUIClient():
                 bbox = mesh.get_axis_aligned_bounding_box()
 
                 self.scene_widget.scene.remove_geometry("model_bounding_box")
-                self.scene_widget.scene.add_geometry(
+                self.add_geometry(
                     "model_bounding_box", bbox, Materials.bounding_box_material)
 
                 self.scene_widget.scene.remove_geometry(
@@ -1210,7 +1251,7 @@ class GUIClient():
                 self.scene_widget.scene.remove_geometry("noise_points")
 
                 # Add the new mesh to the scene
-                self.scene_widget.scene.add_geometry(
+                self.add_geometry(
                     "mesh", mesh, Materials.mesh_material)
 
                 self.ray_casting_scene = o3d.t.geometry.RaycastingScene()
@@ -1265,7 +1306,7 @@ class GUIClient():
             self.clear_viewpoints()
             self.clear_region_view_manifolds()
             self.scene_widget.scene.remove_geometry("noise_points")
-            self.scene_widget.scene.add_geometry(
+            self.add_geometry(
                 "point_cloud", point_cloud, Materials.point_cloud_material)
 
             self.point_cloud = point_cloud  # Store the point cloud for later use
@@ -1304,7 +1345,7 @@ class GUIClient():
             self.clear_viewpoints()
             self.clear_region_view_manifolds()
             self.scene_widget.scene.remove_geometry("noise_points")
-            self.scene_widget.scene.add_geometry(
+            self.add_geometry(
                 "curvatures", curvatures_cloud, Materials.point_cloud_material)
 
             self.show_curvatures(True)
@@ -1330,7 +1371,7 @@ class GUIClient():
 
             # Initialize empty geometries for visualization
             region_surface_clouds = []
-            fov_meshes = []
+            cluster_meshes = []
             viewpoint_meshes = []
             region_view_meshes = []
 
@@ -1386,7 +1427,7 @@ class GUIClient():
                             viewpoint_mesh = o3d.geometry.TriangleMesh.create_sphere(
                                 radius=5)
                             viewpoint_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame(
-                                size=6, origin=[0, 0, 0])
+                                size=Materials.viewpoint_size, origin=[0, 0, 0])
                             origin = 1000 * \
                                 np.array(
                                     cluster_dict['viewpoint']['origin'])
@@ -1395,14 +1436,17 @@ class GUIClient():
                                     cluster_dict['viewpoint']['position'])
                             direction = np.array(
                                 cluster_dict['viewpoint']['direction'])
+                            orientation = np.array(
+                                cluster_dict['viewpoint']['orientation'])
+
                             # Rotate viewpoint_mesh to match the direction
+                            # First convert orientation to quat_wxyz
                             viewpoint_mesh.rotate(
-                                o3d.geometry.get_rotation_matrix_from_xyz(np.array([
-                                    np.arctan2(direction[1], direction[0]),
-                                    np.arctan2(
-                                        direction[2], np.linalg.norm(direction[:2])),
-                                    0])
-                                ),
+                                o3d.geometry.get_rotation_matrix_from_quaternion(
+                                    np.array([orientation[3], 
+                                                orientation[0], 
+                                                orientation[1], 
+                                                orientation[2]])),
                                 center=(0, 0, 0)
                             )
 
@@ -1415,7 +1459,7 @@ class GUIClient():
                             viewpoint_mesh.paint_uniform_color([1.0, 1.0, 1.0])
                             viewpoint_meshes.append(viewpoint_mesh)
 
-                        fov_meshes.append(fov_mesh)
+                        cluster_meshes.append(fov_mesh)
 
                 
                 # Region View Surface
@@ -1427,7 +1471,7 @@ class GUIClient():
                     if len(region_view_cloud.points) > 4:
                         region_view_mesh = region_view_cloud.compute_convex_hull(
                             joggle_inputs=True)[0]
-                        region_view_mesh.paint_uniform_color(region_color)
+                        # region_view_mesh.paint_uniform_color(region_color)
                         region_view_meshes.append(region_view_mesh)
 
             # Create noise point cloud
@@ -1445,23 +1489,26 @@ class GUIClient():
 
             for i in range(len(region_surface_clouds)):
                 region_name = f"region_{i}"
-                self.scene_widget.scene.add_geometry(
+                self.add_geometry(
                     f'{region_name}', region_surface_clouds[i], Materials.point_cloud_material)
                 self.region_names.append(region_name)
-            self.scene_widget.scene.add_geometry(
+            self.add_geometry(
                 "noise_points", noise_point_cloud, Materials.point_cloud_material)
-            for i in range(len(fov_meshes)):
+            # Add FOV cluster meshes
+            for i in range(len(cluster_meshes)):
                 cluster_name = f"cluster_{i}"
-                self.scene_widget.scene.add_geometry(
-                    cluster_name, fov_meshes[i], Materials.cluster_material)
+                self.add_geometry(
+                    cluster_name, cluster_meshes[i], Materials.cluster_material)
                 self.cluster_names.append(cluster_name)
+            # Add Viewpoint meshes
             for i in range(len(viewpoint_meshes)):
                 viewpoint_name = f"cluster_{i}_viewpoint"
-                self.scene_widget.scene.add_geometry(
+                self.add_geometry(
                     viewpoint_name, viewpoint_meshes[i], Materials.viewpoint_material)
+            # Add Region View Manifolds
             for i in range(len(region_view_meshes)):
                 region_name = f"region_{i}"
-                self.scene_widget.scene.add_geometry(
+                self.add_geometry(
                     f'{region_name}_view_mesh', region_view_meshes[i], Materials.region_view_material)
 
             if show_clusters:
@@ -1486,7 +1533,6 @@ class GUIClient():
 
                 # Save cluster order for later use
                 self.traversal_order = traversal_order
-                print(f"Traversal order: {self.traversal_order}")
                 # Update the viewpoint slider limits
                 self.viewpoint_slider.set_limits(
                     1, len(self.traversal_order))
@@ -1717,7 +1763,7 @@ class GUIClient():
         # Remove previous cylinder if exists
         if np.equal(intersection_point, self.last_intersection_point).all():
             scene.remove_geometry('reticle')
-            scene.add_geometry('reticle', cylinder, Materials.reticle_material)
+            self.add_geometry('reticle', cylinder, Materials.reticle_material)
         return True
 
     def set_mouse_orbit_center_to_intersection(self, intersection_result):
@@ -1785,6 +1831,16 @@ class GUIClient():
             time.sleep(1/self.fps - (this_draw_time - self.last_draw_time))
             this_draw_time = time.time()
 
+    def add_geometry(self, name, geometry, material):
+        """Rotate geometry by -90 degrees around the X-axis and add it to the scene"""
+        # Convert axis aligned bounding box to oriented bounding box
+        if isinstance(geometry, o3d.geometry.AxisAlignedBoundingBox):
+            geometry = geometry.get_oriented_bounding_box()
+        geometry.rotate(
+            o3d.geometry.get_rotation_matrix_from_xyz((-np.pi/2, 0, 0)),
+            center=(0, 0, 0)
+        )
+        self.scene_widget.scene.add_geometry(name, geometry, material)
 
 
     def on_main_window_closing(self):

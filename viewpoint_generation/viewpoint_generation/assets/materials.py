@@ -5,16 +5,21 @@ from open3d.visualization.rendering import MaterialRecord
 
 class Materials:
 
-    background_color = [36/255, 37/255, 39/255, 1.0]
+    scene_background_color = [36/255, 37/255, 39/255, 1.0]
 
     panel_color = gui.Color(25/255, 25/255, 25/255, 0.8)
+    panel_color = gui.Color(175/255, 175/255, 175/255, 0.8)
+    panel_color = gui.Color(0.5, 0.5, 0.5, 0.8)
+    button_background_color = gui.Color(0.4, 0.4, 0.4, 1.0)
+    text_color = gui.Color(1., 1., 1., 1.0)
+    text_edit_background_color = gui.Color(0.5, 0.5, 0.5, 1.0)
 
     mesh_material = rendering.MaterialRecord()
-    mesh_material.shader = "defaultLit"
-    mesh_material.base_color = [0.1, 0.1, 0.1, 1.0]
+    mesh_material.shader = "defaultUnlit"
+    mesh_material.base_color = [1.0, 1.0, 1.0, 1.0]
 
     bounding_box_material = rendering.MaterialRecord()
-    bounding_box_material.shader = "defaultUnlit"
+    bounding_box_material.shader = "defaultLit"
     bounding_box_material.base_color = [0.8, 0.8, 0.8, 1.0]
     bounding_box_material.line_width = 2.0
 
@@ -44,11 +49,12 @@ class Materials:
 
     selected_region_view_material = rendering.MaterialRecord()
     selected_region_view_material.shader = "defaultLitTransparency"
-    selected_region_view_material.base_color = [0.0, 1.0, 0.0, 0.25]
+    selected_region_view_material.base_color = [0.0, 1.0, 0.0, 0.5]
 
     viewpoint_material = rendering.MaterialRecord()
     viewpoint_material.shader = "defaultUnlit"
     viewpoint_material.base_color = [1.0, 1.0, 1.0, 1.0]
+    viewpoint_size = 10 # Size in mm
 
     selected_viewpoint_material = rendering.MaterialRecord()
     selected_viewpoint_material.shader = "defaultUnlit"

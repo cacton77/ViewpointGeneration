@@ -578,13 +578,14 @@ class ViewpointGeneration():
                 fov_points = region_points.select_by_index(
                     fov_cluster['points'])
                 # Project viewpoint for the FOV cluster
-                origin, position, direction = self.vp.project(
+                origin, position, direction, orientation = self.vp.project(
                     np.asarray(fov_points.points), np.asarray(fov_points.normals))
                 # Store the viewpoint in the region dictionary
                 self.regions_dict['regions'][region_id]['clusters'][fov_cluster_id]['viewpoint'] = {
                     'origin': origin.tolist(),
                     'position': position.tolist(),
-                    'direction': direction.tolist()
+                    'direction': direction.tolist(),
+                    'orientation': orientation.tolist()
                 }
                 # Visualize the projected viewpoint
                 # viewpoint_mesh = o3d.geometry.TriangleMesh.create_sphere(radius=0.005)

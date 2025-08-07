@@ -1,7 +1,7 @@
 import numpy as np
 import open3d as o3d
 from dataclasses import dataclass
-
+import pytransform3d.rotations as pr
 
 @dataclass
 class ViewpointProjectionConfig:
@@ -26,8 +26,24 @@ class ViewpointProjection:
         viewpoint = np.array(origin) + translation
         direction = viewpoint - origin
         direction = direction / np.linalg.norm(direction)
+        principal_axis = -direction
 
-        return origin, viewpoint, direction
+        # Calculate orientation as a quaternion
+        z = np.array([0, 0, 1])
+        z_hat = principal_axis
+        x_hat = np.cross(z_hat, z)
+        if np.linalg.norm(x_hat) < 1e-6:
+            x_hat = np.array([1, 0, 0])
+        x_hat = x_hat / np.linalg.norm(x_hat)
+        y_hat = np.cross(z_hat, x_hat)
+
+        R = np.array([x_hat, y_hat, z_hat]).T
+
+        quat_wxyz = pr.quaternion_from_matrix(R)
+        quat_xyzw = np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]])  # Convert to ROS quaternion format
+        orientation = quat_xyzw
+
+        return origin, viewpoint, direction, orientation
 
     def check_occlusion(self, viewpoint: list, surface_points: list, raycasting_scene: o3d.t.geometry.RaycastingScene):
         """

@@ -15,6 +15,7 @@ from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseStamped, Pose, PointStamped, Point
 from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject
+from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 
 
 class ViewpointGenerationNode(rclpy.node.Node):
@@ -68,7 +69,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         # Viewpoint publisher for RViz2 Visualization
         self.viewpoint_publisher = self.create_publisher(
-            PointStamped, f'{node_name}/viewpoint', 10)
+            PoseStamped, f'{node_name}/viewpoint', 10)
 
         # Sample PCD Service
         self.create_service(Trigger, node_name + '/sample_point_cloud',
@@ -85,6 +86,12 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Viewpoint Projection Service
         self.create_service(Trigger, node_name + '/viewpoint_projection',
                             self.viewpoint_projection_callback)
+        # Move to Viewpoint Service
+        self.create_service(Trigger, node_name + '/move_to_viewpoint', self.move_to_viewpoint_callback)
+        # Connect to viewpoint traversal service
+        viewpoint_traversal_node_name = 'viewpoint_traversal'
+        self.move_to_pose_stamped_client = self.create_client(
+            MoveToPoseStamped, f'{viewpoint_traversal_node_name}/move_to_pose_stamped')
 
         # Viewpoint Generation Helpers
         self.viewpoint_generation = ViewpointGeneration()
@@ -784,7 +791,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 0
             )
             self.block_next_param_callback = True
-            self.set_parameters([selected_region_param, selected_cluster_param])
+            self.set_parameters([selected_region_param])
+            self.block_next_param_callback = True
+            self.set_parameters([selected_cluster_param])
             return False
         else:
             self.get_logger().info(message)
@@ -804,19 +813,75 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.set_parameters([selected_cluster_param])
             
             # Unpack viewpoint dictionary into PoseStamped message
-            viewpoint_msg = PointStamped()
-            viewpoint_msg.header.frame_id = 'object_frame'
-            viewpoint_msg.point.x = viewpoint['position'][0]
-            viewpoint_msg.point.y = viewpoint['position'][1]
-            viewpoint_msg.point.z = viewpoint['position'][2]
+            viewpoint_pose = PoseStamped()
+            viewpoint_pose.header.frame_id = 'object_frame'
+            viewpoint_pose.pose.position.x = viewpoint['position'][0]
+            viewpoint_pose.pose.position.y = viewpoint['position'][1]
+            viewpoint_pose.pose.position.z = viewpoint['position'][2]
+            viewpoint_pose.pose.orientation.x = viewpoint['orientation'][0]
+            viewpoint_pose.pose.orientation.y = viewpoint['orientation'][1]
+            viewpoint_pose.pose.orientation.z = viewpoint['orientation'][2]
+            viewpoint_pose.pose.orientation.w = viewpoint['orientation'][3]
 
-            self.viewpoint_publisher.publish(viewpoint_msg)
-            # viewpoint_msg.pose.orientation.x = viewpoint['orientation'][0]
-            # viewpoint_msg.pose.orientation.y = viewpoint['orientation'][1]
-            # viewpoint_msg.pose.orientation.z = viewpoint['orientation'][2]
-            # viewpoint_msg.pose.orientation.w = viewpoint['orientation'][3]
+            self.viewpoint_publisher.publish(viewpoint_pose)
 
             return True
+
+    def move_to_viewpoint_callback(self, request, response):
+        """
+        Callback for the move to viewpoint service.
+        :return: True if the viewpoint was successfully moved to, False otherwise.
+        """
+
+        region_index = self.get_parameter('regions.selected_region').get_parameter_value().integer_value
+        cluster_index = self.get_parameter('regions.selected_cluster').get_parameter_value().integer_value
+
+        viewpoint, message = self.viewpoint_generation.get_viewpoint(
+            region_index, cluster_index)
+
+        if viewpoint is None:
+            self.get_logger().error(message)
+            return False
+
+        # Create a PoseStamped message for the viewpoint
+        goal_pose = PoseStamped()
+        goal_pose.header.frame_id = 'object_frame'
+        goal_pose.pose.position.x = viewpoint['position'][0]
+        goal_pose.pose.position.y = viewpoint['position'][1]
+        goal_pose.pose.position.z = viewpoint['position'][2]
+        goal_pose.pose.orientation.x = viewpoint['orientation'][0]
+        goal_pose.pose.orientation.y = viewpoint['orientation'][1]
+        goal_pose.pose.orientation.z = viewpoint['orientation'][2]
+        goal_pose.pose.orientation.w = viewpoint['orientation'][3]
+
+        self.viewpoint_publisher.publish(goal_pose)
+
+        # Call the MoveToPoseStamped server to move to the viewpoint
+        request = MoveToPoseStamped.Request()
+        request.goal_pose = goal_pose
+
+        future = self.move_to_pose_stamped_client.call_async(request)
+        future.add_done_callback(self.move_to_viewpoint_future_callback)
+
+        # TODO: Fix to return actual future reponse
+        response.success = True
+        response.message = 'Moving to viewpoint...'
+        return response
+
+    def move_to_viewpoint_future_callback(self, future):
+        """
+        Callback for the MoveToPoseStamped result.
+        :param future: The future object containing the result of the action.
+        """
+        try:
+            result = future.result()
+            if result.success:
+                self.get_logger().info('Successfully moved to viewpoint.')
+            else:
+                self.get_logger().error(
+                    f'Failed to move to viewpoint: {result.message}')
+        except Exception as e:
+            self.get_logger().error(f'Exception while moving to viewpoint: {e}')
 
     def parameter_callback(self, params):
         """ Callback for parameter changes.
