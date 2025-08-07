@@ -124,15 +124,102 @@ class ViewpointTraversalNode(Node):
         # Return success
         return True
 
+    def plan1(self):
+        ###################################################################
+        # Define the goal pose for the disc_to_ur5e group
+        ###################################################################
+        self.planning_component.set_start_state_to_current_state()
+        goal_pose = PoseStamped()
+        goal_pose.header.frame_id = "eoat_camera_link"
+        goal_pose.pose.position.x = 0.05
+        goal_pose.pose.position.y = 0.0
+        goal_pose.pose.position.z = 0.05
+        goal_pose.pose.orientation.w = 1.0
+        goal_pose.pose.orientation.x = 0.0
+        goal_pose.pose.orientation.y = 0.0
+        goal_pose.pose.orientation.z = 0.0
+
+        # Set the goal pose for the disc_to_ur5e group
+        self.planning_component.set_goal_state(
+            pose_stamped_msg=goal_pose, pose_link="eoat_camera_link")
+        plan_result = self.planning_component.plan()
+        if plan_result.error_code.val != 1:
+            self.get_logger().error("Failed to plan trajectory")
+            return False
+
+        # Execute the planned trajectory
+        self.get_logger().info("Executing plan")
+        robot_trajectory = plan_result.trajectory
+        self.robot.execute(robot_trajectory, controllers=[
+            'inspection_cell_controller'])
+
+    def plan2(self):
+        ###################################################################
+        # Define the goal using joint states
+        ###################################################################
+        # Create RobotState objects
+        robot_initial_state = RobotState(self.robot.get_robot_model())
+        robot_state = RobotState(self.robot.get_robot_model())
+
+        # Set robot state to default values (zero angles)
+        robot_state.set_to_default_values()
+
+        # Set start state to current state
+        self.planning_component.set_start_state_to_current_state()
+        self.get_logger().info("Set goal state to the initialized robot state")
+
+        # Set goal state using the robot state
+        self.planning_component.set_goal_state(robot_state=robot_state)
+
+        # Plan the trajectory
+        plan_result = self.planning_component.plan()
+        if plan_result:
+            self.get_logger().info("Executing plan")
+            self.robot.execute(plan_result.trajectory, controllers=[
+                               'inspection_cell_controller'])
+        else:
+            self.get_logger().error("Planning failed")
+            return False
+
+        # Then go back to the initial state
+        self.planning_component.set_start_state_to_current_state()
+        self.planning_component.set_goal_state(robot_state=robot_initial_state)
+        plan_result = self.planning_component.plan()
+        if plan_result:
+            self.get_logger().info("Moving arm back to initial joints goal (RobotState goal)...")
+            self.robot.execute(plan_result.trajectory, controllers=[
+                               'inspection_cell_controller'])
+        else:
+            self.get_logger().error("Planning back to initial state failed")
+            return False
+
+        return True
+
+
+# def plan2(self):
+#     ###################################################################
+#     # Define the goal pose for the disc_to_ur5e group
+#     ###################################################################
+
+#     robot_initial_state = RobotState(self.robot.get_robot_model())
+#     robot_state = RobotState(self.robot_model)
+#     robot_state.set_to_default_values()
+#     self.robot.set_start_state_to_current_state()
+#     self.logger.info("Setting start state to current state")
+#     self.robot.set_goal_state(robot_state=robot_state)
+#     # Move a specific joint to a desired position
+#     joint_name = "joint_1"
+#     joint_position = 0.5
+
 
 def main():
     rclpy.init()
+
     traversal_node = ViewpointTraversalNode()
+    # traversal_node.plan1()  # Call the plan1 method to execute the first plan
+    traversal_node.plan2()  # Call the plan2 method to execute the second plan
     rclpy.spin(traversal_node)
 
-    ###################################################################
-    # MoveItPy Setup
-    ###################################################################
     # rclpy.init()
     # logger = get_logger("moveit_py.pose_goal")
 
