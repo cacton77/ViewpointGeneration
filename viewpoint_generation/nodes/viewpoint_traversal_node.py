@@ -11,6 +11,7 @@ from rclpy.logging import get_logger
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 from geometry_msgs.msg import PoseStamped
 import pprint
+from std_srvs.srv import Trigger
 
 
 class ViewpointTraversalNode(Node):
@@ -46,6 +47,13 @@ class ViewpointTraversalNode(Node):
             self.move_to_pose_stamped_callback
         )
         print("Service 'move_to_pose_stamped' created successfully")
+
+        self.test_srv = self.create_service(
+            Trigger,
+            'viewpoint_traversal/test_service',
+            self.test_service_callback
+        )
+        print("Service 'test_service' created successfully")
 
     def move_to_pose_stamped_callback(self, request, response):
         # Create a RobotState object
@@ -124,34 +132,41 @@ class ViewpointTraversalNode(Node):
         # Return success
         return True
 
-    def plan1(self):
-        ###################################################################
-        # Define the goal pose for the disc_to_ur5e group
-        ###################################################################
-        self.planning_component.set_start_state_to_current_state()
-        goal_pose = PoseStamped()
-        goal_pose.header.frame_id = "eoat_camera_link"
-        goal_pose.pose.position.x = 0.05
-        goal_pose.pose.position.y = 0.0
-        goal_pose.pose.position.z = 0.05
-        goal_pose.pose.orientation.w = 1.0
-        goal_pose.pose.orientation.x = 0.0
-        goal_pose.pose.orientation.y = 0.0
-        goal_pose.pose.orientation.z = 0.0
+    # def plan1(self):
+    #     ###################################################################
+    #     # Define the goal pose for the disc_to_ur5e group
+    #     ###################################################################
+    #     self.planning_component.set_start_state_to_current_state()
+    #     goal_pose = PoseStamped()
+    #     goal_pose.header.frame_id = "eoat_camera_link"
+    #     goal_pose.pose.position.x = 0.05
+    #     goal_pose.pose.position.y = 0.0
+    #     goal_pose.pose.position.z = 0.05
+    #     goal_pose.pose.orientation.w = 1.0
+    #     goal_pose.pose.orientation.x = 0.0
+    #     goal_pose.pose.orientation.y = 0.0
+    #     goal_pose.pose.orientation.z = 0.0
 
-        # Set the goal pose for the disc_to_ur5e group
-        self.planning_component.set_goal_state(
-            pose_stamped_msg=goal_pose, pose_link="eoat_camera_link")
-        plan_result = self.planning_component.plan()
-        if plan_result.error_code.val != 1:
-            self.get_logger().error("Failed to plan trajectory")
-            return False
+    #     # Set the goal pose for the disc_to_ur5e group
+    #     self.planning_component.set_goal_state(
+    #         pose_stamped_msg=goal_pose, pose_link="eoat_camera_link")
+    #     plan_result = self.planning_component.plan()
+    #     if plan_result.error_code.val != 1:
+    #         self.get_logger().error("Failed to plan trajectory")
+    #         return False
 
-        # Execute the planned trajectory
-        self.get_logger().info("Executing plan")
-        robot_trajectory = plan_result.trajectory
-        self.robot.execute(robot_trajectory, controllers=[
-            'inspection_cell_controller'])
+    #     # Execute the planned trajectory
+    #     self.get_logger().info("Executing plan")
+    #     robot_trajectory = plan_result.trajectory
+    #     self.robot.execute(robot_trajectory, controllers=[
+    #         'inspection_cell_controller'])
+
+    def test_service_callback(self, request, response):
+        self.get_logger().info("Test service called")
+        self.plan2()
+        response.success = True
+        response.message = "Test service executed successfully"
+        return response
 
     def plan2(self):
         ###################################################################
@@ -161,8 +176,26 @@ class ViewpointTraversalNode(Node):
         robot_initial_state = RobotState(self.robot.get_robot_model())
         robot_state = RobotState(self.robot.get_robot_model())
 
-        # Set robot state to default values (zero angles)
-        robot_state.set_to_default_values()
+        # # Set robot state to default values (zero angles)
+        # robot_state.set_to_default_values()
+
+        # Set robot state to custom values
+        joint_positions = {
+            "turntable_disc_joint": 0.0,  # radians
+            "shoulder_pan_joint": 3.14,     # radians
+            "shoulder_lift_joint": -1.8398,   # radians
+            "elbow_joint": -1.8224,            # radians
+            "wrist_1_joint": -1.0,         # radians
+            "wrist_2_joint": 1.57,          # radians
+            "wrist_3_joint": 1.57           # radians
+        }
+
+        # Get current joint positions and modify specific ones
+        goal_positions = robot_state.joint_positions
+        for joint_name, position in joint_positions.items():
+            if joint_name in goal_positions:
+                goal_positions[joint_name] = position
+        robot_state.joint_positions = goal_positions
 
         # Set start state to current state
         self.planning_component.set_start_state_to_current_state()
@@ -175,41 +208,12 @@ class ViewpointTraversalNode(Node):
         plan_result = self.planning_component.plan()
         if plan_result:
             self.get_logger().info("Executing plan")
-            self.robot.execute(plan_result.trajectory, controllers=[
-                               'inspection_cell_controller'])
+            self.robot.execute(plan_result.trajectory, controllers=[])
         else:
             self.get_logger().error("Planning failed")
             return False
 
-        # Then go back to the initial state
-        self.planning_component.set_start_state_to_current_state()
-        self.planning_component.set_goal_state(robot_state=robot_initial_state)
-        plan_result = self.planning_component.plan()
-        if plan_result:
-            self.get_logger().info("Moving arm back to initial joints goal (RobotState goal)...")
-            self.robot.execute(plan_result.trajectory, controllers=[
-                               'inspection_cell_controller'])
-        else:
-            self.get_logger().error("Planning back to initial state failed")
-            return False
-
         return True
-
-
-# def plan2(self):
-#     ###################################################################
-#     # Define the goal pose for the disc_to_ur5e group
-#     ###################################################################
-
-#     robot_initial_state = RobotState(self.robot.get_robot_model())
-#     robot_state = RobotState(self.robot_model)
-#     robot_state.set_to_default_values()
-#     self.robot.set_start_state_to_current_state()
-#     self.logger.info("Setting start state to current state")
-#     self.robot.set_goal_state(robot_state=robot_state)
-#     # Move a specific joint to a desired position
-#     joint_name = "joint_1"
-#     joint_position = 0.5
 
 
 def main():
@@ -217,7 +221,6 @@ def main():
 
     traversal_node = ViewpointTraversalNode()
     # traversal_node.plan1()  # Call the plan1 method to execute the first plan
-    traversal_node.plan2()  # Call the plan2 method to execute the second plan
     rclpy.spin(traversal_node)
 
     # rclpy.init()
