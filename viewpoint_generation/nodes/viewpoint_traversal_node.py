@@ -60,8 +60,8 @@ class ViewpointTraversalNode(Node):
         robot_state = RobotState(self.robot.get_robot_model())
         print("DEBUG: RobotState object created successfully")
         # Set the pose from the request
-        self.robot.planning_component.set_goal_state(
-            pose_stamped_msg=request.pose)
+        self.planning_component.set_goal_state(
+            pose_stamped_msg=request.pose, pose_link="eoat_camera_link")
 
         print("DEBUG: Goal state set to the requested pose")
 
@@ -75,12 +75,12 @@ class ViewpointTraversalNode(Node):
         robot_state.set_to_default_values()
         print("DEBUG: Robot state set to default values")
         # Plan and execute
-        success = self.robot.plan_and_execute()
+        success = self.plan_and_execute()
         print("DEBUG: Plan and execute called, success:", success)
 
         # Prepare the response
         response.success = success
-        response.message = "Motion completed successfully" if success else "Motion failed"
+        # response.message = "Motion completed successfully" if success else "Motion failed"
 
         return response
 
@@ -123,8 +123,7 @@ class ViewpointTraversalNode(Node):
             self.get_logger().info("Executing plan")
             robot_trajectory = plan_result.trajectory
             # Check if the controller name is correct
-            self.execute(robot_trajectory, controllers=[
-                'inspection_cell_controller'])
+            self.robot.execute(plan_result.trajectory, controllers=[])
         else:
             self.get_logger().error("No trajectory found to execute")
             return False
