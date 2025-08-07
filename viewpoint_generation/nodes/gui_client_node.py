@@ -53,6 +53,7 @@ class GUIClient():
 
     region_names = []
     cluster_names = []
+    last_slider_value = 1
 
     def __init__(self):
         self.app = gui.Application.instance
@@ -501,6 +502,11 @@ class GUIClient():
         self.ros_thread.show_reticle = show
         self.ros_thread.set_param('show_reticle', show)
 
+    def show_skybox(self, show=True):
+        self.scene_widget.scene.show_skybox(show)
+        self.ros_thread.show_skybox = show
+        self.ros_thread.set_param('show_skybox', show)
+
     def show_mesh(self, show=True):
         # Show/hide mesh.
         self.scene_widget.scene.show_geometry('mesh', show)
@@ -534,7 +540,7 @@ class GUIClient():
     def show_regions(self, show=True):
         for region_name in self.region_names:
             self.scene_widget.scene.show_geometry(
-                f'{region_name}_view_mesh', show)
+                f'{region_name}', show)
         if show:
             self.show_point_cloud(False)
             self.show_curvatures(False)
@@ -814,21 +820,50 @@ class GUIClient():
         self.viewpoint_traversal_layout = gui.Vert(
             0.5 * em, gui.Margins(0.5 * em))
         self.viewpoint_traversal_layout.background_color = Materials.panel_color
+        horiz = gui.Horiz(0.25 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+
         # Create a UI slider for selection of Viewpoints with 3 buttons to its right
         self.viewpoint_slider = gui.Slider(gui.Slider.INT)
         self.viewpoint_slider.set_limits(0, 100)  # Example range
 
         def _on_viewpoint_slider_changed(value):
             """Handle viewpoint slider change"""
+
             # Update the viewpoint based on slider value
             region_index, viewpoint_index = self.traversal_order[int(value - 1)]
-            self.ros_thread.set_current_region(region_index)
-            self.ros_thread.set_current_viewpoint(viewpoint_index)
+            self.ros_thread.select_viewpoint(region_index, viewpoint_index)
+
+            # Get cluster mesh from the scene and paint it green
+            cluster_name = f"cluster_{int(value-1)}"
+            self.scene_widget.scene.modify_geometry_material(cluster_name, Materials.selected_cluster_material)
+            # Get region view mesh and paint it green
+            region_view_mesh_name = f"{self.region_names[region_index]}_view_mesh"
+            self.scene_widget.scene.modify_geometry_material(region_view_mesh_name, Materials.selected_region_view_material)
+            # Update the viewpoint in the scene
+            self.scene_widget.scene.modify_geometry_material(
+                f"{cluster_name}_viewpoint", Materials.selected_viewpoint_material)
+
+            # Reset last selected objects to default materials
+            last_cluster_name = f"cluster_{int(self.last_slider_value-1)}"
+            self.scene_widget.scene.modify_geometry_material(last_cluster_name, Materials.cluster_material)
+            last_region_index, last_viewpoint_index = self.traversal_order[int(self.last_slider_value - 1)]
+            last_region_view_mesh_name = f"{self.region_names[last_region_index]}_view_mesh"
+            self.scene_widget.scene.modify_geometry_material(last_region_view_mesh_name, Materials.region_view_material)
+            self.scene_widget.scene.modify_geometry_material(
+                f"{last_cluster_name}_viewpoint", Materials.viewpoint_material)
+
+            self.last_slider_value = value
 
             return gui.Widget.EventCallbackResult.HANDLED
 
         self.viewpoint_slider.set_on_value_changed(_on_viewpoint_slider_changed)
-        self.viewpoint_traversal_layout.add_child(self.viewpoint_slider)
+        horiz.add_child(self.viewpoint_slider)
+
+        # Add "Move to Viewpoint" button
+        move_button = gui.Button("Move to Viewpoint")
+        horiz.add_child(move_button)
+
+        self.viewpoint_traversal_layout.add_child(horiz)
 
         self.window.add_child(self.main_layout)
         self.window.add_child(self.log_layout)
@@ -1167,8 +1202,14 @@ class GUIClient():
                 self.scene_widget.scene.remove_geometry(
                     "mesh")  # Remove previous mesh if exists
                 self.scene_widget.scene.remove_geometry("point_cloud")
+                self.clear_regions()
                 self.clear_clusters()
+                self.clear_viewpoints()
+                self.clear_region_view_manifolds()
+                self.scene_widget.scene.remove_geometry("curvatures")
                 self.scene_widget.scene.remove_geometry("noise_points")
+
+                # Add the new mesh to the scene
                 self.scene_widget.scene.add_geometry(
                     "mesh", mesh, Materials.mesh_material)
 
@@ -1219,8 +1260,10 @@ class GUIClient():
             # Remove previous point cloud if exists
             self.scene_widget.scene.remove_geometry("point_cloud")
             self.scene_widget.scene.remove_geometry("curvatures")
-            self.scene_widget.scene.remove_geometry("regions")
+            self.clear_regions()
             self.clear_clusters()
+            self.clear_viewpoints()
+            self.clear_region_view_manifolds()
             self.scene_widget.scene.remove_geometry("noise_points")
             self.scene_widget.scene.add_geometry(
                 "point_cloud", point_cloud, Materials.point_cloud_material)
@@ -1256,7 +1299,10 @@ class GUIClient():
             # Remove previous point cloud if exists
             self.scene_widget.scene.remove_geometry("curvatures")
             self.scene_widget.scene.remove_geometry("regions")
+            self.clear_regions()
             self.clear_clusters()
+            self.clear_viewpoints()
+            self.clear_region_view_manifolds()
             self.scene_widget.scene.remove_geometry("noise_points")
             self.scene_widget.scene.add_geometry(
                 "curvatures", curvatures_cloud, Materials.point_cloud_material)
@@ -1346,7 +1392,7 @@ class GUIClient():
                                     cluster_dict['viewpoint']['origin'])
                             viewpoint = 1000 * \
                                 np.array(
-                                    cluster_dict['viewpoint']['viewpoint'])
+                                    cluster_dict['viewpoint']['position'])
                             direction = np.array(
                                 cluster_dict['viewpoint']['direction'])
                             # Rotate viewpoint_mesh to match the direction
@@ -1400,14 +1446,14 @@ class GUIClient():
             for i in range(len(region_surface_clouds)):
                 region_name = f"region_{i}"
                 self.scene_widget.scene.add_geometry(
-                    f'{region_name}_surface_cloud', region_surface_clouds[i], Materials.point_cloud_material)
+                    f'{region_name}', region_surface_clouds[i], Materials.point_cloud_material)
                 self.region_names.append(region_name)
             self.scene_widget.scene.add_geometry(
                 "noise_points", noise_point_cloud, Materials.point_cloud_material)
             for i in range(len(fov_meshes)):
                 cluster_name = f"cluster_{i}"
                 self.scene_widget.scene.add_geometry(
-                    cluster_name, fov_meshes[i], Materials.fov_cluster_material)
+                    cluster_name, fov_meshes[i], Materials.cluster_material)
                 self.cluster_names.append(cluster_name)
             for i in range(len(viewpoint_meshes)):
                 viewpoint_name = f"cluster_{i}_viewpoint"
@@ -1460,22 +1506,27 @@ class GUIClient():
             return
 
     def clear_regions(self):
+        print("Clearing regions...")
         for region_name in self.region_names:
+            print(f"\tRemoving region: {region_name}")
             self.scene_widget.scene.remove_geometry(region_name)
-        self.region_names.clear()
 
     def clear_region_view_manifolds(self):
+        print("Clearing region view manifolds...")
         for region_name in self.region_names:
+            print(f"\tRemoving region view manifold: {region_name}_view_mesh")
             self.scene_widget.scene.remove_geometry(f"{region_name}_view_mesh")
-        self.region_names.clear()
 
     def clear_clusters(self):
+        print("Clearing clusters...")
         for cluster_name in self.cluster_names:
-                self.scene_widget.scene.remove_geometry(cluster_name)
-        self.cluster_names.clear()
+            print(f"\tRemoving cluster: {cluster_name}")
+            self.scene_widget.scene.remove_geometry(cluster_name)
 
     def clear_viewpoints(self):
+        print("Clearing viewpoints...")
         for cluster_name in self.cluster_names:
+            print(f"\tRemoving viewpoint: {cluster_name}_viewpoint")
             self.scene_widget.scene.remove_geometry(f"{cluster_name}_viewpoint")
 
     def set_widget_value(self, widget, value):
@@ -1726,11 +1777,7 @@ class GUIClient():
         self.show_axes(self.ros_thread.show_axes)
         self.show_grid(self.ros_thread.show_grid)
         self.show_model_bounding_box(self.ros_thread.show_model_bounding_box)
-
-        # Paint selected viewpoint green
-        # Get viewpoint index from slider
-        viewpoint_index = self.viewpoint_slider.int_value - 1
-
+        self.show_skybox(self.ros_thread.show_skybox)
 
         # Sleep to maintain FPS
         this_draw_time = time.time()

@@ -12,9 +12,7 @@ from ament_index_python.packages import get_package_prefix
 from std_srvs.srv import Trigger
 # from viewpoint_generation_interfaces.action import ViewpointGeneration
 
-from moveit.planning import MoveItPy
-
-from geometry_msgs.msg import Pose, Point
+from geometry_msgs.msg import PoseStamped, Pose, PointStamped, Point
 from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject
 
@@ -55,6 +53,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('regions.fov_clustering.k-means.normal_weight', 1.0),
                 ('regions.fov_clustering.k-means.number_of_runs', 10),
                 ('regions.fov_clustering.k-means.maximum_iterations', 100),
+                ('regions.selected_region', 0),
+                ('regions.selected_cluster', 0),
                 ('viewpoints.traversal', ''),
                 ('viewpoints.projection.nothing', ''),
                 ('settings.cuda_enabled', False)
@@ -66,6 +66,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
             PlanningScene, '/planning_scene', 10)
         self.get_logger().info('Planning scene publisher created.')
 
+        # Viewpoint publisher for RViz2 Visualization
+        self.viewpoint_publisher = self.create_publisher(
+            PointStamped, f'{node_name}/viewpoint', 10)
 
         # Sample PCD Service
         self.create_service(Trigger, node_name + '/sample_point_cloud',
@@ -117,6 +120,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
             'model.camera.focal_distance').get_parameter_value().double_value
         self.viewpoint_generation.cuda_enabled = self.get_parameter(
             'settings.cuda_enabled').get_parameter_value().bool_value
+        
+        self.select_viewpoint(self.get_parameter('regions.selected_region').get_parameter_value().integer_value,
+                              self.get_parameter('regions.selected_cluster').get_parameter_value().integer_value)
 
         self.add_on_set_parameters_callback(self.parameter_callback)
 
@@ -753,26 +759,64 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         return response
 
-    def execute_callback(self, goal_handle):
-        self.get_logger().info('Executing goal...')
+    def select_viewpoint(self, region_index, cluster_index):
+        """
+        Helper function to select a viewpoint based on region and cluster indices.
+        :param region_index: The index of the region to select.
+        :param cluster_index: The index of the cluster to select.
+        :return: None
+        """
 
-        feedback_msg = ViewpointGeneration.Feedback()
-        feedback = [0, 1]
-        feedback_msg.feedback = ' '.join(feedback)
+        viewpoint, message = self.viewpoint_generation.get_viewpoint(
+            region_index, cluster_index)
 
-        for i in range(1, int(goal_handle.request.goal)):
-            feedback.append(feedback[i] + feedback[i-1])
-            feedback_msg.feedback = ' '.join(feedback)
-            self.get_logger().info('Feedback: {0}'.format(
-                feedback_msg.feedback))
-            goal_handle.publish_feedback(feedback_msg)
-            time.sleep(1)
+        if viewpoint is None:
+            self.get_logger().error(message)
+            # Reset the selected region and cluster parameters
+            selected_region_param = rclpy.parameter.Parameter(
+                'regions.selected_region',
+                rclpy.Parameter.Type.INTEGER,
+                0
+            )
+            selected_cluster_param = rclpy.parameter.Parameter(
+                'regions.selected_cluster',
+                rclpy.Parameter.Type.INTEGER,
+                0
+            )
+            self.block_next_param_callback = True
+            self.set_parameters([selected_region_param, selected_cluster_param])
+            return False
+        else:
+            self.get_logger().info(message)
+            selected_region_param = rclpy.parameter.Parameter(
+                'regions.selected_region',
+                rclpy.Parameter.Type.INTEGER,
+                region_index
+            )
+            selected_cluster_param = rclpy.parameter.Parameter(
+                'regions.selected_cluster',
+                rclpy.Parameter.Type.INTEGER,
+                cluster_index
+            )
+            self.block_next_param_callback = True
+            self.set_parameters([selected_region_param])
+            self.block_next_param_callback = True
+            self.set_parameters([selected_cluster_param])
+            
+            # Unpack viewpoint dictionary into PoseStamped message
+            viewpoint_msg = PointStamped()
+            viewpoint_msg.header.frame_id = 'object_frame'
+            viewpoint_msg.point.x = viewpoint['position'][0]
+            viewpoint_msg.point.y = viewpoint['position'][1]
+            viewpoint_msg.point.z = viewpoint['position'][2]
 
-        goal_handle.succeed()
+            self.viewpoint_publisher.publish(viewpoint_msg)
+            # viewpoint_msg.pose.orientation.x = viewpoint['orientation'][0]
+            # viewpoint_msg.pose.orientation.y = viewpoint['orientation'][1]
+            # viewpoint_msg.pose.orientation.z = viewpoint['orientation'][2]
+            # viewpoint_msg.pose.orientation.w = viewpoint['orientation'][3]
 
-        result = ViewpointGeneration.Result()
-        result.result = feedback_msg.feedback
-        return result
+            return True
 
     def parameter_callback(self, params):
         """ Callback for parameter changes.
@@ -828,6 +872,16 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     param.value)
             elif param.name == 'regions.region_growth.normal_angle_threshold':
                 success = self.set_normal_angle_threshold(param.value)
+            elif param.name == 'regions.selected_region':
+                region_index = param.value
+                cluster_index = self.get_parameter(
+                    'regions.selected_cluster').get_parameter_value().integer_value
+                success = self.select_viewpoint(region_index, cluster_index)
+            elif param.name == 'regions.selected_cluster':
+                cluster_index = param.value
+                region_index = self.get_parameter(
+                    'regions.selected_region').get_parameter_value().integer_value
+                success = self.select_viewpoint(region_index, cluster_index)
             elif param.name == 'model.camera.fov.height':
                 fov_height = param.value
                 fov_width = self.get_parameter(

@@ -578,12 +578,12 @@ class ViewpointGeneration():
                 fov_points = region_points.select_by_index(
                     fov_cluster['points'])
                 # Project viewpoint for the FOV cluster
-                origin, viewpoint, direction = self.vp.project(
+                origin, position, direction = self.vp.project(
                     np.asarray(fov_points.points), np.asarray(fov_points.normals))
                 # Store the viewpoint in the region dictionary
                 self.regions_dict['regions'][region_id]['clusters'][fov_cluster_id]['viewpoint'] = {
                     'origin': origin.tolist(),
-                    'viewpoint': viewpoint.tolist(),
+                    'position': position.tolist(),
                     'direction': direction.tolist()
                 }
                 # Visualize the projected viewpoint
@@ -601,6 +601,30 @@ class ViewpointGeneration():
 
         return True, self.regions_file
 
+    def get_viewpoint(self, region_index, cluster_index):
+        """
+        Get the viewpoint for a specific region and cluster.
+        Args:
+            region_index (int): Index of the region.
+            cluster_index (int): Index of the cluster.
+        Returns:
+            dict: Viewpoint information including origin, viewpoint, and direction.
+        """
+        if self.regions_file is None:
+            return None, 'No regions file loaded. Please run region growth first.'
+
+        if region_index < 0 or region_index >= len(self.regions_dict['regions']):
+            return None, f'Invalid region index: {region_index}.'
+
+        if cluster_index < 0 or cluster_index >= len(self.regions_dict['regions'][str(region_index)]['clusters']):
+            return None, f'Invalid cluster index: {cluster_index}.'
+
+        viewpoint = self.regions_dict['regions'][str(region_index)]['clusters'][str(cluster_index)].get('viewpoint', None)
+
+        if viewpoint is None:
+            return None, 'No viewpoint found for the specified region and cluster.'
+
+        return viewpoint, 'Viewpoint retrieved successfully.'
 
 # Utility functions
 def create_sample_mesh(k: int = 3, ppsqmm: float = 1000) -> o3d.geometry.PointCloud:

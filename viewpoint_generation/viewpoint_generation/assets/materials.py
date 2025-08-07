@@ -30,17 +30,29 @@ class Materials:
     curvature_colormap = 'RdYlGn'
     regions_colormap = 'plasma'
 
-    fov_cluster_material = rendering.MaterialRecord()
-    fov_cluster_material.shader = "defaultUnlit"
-    fov_cluster_material.base_color = [1.0, 1.0, 1.0, 1.0]
+    cluster_material = rendering.MaterialRecord()
+    cluster_material.shader = "defaultUnlit"
+    cluster_material.base_color = [1.0, 1.0, 1.0, 1.0]
+
+    selected_cluster_material = rendering.MaterialRecord()
+    selected_cluster_material.shader = "defaultUnlit"
+    selected_cluster_material.base_color = [0.0, 1.0, 0.0, 1.0]
 
     region_view_material = rendering.MaterialRecord()
     region_view_material.shader = "defaultLitTransparency"
     region_view_material.base_color = [1.0, 1.0, 1.0, 0.25]
 
+    selected_region_view_material = rendering.MaterialRecord()
+    selected_region_view_material.shader = "defaultLitTransparency"
+    selected_region_view_material.base_color = [0.0, 1.0, 0.0, 0.25]
+
     viewpoint_material = rendering.MaterialRecord()
     viewpoint_material.shader = "defaultUnlit"
     viewpoint_material.base_color = [1.0, 1.0, 1.0, 1.0]
+
+    selected_viewpoint_material = rendering.MaterialRecord()
+    selected_viewpoint_material.shader = "defaultUnlit"
+    selected_viewpoint_material.base_color = [0.0, 1.0, 0.0, 1.0]
 
     fov_material = rendering.MaterialRecord()
     fov_material.shader = "defaultUnlit"

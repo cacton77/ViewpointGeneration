@@ -15,6 +15,7 @@ from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterValue, Parame
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from ament_index_python.packages import get_package_prefix
 
+from geometry_msgs.msg import PoseStamped
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 
 class ROSThread(Node):
@@ -27,7 +28,7 @@ class ROSThread(Node):
                 ('show_grid', True),
                 ('show_model_bounding_box', False),
                 ('show_reticle', True),
-                ('show_ground_plane', True),
+                ('show_skybox', True),
             ]
         )
 
@@ -35,6 +36,7 @@ class ROSThread(Node):
         self.show_grid = self.get_parameter('show_grid').get_parameter_value().bool_value
         self.show_model_bounding_box = self.get_parameter('show_model_bounding_box').get_parameter_value().bool_value
         self.show_reticle = self.get_parameter('show_reticle').get_parameter_value().bool_value
+        self.show_skybox = self.get_parameter('show_skybox').get_parameter_value().bool_value
 
         self.t = threading.Thread(target=self.update, args=())
         self.t.daemon = True  # daemon threads run in background
@@ -97,7 +99,6 @@ class ROSThread(Node):
                                                              f'{self.traversal_node_name}/move_to_pose_stamped',
                                                              callback_group=services_cb_group
                                                              )
-
 
         # ROSOUT log subscription
         rosout_sub = self.create_subscription(
@@ -283,12 +284,10 @@ class ROSThread(Node):
             self.get_logger().error('Failed to trigger viewpoint projection')
             return False
         
-    def set_current_region(self, region_index):
-        self.current_region_index = region_index
-
-        
-    def set_current_viewpoint(self, viewpoint_index):
-        self.current_viewpoint_index = viewpoint_index
+    def select_viewpoint(self, region_index, cluster_index):
+        """Select a viewpoint based on region and cluster indices"""
+        self.set_parameter('regions.selected_region', region_index)
+        self.set_parameter('regions.selected_cluster', cluster_index)
 
     def expand_dict_keys(self):
         """
