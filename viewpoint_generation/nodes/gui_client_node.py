@@ -93,7 +93,8 @@ class GUIClient():
             self.window.renderer)
         self.scene_widget.enable_scene_caching(False)
 
-        self.scene_widget.scene.set_background(Materials.scene_background_color)
+        self.scene_widget.scene.set_background(
+            Materials.scene_background_color)
         # Set view
         self.scene_widget.look_at(
             np.array([0, 0, 0]), np.array([1, 1, 1]), np.array([0, 0, 1]))
@@ -292,9 +293,11 @@ class GUIClient():
             view_menu.set_checked(self.MENU_SHOW_GRID, True)
             view_menu.add_item("Show Model Bounding Box",
                                self.MENU_SHOW_MODEL_BB)
-            view_menu.set_checked(self.MENU_SHOW_MODEL_BB, self.ros_thread.show_model_bounding_box)
+            view_menu.set_checked(self.MENU_SHOW_MODEL_BB,
+                                  self.ros_thread.show_model_bounding_box)
             view_menu.add_item("Show Reticle", self.MENU_SHOW_RETICLE)
-            view_menu.set_checked(self.MENU_SHOW_RETICLE, self.ros_thread.show_reticle)
+            view_menu.set_checked(self.MENU_SHOW_RETICLE,
+                                  self.ros_thread.show_reticle)
             ground_plane_menu = gui.Menu()
             ground_plane_menu.add_item("XY", 100)
             ground_plane_menu.add_item("XZ", 101)
@@ -303,28 +306,38 @@ class GUIClient():
             view_menu.add_separator()
             # Object display options
             view_menu.add_item("Show Model", self.MENU_SHOW_MESH)
-            view_menu.set_checked(self.MENU_SHOW_MESH, self.ros_thread.show_mesh)
+            view_menu.set_checked(self.MENU_SHOW_MESH,
+                                  self.ros_thread.show_mesh)
             view_menu.add_item("Show Point Clouds",
                                self.MENU_SHOW_POINT_CLOUD)
-            view_menu.set_checked(self.MENU_SHOW_POINT_CLOUD, self.ros_thread.show_point_cloud)
+            view_menu.set_checked(self.MENU_SHOW_POINT_CLOUD,
+                                  self.ros_thread.show_point_cloud)
             view_menu.add_item("Show Curvatures",
                                self.MENU_SHOW_CURVATURES)
-            view_menu.set_checked(self.MENU_SHOW_CURVATURES, self.ros_thread.show_curvatures)
+            view_menu.set_checked(self.MENU_SHOW_CURVATURES,
+                                  self.ros_thread.show_curvatures)
             view_menu.add_item("Show Regions", self.MENU_SHOW_REGIONS)
-            view_menu.set_checked(self.MENU_SHOW_REGIONS, self.ros_thread.show_regions)
+            view_menu.set_checked(self.MENU_SHOW_REGIONS,
+                                  self.ros_thread.show_regions)
             view_menu.add_item("Show Noise Points",
                                self.MENU_SHOW_NOISE_POINTS)
-            view_menu.set_checked(self.MENU_SHOW_NOISE_POINTS, self.ros_thread.show_noise_points)
+            view_menu.set_checked(
+                self.MENU_SHOW_NOISE_POINTS, self.ros_thread.show_noise_points)
             view_menu.add_item("Show FOV Clusters",
                                self.MENU_SHOW_FOV_CLUSTERS)
-            view_menu.set_checked(self.MENU_SHOW_FOV_CLUSTERS, self.ros_thread.show_fov_clusters)
+            view_menu.set_checked(
+                self.MENU_SHOW_FOV_CLUSTERS, self.ros_thread.show_fov_clusters)
             view_menu.add_item("Show Viewpoints", self.MENU_SHOW_VIEWPOINTS)
-            view_menu.set_checked(self.MENU_SHOW_VIEWPOINTS, self.ros_thread.show_viewpoints)
-            view_menu.add_item("Show Region View Manifolds", self.MENU_SHOW_REGION_VIEW_MANIFOLDS)
-            view_menu.set_checked(self.MENU_SHOW_REGION_VIEW_MANIFOLDS, self.ros_thread.show_region_view_manifolds)
+            view_menu.set_checked(self.MENU_SHOW_VIEWPOINTS,
+                                  self.ros_thread.show_viewpoints)
+            view_menu.add_item("Show Region View Manifolds",
+                               self.MENU_SHOW_REGION_VIEW_MANIFOLDS)
+            view_menu.set_checked(
+                self.MENU_SHOW_REGION_VIEW_MANIFOLDS, self.ros_thread.show_region_view_manifolds)
 
             view_menu.add_item("Show Path", self.MENU_SHOW_PATH)
-            view_menu.set_checked(self.MENU_SHOW_PATH, self.ros_thread.show_path)
+            view_menu.set_checked(self.MENU_SHOW_PATH,
+                                  self.ros_thread.show_path)
             view_menu.add_separator()
             # Panel display options
             view_menu.add_item("Lighting & Materials",
@@ -405,13 +418,12 @@ class GUIClient():
         w.set_on_menu_item_activated(
             self.MENU_SHOW_REGION_VIEW_MANIFOLDS,
             self._on_menu_show_region_view_manifolds)
-        
+
         # w.set_on_menu_item_activated(self.MENU_SHOW_SETTINGS,
         #                              self._on_menu_toggle_settings_panel)
         # w.set_on_menu_item_activated(
         #     self.MENU_ABOUT, self._on_menu_about)
         # ----
-
 
     def _on_menu_show_axes(self):
         show = not gui.Application.instance.menubar.is_checked(
@@ -496,7 +508,7 @@ class GUIClient():
 
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_GRID, show)
-        
+
         self.ros_thread.show_grid = show
         self.ros_thread.set_param('show_grid', show)
 
@@ -585,12 +597,12 @@ class GUIClient():
 
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_VIEWPOINTS, show)
-        
+
     def show_region_view_manifolds(self, show=True):
         for region_name in self.region_names:
             self.scene_widget.scene.show_geometry(
                 f'{region_name}_view_mesh', show)
-    
+
     def show_path(self, show=True):
         """Show or hide the path in the scene."""
         self.scene_widget.scene.show_geometry('path', show)
@@ -599,7 +611,7 @@ class GUIClient():
             self.MENU_SHOW_PATH, show)
         self.ros_thread.show_path = show
         self.ros_thread.set_param('show_path', show)
-        
+
     def show_noise_points(self, show=True):
         self.scene_widget.scene.show_geometry('noise_points', show)
         gui.Application.instance.menubar.set_checked(
@@ -839,7 +851,6 @@ class GUIClient():
             tab_panel = self.create_tab_panel(tab_name, tab_data, em)
             self.main_layout.add_tab(tab_name.title(), tab_panel)
 
-
         # Create a log layout with widget
         self.log_layout = gui.Vert(0.5 * em, gui.Margins(0.5 * em))
         self.log_layout.background_color = Materials.panel_color
@@ -857,7 +868,8 @@ class GUIClient():
         self.viewpoint_traversal_layout = gui.Vert(
             0.5 * em, gui.Margins(0.5 * em))
         self.viewpoint_traversal_layout.background_color = Materials.panel_color
-        horiz = gui.Horiz(0.25 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        horiz = gui.Horiz(0.25 * em, gui.Margins(0.25 * em,
+                          0.25 * em, 0.25 * em, 0.25 * em))
 
         # Create a UI slider for selection of Viewpoints with 3 buttons to its right
         self.viewpoint_slider = gui.Slider(gui.Slider.INT)
@@ -867,25 +879,31 @@ class GUIClient():
             """Handle viewpoint slider change"""
 
             # Update the viewpoint based on slider value
-            region_index, viewpoint_index = self.traversal_order[int(value - 1)]
+            region_index, viewpoint_index = self.traversal_order[int(
+                value - 1)]
             self.ros_thread.select_viewpoint(region_index, viewpoint_index)
 
             # Get cluster mesh from the scene and paint it green
             cluster_name = f"cluster_{int(value-1)}"
-            self.scene_widget.scene.modify_geometry_material(cluster_name, Materials.selected_cluster_material)
+            self.scene_widget.scene.modify_geometry_material(
+                cluster_name, Materials.selected_cluster_material)
             # Get region view mesh and paint it green
             region_view_mesh_name = f"{self.region_names[region_index]}_view_mesh"
-            self.scene_widget.scene.modify_geometry_material(region_view_mesh_name, Materials.selected_region_view_material)
+            self.scene_widget.scene.modify_geometry_material(
+                region_view_mesh_name, Materials.selected_region_view_material)
             # Update the viewpoint in the scene
             self.scene_widget.scene.modify_geometry_material(
                 f"{cluster_name}_viewpoint", Materials.selected_viewpoint_material)
 
             # Reset last selected objects to default materials
             last_cluster_name = f"cluster_{int(self.last_slider_value-1)}"
-            self.scene_widget.scene.modify_geometry_material(last_cluster_name, Materials.cluster_material)
-            last_region_index, last_viewpoint_index = self.traversal_order[int(self.last_slider_value - 1)]
+            self.scene_widget.scene.modify_geometry_material(
+                last_cluster_name, Materials.cluster_material)
+            last_region_index, last_viewpoint_index = self.traversal_order[int(
+                self.last_slider_value - 1)]
             last_region_view_mesh_name = f"{self.region_names[last_region_index]}_view_mesh"
-            self.scene_widget.scene.modify_geometry_material(last_region_view_mesh_name, Materials.region_view_material)
+            self.scene_widget.scene.modify_geometry_material(
+                last_region_view_mesh_name, Materials.region_view_material)
             self.scene_widget.scene.modify_geometry_material(
                 f"{last_cluster_name}_viewpoint", Materials.viewpoint_material)
 
@@ -893,7 +911,8 @@ class GUIClient():
 
             return gui.Widget.EventCallbackResult.HANDLED
 
-        self.viewpoint_slider.set_on_value_changed(_on_viewpoint_slider_changed)
+        self.viewpoint_slider.set_on_value_changed(
+            _on_viewpoint_slider_changed)
         horiz.add_child(self.viewpoint_slider)
 
         # Add "Move to Viewpoint" button
@@ -1443,10 +1462,10 @@ class GUIClient():
                             # First convert orientation to quat_wxyz
                             viewpoint_mesh.rotate(
                                 o3d.geometry.get_rotation_matrix_from_quaternion(
-                                    np.array([orientation[3], 
-                                                orientation[0], 
-                                                orientation[1], 
-                                                orientation[2]])),
+                                    np.array([orientation[3],
+                                              orientation[0],
+                                              orientation[1],
+                                              orientation[2]])),
                                 center=(0, 0, 0)
                             )
 
@@ -1461,7 +1480,6 @@ class GUIClient():
 
                         cluster_meshes.append(fov_mesh)
 
-                
                 # Region View Surface
                 if show_viewpoints:
                     region_view_cloud.points = o3d.utility.Vector3dVector(
@@ -1520,7 +1538,7 @@ class GUIClient():
                     self.show_region_view_manifolds(True)
                     # Set camera view to fit the mesh
                     bbox = self.scene_widget.scene.bounding_box
-    
+
                     # Set up camera to view the entire bounding box
                     self.scene_widget.setup_camera(
                         60.0,          # Field of view in degrees
@@ -1573,7 +1591,8 @@ class GUIClient():
         print("Clearing viewpoints...")
         for cluster_name in self.cluster_names:
             print(f"\tRemoving viewpoint: {cluster_name}_viewpoint")
-            self.scene_widget.scene.remove_geometry(f"{cluster_name}_viewpoint")
+            self.scene_widget.scene.remove_geometry(
+                f"{cluster_name}_viewpoint")
 
     def set_widget_value(self, widget, value):
         """Set the value of a widget based on its type"""
@@ -1834,6 +1853,7 @@ class GUIClient():
     def add_geometry(self, name, geometry, material):
         """Rotate geometry by -90 degrees around the X-axis and add it to the scene"""
         # Convert axis aligned bounding box to oriented bounding box
+        geometry = copy.deepcopy(geometry)
         if isinstance(geometry, o3d.geometry.AxisAlignedBoundingBox):
             geometry = geometry.get_oriented_bounding_box()
         geometry.rotate(
@@ -1841,7 +1861,6 @@ class GUIClient():
             center=(0, 0, 0)
         )
         self.scene_widget.scene.add_geometry(name, geometry, material)
-
 
     def on_main_window_closing(self):
         gui.Application.instance.quit()
@@ -1874,14 +1893,13 @@ class GUIClient():
         # Place main layout between bottom of header and top of log layout on right side
         self.main_layout.frame = gui.Rect(
             r.width - main_width - right_margin, 2 * em, main_width, main_height)
-        
+
         # Place viewpoint traversal layout above log layout to the left of main layout
         vpt_height = self.viewpoint_traversal_layout.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height
         vpt_width = r.width - main_width - em
         self.viewpoint_traversal_layout.frame = gui.Rect(
             0.5 * em, r.height - log_height + 0.5 * em - vpt_height, vpt_width, vpt_height)
-        
 
 
 def main(args=None):

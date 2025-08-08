@@ -43,7 +43,7 @@ viewpoint_generation:
         min_cluster_size: 100
         max_cluster_size: 100000
         curvature_threshold: 0.1
-        normal_angle_threshold: 45.0
+        normal_angle_threshold: 60.0
       fov_clustering:
         lambda_weight: 1.0
         beta_weight: 1.0
