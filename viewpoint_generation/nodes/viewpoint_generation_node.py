@@ -23,6 +23,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
     block_next_param_callback = False
     initialized = False
 
+    selected_viewpoint_pose = None
+
     def __init__(self):
         node_name = 'viewpoint_generation'
         super().__init__(node_name)
@@ -92,6 +94,10 @@ class ViewpointGenerationNode(rclpy.node.Node):
         viewpoint_traversal_node_name = 'viewpoint_traversal'
         self.move_to_pose_stamped_client = self.create_client(
             MoveToPoseStamped, f'{viewpoint_traversal_node_name}/move_to_pose_stamped')
+
+        # Selected viewpoint publisher timer
+        self.create_timer(
+            0.1, self.publish_selected_viewpoint)
 
         # Viewpoint Generation Helpers
         self.viewpoint_generation = ViewpointGeneration()
@@ -823,9 +829,18 @@ class ViewpointGenerationNode(rclpy.node.Node):
             viewpoint_pose.pose.orientation.z = viewpoint['orientation'][2]
             viewpoint_pose.pose.orientation.w = viewpoint['orientation'][3]
 
-            self.viewpoint_publisher.publish(viewpoint_pose)
+            self.selected_viewpoint_pose = viewpoint_pose
 
             return True
+
+    def publish_selected_viewpoint(self):
+        """
+        Publish the currently selected viewpoint to the viewpoint topic.
+        :return: None
+        """
+        if self.selected_viewpoint_pose is not None:
+            self.viewpoint_publisher.publish(self.selected_viewpoint_pose)
+
 
     def move_to_viewpoint_callback(self, request, response):
         """

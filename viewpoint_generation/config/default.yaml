@@ -28,13 +28,13 @@ viewpoint_generation:
           number_of_points: 100000
       camera:
         fov:
-          width: 0.06
-          height: 0.09
+          width: 0.1
+          height: 0.1
         dof: 0.02
-        focal_distance: 0.1
+        focal_distance: 0.3
 
     regions:
-      file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-07_14-00-54_viewpoints.json"
+      file: ""
       region_growth:
         curvature:
           file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_10nn_curvatures.npy"

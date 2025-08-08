@@ -47,7 +47,7 @@ class FOVClustering:
     def evaluate_fov_cluster(self, points, normals):
         """ Function to evaluate a cluster based on field of view and depth of field. """
         # Check for minimum number of points
-        if points.shape[0] < 3:
+        if points.shape[0] < 4:
             print("Not enough points in the cluster to evaluate.")
             return False, 0, 0, False
 

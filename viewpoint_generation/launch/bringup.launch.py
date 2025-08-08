@@ -24,6 +24,9 @@ def generate_launch_description():
                               description="Safety margin for position limits."),
         DeclareLaunchArgument("safety_k_position", default_value="20",
                               description="k-position factor in safety controller."),
+        DeclareLaunchArgument("viewpoint_generation_config_file", default_value="default.yaml",
+                              description="Configuration file for viewpoint generation."),
+        DeclareLaunchArgument("generation", default_value="true"),
     ]
 
     simulation_launch = IncludeLaunchDescription(
@@ -66,6 +69,19 @@ def generate_launch_description():
         }.items()
     )
 
+    viewpoint_generation_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare("viewpoint_generation"),
+                "launch",
+                "viewpoint_generation.launch.py"
+            ])
+        ]),
+        launch_arguments={
+            "config_file": LaunchConfiguration("viewpoint_generation_config_file")
+        }.items()
+    )
+
     viewpoint_traversal_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
@@ -79,5 +95,6 @@ def generate_launch_description():
     return LaunchDescription(declared_arguments + [
         simulation_launch,
         hardware_launch,
+        viewpoint_generation_launch,
         viewpoint_traversal_launch
     ])
