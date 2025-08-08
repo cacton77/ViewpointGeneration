@@ -61,7 +61,7 @@ class ViewpointTraversalNode(Node):
         print("DEBUG: RobotState object created successfully")
         # Set the pose from the request
         self.planning_component.set_goal_state(
-            pose_stamped_msg=request.pose, pose_link="eoat_camera_link")
+            pose_stamped_msg=request.pose_goal, pose_link="eoat_camera_link")
 
         print("DEBUG: Goal state set to the requested pose")
 
@@ -70,7 +70,7 @@ class ViewpointTraversalNode(Node):
 
         # Log the request
         self.get_logger().info(f"Received request: {request}")
-        print("DEBUG: Request pose:", request.pose)
+        print("DEBUG: Request pose:", request.pose_goal)
         # Set the robot state to the current state
         robot_state.set_to_default_values()
         print("DEBUG: Robot state set to default values")
@@ -136,19 +136,19 @@ class ViewpointTraversalNode(Node):
     #     # Define the goal pose for the disc_to_ur5e group
     #     ###################################################################
     #     self.planning_component.set_start_state_to_current_state()
-    #     goal_pose = PoseStamped()
-    #     goal_pose.header.frame_id = "eoat_camera_link"
-    #     goal_pose.pose.position.x = 0.05
-    #     goal_pose.pose.position.y = 0.0
-    #     goal_pose.pose.position.z = 0.05
-    #     goal_pose.pose.orientation.w = 1.0
-    #     goal_pose.pose.orientation.x = 0.0
-    #     goal_pose.pose.orientation.y = 0.0
-    #     goal_pose.pose.orientation.z = 0.0
+    #     pose_goal = PoseStamped()
+    #     pose_goal.header.frame_id = "eoat_camera_link"
+    #     pose_goal.pose.position.x = 0.05
+    #     pose_goal.pose.position.y = 0.0
+    #     pose_goal.pose.position.z = 0.05
+    #     pose_goal.pose.orientation.w = 1.0
+    #     pose_goal.pose.orientation.x = 0.0
+    #     pose_goal.pose.orientation.y = 0.0
+    #     pose_goal.pose.orientation.z = 0.0
 
     #     # Set the goal pose for the disc_to_ur5e group
     #     self.planning_component.set_goal_state(
-    #         pose_stamped_msg=goal_pose, pose_link="eoat_camera_link")
+    #         pose_stamped_msg=pose_goal, pose_link="eoat_camera_link")
     #     plan_result = self.planning_component.plan()
     #     if plan_result.error_code.val != 1:
     #         self.get_logger().error("Failed to plan trajectory")

@@ -844,21 +844,21 @@ class ViewpointGenerationNode(rclpy.node.Node):
             return False
 
         # Create a PoseStamped message for the viewpoint
-        goal_pose = PoseStamped()
-        goal_pose.header.frame_id = 'object_frame'
-        goal_pose.pose.position.x = viewpoint['position'][0]
-        goal_pose.pose.position.y = viewpoint['position'][1]
-        goal_pose.pose.position.z = viewpoint['position'][2]
-        goal_pose.pose.orientation.x = viewpoint['orientation'][0]
-        goal_pose.pose.orientation.y = viewpoint['orientation'][1]
-        goal_pose.pose.orientation.z = viewpoint['orientation'][2]
-        goal_pose.pose.orientation.w = viewpoint['orientation'][3]
+        pose_goal = PoseStamped()
+        pose_goal.header.frame_id = 'object_frame'
+        pose_goal.pose.position.x = viewpoint['position'][0]
+        pose_goal.pose.position.y = viewpoint['position'][1]
+        pose_goal.pose.position.z = viewpoint['position'][2]
+        pose_goal.pose.orientation.x = viewpoint['orientation'][0]
+        pose_goal.pose.orientation.y = viewpoint['orientation'][1]
+        pose_goal.pose.orientation.z = viewpoint['orientation'][2]
+        pose_goal.pose.orientation.w = viewpoint['orientation'][3]
 
-        self.viewpoint_publisher.publish(goal_pose)
+        self.viewpoint_publisher.publish(pose_goal)
 
         # Call the MoveToPoseStamped server to move to the viewpoint
         request = MoveToPoseStamped.Request()
-        request.goal_pose = goal_pose
+        request.pose_goal = pose_goal
 
         future = self.move_to_pose_stamped_client.call_async(request)
         future.add_done_callback(self.move_to_viewpoint_future_callback)

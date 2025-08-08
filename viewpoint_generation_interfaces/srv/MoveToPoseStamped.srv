@@ -1,4 +1,4 @@
-geometry_msgs/PoseStamped goal_pose
+geometry_msgs/PoseStamped pose_goal
 ---
 bool success
 string message
