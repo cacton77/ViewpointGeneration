@@ -3,6 +3,7 @@ import open3d as o3d
 from dataclasses import dataclass
 import pytransform3d.rotations as pr
 
+
 @dataclass
 class ViewpointProjectionConfig:
 
@@ -40,7 +41,9 @@ class ViewpointProjection:
         R = np.array([x_hat, y_hat, z_hat]).T
 
         quat_wxyz = pr.quaternion_from_matrix(R)
-        quat_xyzw = np.array([quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]])  # Convert to ROS quaternion format
+        # Convert to ROS quaternion format
+        quat_xyzw = np.array(
+            [quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]])
         orientation = quat_xyzw
 
         return origin, viewpoint, direction, orientation

@@ -1883,23 +1883,30 @@ class GUIClient():
         # Place log layout at the bottom of the window
         log_height = self.log_layout.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height
+        log_width = r.width - em
         self.log_layout.frame = gui.Rect(
-            0.5 * em, r.height - log_height + 0.5 * em, r.width - em, log_height)
-
-        main_width = 22 * em
-        main_height = r.height - log_height - 2 * em
-
-        right_margin = 0.25 * em
-        # Place main layout between bottom of header and top of log layout on right side
-        self.main_layout.frame = gui.Rect(
-            r.width - main_width - right_margin, 2 * em, main_width, main_height)
+            0.5 * em, r.height - log_height + 0.5 * em, log_width, log_height)
 
         # Place viewpoint traversal layout above log layout to the left of main layout
         vpt_height = self.viewpoint_traversal_layout.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height
-        vpt_width = r.width - main_width - em
+        vpt_width = log_width
         self.viewpoint_traversal_layout.frame = gui.Rect(
             0.5 * em, r.height - log_height + 0.5 * em - vpt_height, vpt_width, vpt_height)
+
+        # Place main layout on the right side of the window
+        # Calculate main layout size based on available space
+        # Leave space for log and viewpoint traversal layouts
+        main_width = 22 * em
+        main_height = self.main_layout.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).height
+        main_height = min(main_height, r.height -
+                          log_height - vpt_height - 2 * em)
+
+        right_margin = 0.5 * em
+        # Place main layout between bottom of header and top of log layout on right side
+        self.main_layout.frame = gui.Rect(
+            r.width - main_width - right_margin, 2 * em, main_width, main_height)
 
 
 def main(args=None):

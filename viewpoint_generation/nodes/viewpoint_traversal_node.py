@@ -5,13 +5,16 @@ from rclpy.node import Node
 from moveit.core.robot_state import RobotState
 from moveit.planning import (
     MoveItPy,
+    PlanRequestParameters,
     MultiPipelinePlanRequestParameters,
 )
 from rclpy.logging import get_logger
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Pose
 import pprint
 from std_srvs.srv import Trigger
+from moveit_msgs.msg import CollisionObject
+from shape_msgs.msg import SolidPrimitive
 
 
 class ViewpointTraversalNode(Node):
@@ -19,25 +22,49 @@ class ViewpointTraversalNode(Node):
     def __init__(self):
         node_name = 'viewpoint_traversal'
         super().__init__(node_name)
+
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('planning_group', 'disc_to_ur5e'),
+                ('planner', 'chomp'),
+                ('multiplanning', False),
+            ]
+        )
+
+        self.planning_group = self.get_parameter(
+            'planning_group').get_parameter_value().string_value
+        self.planner = self.get_parameter(
+            'planner').get_parameter_value().string_value
+        self.multiplanning = self.get_parameter(
+            'multiplanning').get_parameter_value().bool_value
+
         self.robot = MoveItPy(node_name='moveit_py')
+
+        # setting planner_id (Try)
+        # self.single_plan_parameters = PlanRequestParameters(
+        #     self.robot, self.get_parameter('planning_group').value)
+        # planner_id = ['ompl_rrtc', 'chomp', 'pilz_industrial_motion_planner']
+        # self.single_plan_parameters.planning_pipeline = 'ompl'
+        # self.single_plan_parameters.planner_id = planner_id[0]
+        # self.get_logger().info(f"Using planner: {planner_id[0]}")
+
+        print(type(self.robot))
+        print("------------------------------------")
+        self.planning_scene_monitor = self.robot.get_planning_scene_monitor()
+        # self.add_ground_plane()
 
         try:
             self.get_logger().info("Initializing MoveItPy")
             print("Initializing MoveItPy")
             self.planning_component = self.robot.get_planning_component(
-                'disc_to_ur5e')
-            planning_scene_monitor = self.robot.get_planning_scene_monitor()
-            with planning_scene_monitor.read_write() as scene:
-                scene.current_state.update()
+                self.planning_group)
+            self.get_logger().info("Planning component 'disc_to_ur5e' initialized successfully")
         except Exception as e:
             self.get_logger().error(
                 f"Failed to get planning component: {e}")
-            rclpy.shutdown()
+            self.planning_component = None
             return
-
-        # Debug: see what parameters are being passed
-        moveit_params = self.get_parameters_by_prefix('')
-        pprint.pprint(dict(moveit_params))
 
         print("Planning component initialized successfully")
         # Create a service to move to a specific pose
@@ -46,19 +73,34 @@ class ViewpointTraversalNode(Node):
             'viewpoint_traversal/move_to_pose_stamped',
             self.move_to_pose_stamped_callback
         )
-        print("Service 'move_to_pose_stamped' created successfully")
+        self.get_logger().info("Service 'move_to_pose_stamped' created successfully")
 
-        self.test_srv = self.create_service(
-            Trigger,
-            'viewpoint_traversal/test_service',
-            self.test_service_callback
-        )
-        print("Service 'test_service' created successfully")
+    def add_ground_plane(self):
+        with self.planning_scene_monitor.read_write() as scene:
+            collision_object = CollisionObject()
+            collision_object.header.frame_id = "table_link"
+            collision_object.id = "ground_plane"
+
+            ground = SolidPrimitive()
+            ground.type = SolidPrimitive.BOX
+            ground.dimensions = [10.0, 10.0, 0.01]
+
+            collision_object.primitives = [ground]
+            collision_object.primitive_poses = [Pose()]
+            collision_object.operation = CollisionObject.ADD
+
+            scene.apply_collision_object(collision_object)
+            scene.current_state.update()
 
     def move_to_pose_stamped_callback(self, request, response):
+        if not self.planning_component:
+            self.get_logger().error("Planning component is not initialized")
+            response.success = False
+            response.message = "Planning component is not initialized"
+            return response
+
         # Create a RobotState object
         robot_state = RobotState(self.robot.get_robot_model())
-        print("DEBUG: RobotState object created successfully")
         # Set the pose from the request
         self.planning_component.set_goal_state(
             pose_stamped_msg=request.pose_goal, pose_link="eoat_camera_link")
@@ -75,7 +117,16 @@ class ViewpointTraversalNode(Node):
         robot_state.set_to_default_values()
         print("DEBUG: Robot state set to default values")
         # Plan and execute
+        multi_pipeline_plan_request_params = MultiPipelinePlanRequestParameters(
+            self.robot, ["ompl_rrtc"]
+        )
+
+        # self.single_plan_parameters.planner_id = self.planner
+
         success = self.plan_and_execute()
+
+        # success = self.plan_and_execute(
+        #     multi_plan_parameters=multi_pipeline_plan_request_params)
         print("DEBUG: Plan and execute called, success:", success)
 
         # Prepare the response
@@ -99,24 +150,22 @@ class ViewpointTraversalNode(Node):
 
         # plan to the specified pose and execute the trajectory
         self.get_logger().info("Planning and executing trajectory")
-        if single_plan_parameters is not None:
+        if multi_plan_parameters is not None:
             plan_result = self.planning_component.plan(
-                robot_state=robot_state,
-                single_plan_parameters=single_plan_parameters
-            )
-            if plan_result.error_code.val != 1:
-                self.get_logger().error("Failed to plan trajectory")
-                return False
-        elif multi_plan_parameters is not None:
-            plan_result = self.planning_component.plan(
-                robot_state=robot_state,
                 multi_plan_parameters=multi_plan_parameters
             )
-            if plan_result.error_code.val != 1:
-                self.get_logger().error("Failed to plan trajectory")
-                return False
+        elif single_plan_parameters is not None:
+            plan_result = self.planning_component.plan(
+                single_plan_parameters=single_plan_parameters
+            )
         else:
+            # plan_result = self.planning_component.plan(
+            # single_plan_parameters=self.single_plan_parameters)
             plan_result = self.planning_component.plan()
+
+        print("------------------------------------")
+        print(plan_result)
+        print("------------------------------------")
 
         # Execute the Planned Trajectory
         if plan_result:

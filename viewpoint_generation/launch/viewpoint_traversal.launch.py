@@ -16,7 +16,7 @@ def generate_launch_description():
         .robot_description_kinematics(file_path="config/kinematics.yaml")
         .moveit_cpp(file_path="config/motion_planning.yaml")
         .joint_limits(file_path="config/joint_limits.yaml")
-        .planning_pipelines(default_planning_pipeline="ompl", pipelines=["ompl", "chomp", "pilz_industrial_motion_planner"])
+        .planning_pipelines(default_planning_pipeline="chomp", pipelines=["ompl", "chomp", "pilz_industrial_motion_planner"])
         .trajectory_execution(moveit_manage_controllers=True)
         .planning_scene_monitor(
             publish_planning_scene=True,
