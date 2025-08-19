@@ -34,7 +34,7 @@ viewpoint_generation:
         focal_distance: 0.3
 
     regions:
-      file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-11_10-57-18_viewpoints.json"
+      file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-19_14-14-00_viewpoints.json"
       region_growth:
         curvature:
           file: "/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_10nn_curvatures.npy"

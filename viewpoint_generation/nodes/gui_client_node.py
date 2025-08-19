@@ -379,10 +379,10 @@ class GUIClient():
         #     self.MENU_NEW, self._on_menu_new)
         # w.set_on_menu_item_activated(
         #     self.MENU_OPEN, self._on_menu_open)
-        # w.set_on_menu_item_activated(
-        #     self.MENU_SAVE, self._on_menu_save)
-        # w.set_on_menu_item_activated(
-        #     self.MENU_SAVE_AS, self._on_menu_save_as)
+        w.set_on_menu_item_activated(
+            self.MENU_SAVE, self._on_menu_save)
+        w.set_on_menu_item_activated(
+            self.MENU_SAVE_AS, self._on_menu_save_as)
         # w.set_on_menu_item_activated(self.MENU_IMPORT_MODEL,
         #                              self._on_menu_import_model)
         # w.set_on_menu_item_activated(self.MENU_IMPORT_PCD,
@@ -424,6 +424,31 @@ class GUIClient():
         # w.set_on_menu_item_activated(
         #     self.MENU_ABOUT, self._on_menu_about)
         # ----
+
+    def _on_menu_save(self):
+        pass
+
+    def _on_menu_save_as(self):
+        """Handle the Save As menu item"""
+        # Open a file dialog to select the save location
+        file_dialog = gui.FileDialog(
+            gui.FileDialog.SAVE, "Save Config As...", self.window.theme)
+        file_dialog.add_filter("*.yaml", "YAML Files (*.yaml)")
+        file_dialog.add_filter("*.json", "JSON Files (*.json)")
+        file_dialog.set_on_done(self._on_save_as_done)
+        file_dialog.set_on_cancel(self.window.close_dialog)
+        self.window.show_dialog(file_dialog)
+
+    def _on_save_as_done(self, file_path):
+        """Callback for when the Save As dialog is done"""
+        if file_path:
+            # Save the parameters to the specified file
+            self.ros_thread.save_parameters_to_file(file_path)
+            print(f"Parameters saved to {file_path}")
+        else:
+            print("Save As cancelled")
+
+        self.window.close_dialog()
 
     def _on_menu_show_axes(self):
         show = not gui.Application.instance.menubar.is_checked(

@@ -2,6 +2,7 @@
 import rclpy
 import os
 import time
+import yaml
 import threading
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
@@ -19,8 +20,13 @@ from geometry_msgs.msg import PoseStamped
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 
 class ROSThread(Node):
+
+    node_name = 'gui'
+    viewpoint_generation_node_name = 'viewpoint_generation'
+    traversal_node_name = 'viewpoint_traversal'
+
     def __init__(self, stream_id=0):
-        super().__init__('gui')
+        super().__init__(self.node_name)
         self.declare_parameters(
             namespace='',
             parameters=[
@@ -65,56 +71,56 @@ class ROSThread(Node):
 
         # Target node name (change this to your target node)
         # Replace with actual node name
-        self.target_node_name = '/viewpoint_generation'
+        self.viewpoint_generation_node_name = 'viewpoint_generation'
 
         # Create service clients
         self.list_params_client = self.create_client(
             ListParameters,
-            f'{self.target_node_name}/list_parameters'
+            f'{self.viewpoint_generation_node_name}/list_parameters'
         )
 
         self.get_params_client = self.create_client(
             GetParameters,
-            f'{self.target_node_name}/get_parameters'
+            f'{self.viewpoint_generation_node_name}/get_parameters'
         )
 
         set_params_cb_group = MutuallyExclusiveCallbackGroup()
         self.set_params_client = self.create_client(
             SetParameters,
-            f'{self.target_node_name}/set_parameters',
+            f'{self.viewpoint_generation_node_name}/set_parameters',
             callback_group=set_params_cb_group
         )
 
         self.get_logger().info(
-            f'Parameter Manager Node started for target: {self.target_node_name}')
+            f'Parameter Manager Node started for target: {self.viewpoint_generation_node_name}')
 
         # Create clients for viewpoint generation services
         services_cb_group = MutuallyExclusiveCallbackGroup()
         self.sampling_client = self.create_client(Trigger,
-                                                  f'{self.target_node_name}/sample_point_cloud',
+                                                  f'{self.viewpoint_generation_node_name}/sample_point_cloud',
                                                   callback_group=services_cb_group
                                                   )
         self.estimate_curvature_client = self.create_client(Trigger,
-                                                            f'{self.target_node_name}/estimate_curvature',
+                                                            f'{self.viewpoint_generation_node_name}/estimate_curvature',
                                                             callback_group=services_cb_group
                                                             )
         self.region_growth_client = self.create_client(Trigger,
-                                                       f'{self.target_node_name}/region_growth',
+                                                       f'{self.viewpoint_generation_node_name}/region_growth',
                                                        callback_group=services_cb_group
                                                        )
         self.fov_clustering_client = self.create_client(Trigger,
-                                                        f'{self.target_node_name}/fov_clustering',
+                                                        f'{self.viewpoint_generation_node_name}/fov_clustering',
                                                         callback_group=services_cb_group
                                                         )
         self.viewpoint_projection_client = self.create_client(Trigger,
-                                                              f'{self.target_node_name}/viewpoint_projection',
+                                                              f'{self.viewpoint_generation_node_name}/viewpoint_projection',
                                                               callback_group=services_cb_group
                                                               )
 
         # Create client for viewpoint traversal service
         self.traversal_node_name = 'viewpoint_traversal'
         self.move_to_viewpoint_client = self.create_client(Trigger,
-                                                             f'{self.target_node_name}/move_to_viewpoint',
+                                                             f'{self.viewpoint_generation_node_name}/move_to_viewpoint',
                                                              callback_group=services_cb_group
                                                              )
 
@@ -164,42 +170,117 @@ class ROSThread(Node):
         # Wait for list parameters service
         while not self.list_params_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
-                f'Waiting for {self.target_node_name}/list_parameters service...')
+                f'Waiting for {self.viewpoint_generation_node_name}/list_parameters service...')
 
         # Wait for get parameters service
         while not self.get_params_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
-                f'Waiting for {self.target_node_name}/get_parameters service...')
+                f'Waiting for {self.viewpoint_generation_node_name}/get_parameters service...')
 
         # Wait for set parameters service
         while not self.set_params_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
-                f'Waiting for {self.target_node_name}/set_parameters service...')
+                f'Waiting for {self.viewpoint_generation_node_name}/set_parameters service...')
             
         # Wait for viewpoint generation services
         while not self.sampling_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
-                f'Waiting for {self.target_node_name}/sample_point_cloud service...')
+                f'Waiting for {self.viewpoint_generation_node_name}/sample_point_cloud service...')
         while not self.estimate_curvature_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
-                f'Waiting for {self.target_node_name}/estimate_curvature service...')
+                f'Waiting for {self.viewpoint_generation_node_name}/estimate_curvature service...')
         while not self.region_growth_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
-                f'Waiting for {self.target_node_name}/region_growth service...')
+                f'Waiting for {self.viewpoint_generation_node_name}/region_growth service...')
         while not self.fov_clustering_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
-                f'Waiting for {self.target_node_name}/fov_clustering service...')
+                f'Waiting for {self.viewpoint_generation_node_name}/fov_clustering service...')
         while not self.viewpoint_projection_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
-                f'Waiting for {self.target_node_name}/viewpoint_projection service...')
+                f'Waiting for {self.viewpoint_generation_node_name}/viewpoint_projection service...')
         
         self.get_logger().info(
-                f'Waiting for {self.target_node_name}/move_to_viewpoint service...')
+                f'Waiting for {self.viewpoint_generation_node_name}/move_to_viewpoint service...')
         if not self.move_to_viewpoint_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().warning(
-                f'{self.target_node_name}/move_to_viewpoint service not available, viewpoint traversal will not work')
+                f'{self.viewpoint_generation_node_name}/move_to_viewpoint service not available, viewpoint traversal will not work')
 
         self.get_logger().info('All parameter services are available!')
+
+    def save_parameters_to_file(self, file_path):
+        """Save all current and connected inspection node parameters to a file"""
+        output_dict = {}
+        
+        gui_params = self.get_node_parameters(self.node_name)
+        output_dict[self.node_name] = {'ros__parameters': gui_params}
+        viewpoint_generation_params = self.get_node_parameters(self.viewpoint_generation_node_name)
+        output_dict[self.viewpoint_generation_node_name] = {'ros__parameters': viewpoint_generation_params}
+        # viewpoint_traversal_params = self.get_node_parameters(self.traversal_node_name)
+        # output_dict[self.traversal_node_name] = {'ros__parameters': viewpoint_traversal_params}
+        
+        # Write to file
+        with open(file_path, 'w') as f:
+            yaml.dump(output_dict, f, default_flow_style=False)
+        
+        self.get_logger().info(f'Parameters saved to {file_path}')
+
+    def get_node_parameters(self, target_node_name):
+        # Create parameter client for the target node
+        param_client = self.create_client(ListParameters, f'/{target_node_name}/list_parameters')
+        get_client = self.create_client(GetParameters, f'/{target_node_name}/get_parameters')
+        
+        if not param_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error(f'Parameter service not available for {target_node_name}')
+            return None 
+            
+        # List all parameters
+        list_request = ListParameters.Request()
+        list_future = param_client.call_async(list_request)
+        rclpy.spin_until_future_complete(self, list_future)
+        
+        if list_future.result() is not None:
+            param_names = list_future.result().result.names
+            
+            # Get parameter values
+            get_request = GetParameters.Request()
+            get_request.names = param_names
+            get_future = get_client.call_async(get_request)
+            rclpy.spin_until_future_complete(self, get_future)
+            
+            if get_future.result() is not None:
+                param_values = get_future.result().values
+                
+                # Create parameter dictionary
+                params_dict = {}
+                for name, value in zip(param_names, param_values):
+                    params_dict[name] = self._parameter_value_to_python(value)
+                
+                return params_dict        
+        
+        return None
+    
+    def _parameter_value_to_python(self, param_value):
+        """Convert ROS parameter value to Python type"""
+        if param_value.type == Parameter.Type.BOOL.value:
+            return param_value.bool_value
+        elif param_value.type == Parameter.Type.INTEGER.value:
+            return param_value.integer_value
+        elif param_value.type == Parameter.Type.DOUBLE.value:
+            return param_value.double_value
+        elif param_value.type == Parameter.Type.STRING.value:
+            return param_value.string_value
+        elif param_value.type == Parameter.Type.BYTE_ARRAY.value:
+            return list(param_value.byte_array_value)
+        elif param_value.type == Parameter.Type.BOOL_ARRAY.value:
+            return list(param_value.bool_array_value)
+        elif param_value.type == Parameter.Type.INTEGER_ARRAY.value:
+            return list(param_value.integer_array_value)
+        elif param_value.type == Parameter.Type.DOUBLE_ARRAY.value:
+            return list(param_value.double_array_value)
+        elif param_value.type == Parameter.Type.STRING_ARRAY.value:
+            return list(param_value.string_array_value)
+        else:
+            return None
 
     def sample_point_cloud(self):
         """Trigger the sampling service"""
