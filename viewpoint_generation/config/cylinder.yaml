@@ -1,6 +1,6 @@
 gui:
   ros__parameters:
-    show_axes: true
+    show_axes: false
     show_curvatures: false
     show_fov_clusters: false
     show_grid: false
@@ -27,7 +27,7 @@ viewpoint_generation:
     model.point_cloud.sampling.number_of_points: 100000
     model.point_cloud.sampling.ppsqmm: 2.341362487277471
     model.point_cloud.units: m
-    regions.file: /workspaces/isaac_ros-dev/src/ViewpointGenerationData/cylinder_point_cloud/cylinder_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-19_15-03-40_viewpoints.json
+    regions.file: /workspaces/isaac_ros-dev/src/ViewpointGenerationData/cylinder_point_cloud/cylinder_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-19_15-43-40_viewpoints_optimized2025-08-19_15-49-25.json
     regions.fov_clustering.beta_weight: 1.0
     regions.fov_clustering.k-means.maximum_iterations: 100
     regions.fov_clustering.k-means.normal_weight: 1.0
@@ -42,7 +42,7 @@ viewpoint_generation:
     regions.region_growth.min_cluster_size: 100
     regions.region_growth.normal_angle_threshold: 60.0
     regions.region_growth.seed_threshold: 0.1
-    regions.selected_cluster: 0
+    regions.selected_cluster: 9
     regions.selected_region: 0
     settings.cuda_enabled: false
     use_sim_time: false

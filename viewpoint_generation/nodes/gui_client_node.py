@@ -520,7 +520,7 @@ class GUIClient():
         self.show_path(show)
 
     def show_axes(self, show=True):
-        self.scene_widget.scene.show_axes(True)
+        self.scene_widget.scene.show_axes(show)
 
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_AXES, show)
@@ -1425,6 +1425,7 @@ class GUIClient():
             cluster_meshes = []
             viewpoint_meshes = []
             region_view_meshes = []
+            region_path_lines = []
 
             show_clusters = False
             show_viewpoints = False
@@ -1451,6 +1452,9 @@ class GUIClient():
                 if 'clusters' in region_dict:
                     show_clusters = True
 
+                    path_line = o3d.geometry.LineSet()
+                    path_points = []
+
                     cluster_order = region_dict['order']
                     for cluster_id in cluster_order:
                         traversal_order.append((region_id, cluster_id))
@@ -1474,6 +1478,7 @@ class GUIClient():
                         fov_mesh.translate(avg_normal * 0.005)
 
                         if 'viewpoint' in cluster_dict:
+
                             show_viewpoints = True
                             viewpoint_mesh = o3d.geometry.TriangleMesh.create_sphere(
                                 radius=5)
@@ -1482,7 +1487,7 @@ class GUIClient():
                             origin = 1000 * \
                                 np.array(
                                     cluster_dict['viewpoint']['origin'])
-                            viewpoint = 1000 * \
+                            position = 1000 * \
                                 np.array(
                                     cluster_dict['viewpoint']['position'])
                             direction = np.array(
@@ -1502,13 +1507,17 @@ class GUIClient():
                             )
 
                             # Add to region view points
-                            region_view_points.append(viewpoint.tolist())
+                            region_view_points.append(position.tolist())
                             region_view_normals.append(direction.tolist())
 
-                            viewpoint_mesh.translate(viewpoint)
+                            viewpoint_mesh.translate(position)
+
+                            # Add viewpoint position to path line
+                            path_points.append(position)
 
                             viewpoint_mesh.paint_uniform_color([1.0, 1.0, 1.0])
                             viewpoint_meshes.append(viewpoint_mesh)
+
 
                         cluster_meshes.append(fov_mesh)
 
@@ -1523,6 +1532,13 @@ class GUIClient():
                             joggle_inputs=True)[0]
                         # region_view_mesh.paint_uniform_color(region_color)
                         region_view_meshes.append(region_view_mesh)
+
+                    path_line.points = o3d.utility.Vector3dVector(
+                        np.array(path_points))
+                    path_line.lines = o3d.utility.Vector2iVector(
+                        [[i, i + 1] for i in range(len(path_points) - 1)])
+                    region_path_lines.append(path_line)
+                
 
             # Create noise point cloud
             noise_points = regions_dict['noise_points']
@@ -1560,7 +1576,10 @@ class GUIClient():
                 region_name = f"region_{i}"
                 self.add_geometry(
                     f'{region_name}_view_mesh', region_view_meshes[i], Materials.region_view_material)
-
+            for i in range(len(region_path_lines)):
+                region_name = f"region_{i}"
+                self.add_geometry(
+                    f'{region_name}_path', region_path_lines[i], Materials.path_material)
             if show_clusters:
                 self.show_regions(False)
                 self.show_noise_points(False)

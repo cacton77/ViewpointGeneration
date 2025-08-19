@@ -1,7 +1,9 @@
 import time
 import rclpy
 import json
+import datetime
 from pprint import pprint
+from scipy.spatial.distance import euclidean
 # moveit python library
 from rclpy.node import Node
 from moveit.core.robot_state import RobotState
@@ -87,13 +89,60 @@ class ViewpointTraversalNode(Node):
     def optimize_traversal(self, request, response):
         self.get_logger().info(f'Optimizing traversal for file {request.viewpoint_dict_path}')
         with open(request.viewpoint_dict_path, 'r') as f:
-            self.viewpoint_dict = json.load(f)
-        print(type(self.viewpoint_dict))
-        print(self.viewpoint_dict)
+            viewpoint_dict = json.load(f)
+
+        viewpoint_dict_optimized = self.simple_tsp(viewpoint_dict)
+
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        new_viewpoint_dict_path = request.viewpoint_dict_path.replace(
+            '.json', f'_optimized{timestamp}.json')
+
+        with open(new_viewpoint_dict_path, 'w') as f:
+            json.dump(viewpoint_dict_optimized, f, indent=4)
 
         response.success = True
         response.message = "Traversal optimization completed successfully"
+        response.new_viewpoint_dict_path = new_viewpoint_dict_path
         return response
+
+    def simple_tsp(self, viewpoint_dict):
+
+        regions_dict = viewpoint_dict['regions']
+        for region_name, region in regions_dict.items():
+            clusters_dict = region['clusters']
+
+            viewpoints = []
+            
+            for cluster_name, cluster in clusters_dict.items():
+                viewpoints.append(cluster['viewpoint']['position'])
+
+            path, total_distance = self.nearest_neighbors_tsp(viewpoints)
+            self.get_logger().info(f"Optimized path for region '{region_name}' with total distance {total_distance}")
+
+            viewpoint_dict['regions'][region_name]['order'] = path
+            
+        return viewpoint_dict
+
+    def nearest_neighbors_tsp(self, points):
+
+        num_points = len(points)
+        unvisited = set(range(num_points))
+        current_point = 0
+        path = [current_point]
+        unvisited.remove(current_point)
+        total_distance = 0
+
+        while unvisited:
+            next_point = min(unvisited, key=lambda point: euclidean(
+                points[current_point], points[point]))
+            total_distance += euclidean(points[current_point],
+                                        points[next_point])
+            current_point = next_point
+            path.append(current_point)
+            unvisited.remove(current_point)
+
+        return path, total_distance
+
 
     def add_ground_plane(self):
         with self.planning_scene_monitor.read_write() as scene:

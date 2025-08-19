@@ -924,7 +924,21 @@ class ViewpointGenerationNode(rclpy.node.Node):
     def optimize_traversal_callback(self, future):
         try:
             result = future.result()
-            self.get_logger().info(f"Optimization successful: {result}")
+            if result.success:
+                self.get_logger().info('Optimization successful.')
+                new_viewpoint_dict_path = result.new_viewpoint_dict_path
+                # Update the regions file parameter with the new viewpoint dictionary path
+                regions_file_param = rclpy.parameter.Parameter(
+                    'regions.file',
+                    rclpy.Parameter.Type.STRING,
+                    new_viewpoint_dict_path
+                )
+                self.block_next_param_callback = True
+                self.set_parameters([regions_file_param])
+                self.get_logger().info(f'New viewpoint dictionary saved at: {new_viewpoint_dict_path}')
+            else:
+                self.get_logger().error(f'Optimization failed: {result.message}')
+                return
         except Exception as e:
             self.get_logger().error(f"Optimization failed: {e}")
 

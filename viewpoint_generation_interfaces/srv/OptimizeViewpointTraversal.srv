@@ -2,3 +2,4 @@ string viewpoint_dict_path
 ---
 bool success
 string message
+string new_viewpoint_dict_path

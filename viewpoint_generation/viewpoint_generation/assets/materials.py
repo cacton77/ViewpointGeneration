@@ -52,13 +52,14 @@ class Materials:
     selected_region_view_material.base_color = [0.0, 1.0, 0.0, 0.5]
 
     viewpoint_material = rendering.MaterialRecord()
-    viewpoint_material.shader = "defaultUnlit"
-    viewpoint_material.base_color = [1.0, 1.0, 1.0, 1.0]
-    viewpoint_size = 10 # Size in mm
+    viewpoint_material.shader = "defaultLitTransparency"
+    viewpoint_material.base_color = [1.0, 1.0, 1.0, 0.8]
+    viewpoint_size = 20 # Size in mm
 
     selected_viewpoint_material = rendering.MaterialRecord()
     selected_viewpoint_material.shader = "defaultUnlit"
     selected_viewpoint_material.base_color = [0.0, 1.0, 0.0, 1.0]
+    selected_viewpoint_material.base_color = [193/255, 76/255, 61/255, 1.0]
 
     fov_material = rendering.MaterialRecord()
     fov_material.shader = "defaultUnlit"
@@ -73,3 +74,8 @@ class Materials:
     tabletop_material.base_color = [1.0, 1.0, 1.0, 0.75]
     tabletop_diameter = 100.0  # Diameter in mm
     tabletop_thickness = 2.0  # Thickness in mm
+
+    path_material = MaterialRecord()
+    path_material.shader = 'unlitLine'
+    path_material.line_width = 4.0
+    path_material.base_color = [92/255, 140/255, 207/255, 1.0]

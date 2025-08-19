@@ -614,6 +614,9 @@ class ViewpointGeneration():
         if self.regions_file is None:
             return None, 'No regions file loaded. Please run region growth first.'
 
+        if self.regions_dict is None or 'regions' not in self.regions_dict:
+            return None, 'No regions found in the regions dictionary.'
+
         if region_index < 0 or region_index >= len(self.regions_dict['regions']):
             return None, f'Invalid region index: {region_index}.'
 

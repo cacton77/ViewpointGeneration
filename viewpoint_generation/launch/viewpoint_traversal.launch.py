@@ -29,7 +29,7 @@ def generate_launch_description():
 
     # Your MoveItPy Viewpoint Traversal Node
     viewpoint_traversal_node = Node(
-        name="viewpoint_traversal_node",
+        name="viewpoint_traversal",
         package="viewpoint_generation",
         executable="viewpoint_traversal_node",
         output="both",

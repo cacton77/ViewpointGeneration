@@ -117,14 +117,13 @@ class ROSThread(Node):
                                                               callback_group=services_cb_group
                                                               )
 
-        # Create client for viewpoint traversal service
-        self.traversal_node_name = 'viewpoint_traversal'
+        # Create passthrough client for viewpoint traversal service
         self.move_to_viewpoint_client = self.create_client(Trigger,
                                                              f'{self.viewpoint_generation_node_name}/move_to_viewpoint',
                                                              callback_group=services_cb_group
                                                              )
         self.optimize_traversal_client = self.create_client(Trigger,
-                                                             f'{self.target_node_name}/optimize_traversal',
+                                                             f'{self.viewpoint_generation_node_name}/optimize_traversal',
                                                              callback_group=services_cb_group
                                                              )
 
