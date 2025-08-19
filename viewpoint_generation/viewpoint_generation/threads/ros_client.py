@@ -123,6 +123,11 @@ class ROSThread(Node):
                                                              f'{self.viewpoint_generation_node_name}/move_to_viewpoint',
                                                              callback_group=services_cb_group
                                                              )
+        self.optimize_traversal_client = self.create_client(Trigger,
+                                                             f'{self.target_node_name}/optimize_traversal',
+                                                             callback_group=services_cb_group
+                                                             )
+
 
         # ROSOUT log subscription
         rosout_sub = self.create_subscription(
@@ -399,12 +404,32 @@ class ROSThread(Node):
         """Callback for the move to viewpoint service future"""
         if future.result() is not None:
             if future.result().success:
-                self.get_logger().info('Moved to viewpoint successfully')
+                self.get_logger().info('Moved to viewpoint triggered successfully')
             else:
                 self.get_logger().error(
                     f'Failed to move to viewpoint: {future.result().message}')
         else:
             self.get_logger().error('Failed to call move_to_viewpoint service')
+
+    def optimize_traversal(self):
+        """Optimize the viewpoint traversal path"""
+        if not self.optimize_traversal_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().error('Optimize traversal service not available')
+            return False
+
+        request = Trigger.Request()
+        future = self.optimize_traversal_client.call_async(request)
+        future.add_done_callback(self.optimize_traversal_future_callback)
+
+    def optimize_traversal_future_callback(self, future):
+        """Callback for the optimize traversal service future"""
+        if future.result() is not None:
+            self.get_logger().info('Optimize traversal triggered successfully')
+            self.get_all_parameters()
+            return True
+        else:
+            self.get_logger().error('Failed to trigger optimize traversal')
+            return False
 
     def expand_dict_keys(self):
         """

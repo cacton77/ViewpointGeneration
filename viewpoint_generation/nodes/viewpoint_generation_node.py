@@ -15,7 +15,7 @@ from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseStamped, Pose, PointStamped, Point
 from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject
-from viewpoint_generation_interfaces.srv import MoveToPoseStamped
+from viewpoint_generation_interfaces.srv import MoveToPoseStamped, OptimizeViewpointTraversal
 
 
 class ViewpointGenerationNode(rclpy.node.Node):
@@ -24,6 +24,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
     initialized = False
 
     selected_viewpoint_pose = None
+    viewpoint_dict_path = None
 
     def __init__(self):
         node_name = 'viewpoint_generation'
@@ -90,10 +91,14 @@ class ViewpointGenerationNode(rclpy.node.Node):
                             self.viewpoint_projection_callback)
         # Move to Viewpoint Service
         self.create_service(Trigger, node_name + '/move_to_viewpoint', self.move_to_viewpoint_callback)
+        # Optimize Traversal Service
+        self.create_service(Trigger, node_name + '/optimize_traversal', self.optimize_traversal)
+
         # Connect to viewpoint traversal service
         viewpoint_traversal_node_name = 'viewpoint_traversal'
         self.move_to_pose_stamped_client = self.create_client(
             MoveToPoseStamped, f'{viewpoint_traversal_node_name}/move_to_pose_stamped')
+        self.optimize_traversal_client = self.create_client(OptimizeViewpointTraversal, f'{viewpoint_traversal_node_name}/optimize_traversal')
 
         # Selected viewpoint publisher timer
         self.create_timer(
@@ -904,6 +909,24 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     f'Failed to move to viewpoint: {result.message}')
         except Exception as e:
             self.get_logger().error(f'Exception while moving to viewpoint: {e}')
+
+    def optimize_traversal(self, request, response):
+        request = OptimizeViewpointTraversal.Request()
+        request.viewpoint_dict_path = self.get_parameter('regions.file').get_parameter_value().string_value
+
+        future = self.optimize_traversal_client.call_async(request)
+        future.add_done_callback(self.optimize_traversal_callback)
+
+        response.success = True
+        response.message = 'Optimization started...'
+        return response
+    
+    def optimize_traversal_callback(self, future):
+        try:
+            result = future.result()
+            self.get_logger().info(f"Optimization successful: {result}")
+        except Exception as e:
+            self.get_logger().error(f"Optimization failed: {e}")
 
     def parameter_callback(self, params):
         """ Callback for parameter changes.

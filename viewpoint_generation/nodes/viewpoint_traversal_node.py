@@ -1,5 +1,7 @@
 import time
 import rclpy
+import json
+from pprint import pprint
 # moveit python library
 from rclpy.node import Node
 from moveit.core.robot_state import RobotState
@@ -9,7 +11,7 @@ from moveit.planning import (
     MultiPipelinePlanRequestParameters,
 )
 from rclpy.logging import get_logger
-from viewpoint_generation_interfaces.srv import MoveToPoseStamped
+from viewpoint_generation_interfaces.srv import MoveToPoseStamped, OptimizeViewpointTraversal
 from geometry_msgs.msg import PoseStamped, Pose
 import pprint
 from std_srvs.srv import Trigger
@@ -18,6 +20,8 @@ from shape_msgs.msg import SolidPrimitive
 
 
 class ViewpointTraversalNode(Node):
+
+    viewpoint_dict = {}
 
     def __init__(self):
         node_name = 'viewpoint_traversal'
@@ -68,12 +72,28 @@ class ViewpointTraversalNode(Node):
 
         print("Planning component initialized successfully")
         # Create a service to move to a specific pose
-        self.srv = self.create_service(
+        self.create_service(
             MoveToPoseStamped,
             'viewpoint_traversal/move_to_pose_stamped',
             self.move_to_pose_stamped_callback
         )
         self.get_logger().info("Service 'move_to_pose_stamped' created successfully")
+
+        self.create_service(OptimizeViewpointTraversal,
+            f'{node_name}/optimize_traversal',
+            self.optimize_traversal
+        )
+    
+    def optimize_traversal(self, request, response):
+        self.get_logger().info(f'Optimizing traversal for file {request.viewpoint_dict_path}')
+        with open(request.viewpoint_dict_path, 'r') as f:
+            self.viewpoint_dict = json.load(f)
+        print(type(self.viewpoint_dict))
+        print(self.viewpoint_dict)
+
+        response.success = True
+        response.message = "Traversal optimization completed successfully"
+        return response
 
     def add_ground_plane(self):
         with self.planning_scene_monitor.read_write() as scene:

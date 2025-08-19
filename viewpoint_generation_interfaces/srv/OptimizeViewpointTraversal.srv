@@ -1,0 +1,4 @@
+string viewpoint_dict_path
+---
+bool success
+string message

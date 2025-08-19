@@ -944,7 +944,14 @@ class GUIClient():
         move_button = gui.Button("Move to Viewpoint")
         move_button.background_color = Materials.button_background_color
         move_button.set_on_clicked(self.ros_thread.move_to_viewpoint)
+
+        optimize_button = gui.Button("Optimize Traversal")
+        optimize_button.background_color = Materials.button_background_color
+        optimize_button.set_on_clicked(self.ros_thread.optimize_traversal)
+
+        horiz.add_child(optimize_button) 
         horiz.add_child(move_button)
+
 
         self.viewpoint_traversal_layout.add_child(horiz)
 
