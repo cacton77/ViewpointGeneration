@@ -549,9 +549,10 @@ class ViewpointGeneration():
             for i, fov_cluster in enumerate(fov_clusters):
                 self.regions_dict['regions'][region_id]['clusters'][i] = {
                     'points': fov_cluster}
-        
+
             # Assign default order
-            self.regions_dict['regions'][region_id]['order'] = list(self.regions_dict['regions'][region_id]['clusters'].keys())
+            self.regions_dict['regions'][region_id]['order'] = list(
+                self.regions_dict['regions'][region_id]['clusters'].keys())
 
         self.regions_file = self.save_regions_dict(self.regions_dict)
 
@@ -620,10 +621,14 @@ class ViewpointGeneration():
         if region_index < 0 or region_index >= len(self.regions_dict['regions']):
             return None, f'Invalid region index: {region_index}.'
 
+        if 'clusters' not in self.regions_dict['regions'][str(region_index)]:
+            return None, f'No clusters found for region index: {region_index}.'
+
         if cluster_index < 0 or cluster_index >= len(self.regions_dict['regions'][str(region_index)]['clusters']):
             return None, f'Invalid cluster index: {cluster_index}.'
 
-        viewpoint = self.regions_dict['regions'][str(region_index)]['clusters'][str(cluster_index)].get('viewpoint', None)
+        viewpoint = self.regions_dict['regions'][str(
+            region_index)]['clusters'][str(cluster_index)].get('viewpoint', None)
 
         if viewpoint is None:
             return None, 'No viewpoint found for the specified region and cluster.'
@@ -631,6 +636,8 @@ class ViewpointGeneration():
         return viewpoint, 'Viewpoint retrieved successfully.'
 
 # Utility functions
+
+
 def create_sample_mesh(k: int = 3, ppsqmm: float = 1000) -> o3d.geometry.PointCloud:
     """Create a sample point cloud for testing."""
 

@@ -11,6 +11,7 @@ class Materials:
     panel_color = gui.Color(175/255, 175/255, 175/255, 0.8)
     panel_color = gui.Color(0.5, 0.5, 0.5, 0.8)
     button_background_color = gui.Color(0.4, 0.4, 0.4, 1.0)
+    go_button_background_color = gui.Color(0.2, 0.8, 0.2, 1.0)
     text_color = gui.Color(1., 1., 1., 1.0)
     text_edit_background_color = gui.Color(0.5, 0.5, 0.5, 1.0)
 
@@ -54,7 +55,7 @@ class Materials:
     viewpoint_material = rendering.MaterialRecord()
     viewpoint_material.shader = "defaultLitTransparency"
     viewpoint_material.base_color = [1.0, 1.0, 1.0, 0.8]
-    viewpoint_size = 20 # Size in mm
+    viewpoint_size = 20  # Size in mm
 
     selected_viewpoint_material = rendering.MaterialRecord()
     selected_viewpoint_material.shader = "defaultUnlit"

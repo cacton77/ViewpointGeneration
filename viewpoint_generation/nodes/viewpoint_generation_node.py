@@ -8,10 +8,12 @@ from rclpy.action import ActionServer
 from viewpoint_generation.viewpoint_generation import ViewpointGeneration
 from rcl_interfaces.msg import SetParametersResult
 from ament_index_python.packages import get_package_prefix
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 from std_srvs.srv import Trigger
 # from viewpoint_generation_interfaces.action import ViewpointGeneration
 
+from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped, Pose, PointStamped, Point
 from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject
@@ -22,6 +24,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
     block_next_param_callback = False
     initialized = False
+    moving = False
 
     selected_viewpoint_pose = None
     viewpoint_dict_path = None
@@ -75,30 +78,40 @@ class ViewpointGenerationNode(rclpy.node.Node):
             PoseStamped, f'{node_name}/viewpoint', 10)
 
         # Sample PCD Service
+        services_cb_group = MutuallyExclusiveCallbackGroup()
         self.create_service(Trigger, node_name + '/sample_point_cloud',
-                            self.sample_point_cloud_callback)
+                            self.sample_point_cloud_callback, callback_group=services_cb_group)
         # Estimate Curvature Service
         self.create_service(Trigger, node_name + '/estimate_curvature',
-                            self.estimate_curvature_callback)
+                            self.estimate_curvature_callback, callback_group=services_cb_group)
         # Region Growth Service
         self.create_service(Trigger, node_name + '/region_growth',
-                            self.region_growth_callback)
+                            self.region_growth_callback, callback_group=services_cb_group)
         # FOV Clustering Service
         self.create_service(Trigger, node_name + '/fov_clustering',
-                            self.fov_clustering_callback)
+                            self.fov_clustering_callback, callback_group=services_cb_group)
         # Viewpoint Projection Service
         self.create_service(Trigger, node_name + '/viewpoint_projection',
-                            self.viewpoint_projection_callback)
+                            self.viewpoint_projection_callback, callback_group=services_cb_group)
         # Move to Viewpoint Service
-        self.create_service(Trigger, node_name + '/move_to_viewpoint', self.move_to_viewpoint_callback)
+        self.create_service(
+            Trigger, node_name + '/move_to_viewpoint', self.move_to_viewpoint_callback, callback_group=services_cb_group)
+        self.move_to_viewpoint_done_pub = self.create_publisher(
+            Bool, node_name + '/move_to_viewpoint/done', 10)
+        # Image Region Service
+        image_region_cb_group = MutuallyExclusiveCallbackGroup()
+        self.create_service(Trigger, node_name + '/image_region',
+                            self.image_region_callback, callback_group=image_region_cb_group)
         # Optimize Traversal Service
-        self.create_service(Trigger, node_name + '/optimize_traversal', self.optimize_traversal)
+        self.create_service(Trigger, node_name +
+                            '/optimize_traversal', self.optimize_traversal, callback_group=services_cb_group)
 
         # Connect to viewpoint traversal service
         viewpoint_traversal_node_name = 'viewpoint_traversal'
         self.move_to_pose_stamped_client = self.create_client(
-            MoveToPoseStamped, f'{viewpoint_traversal_node_name}/move_to_pose_stamped')
-        self.optimize_traversal_client = self.create_client(OptimizeViewpointTraversal, f'{viewpoint_traversal_node_name}/optimize_traversal')
+            MoveToPoseStamped, f'{viewpoint_traversal_node_name}/move_to_pose_stamped', callback_group=services_cb_group)
+        self.optimize_traversal_client = self.create_client(
+            OptimizeViewpointTraversal, f'{viewpoint_traversal_node_name}/optimize_traversal', callback_group=services_cb_group)
 
         # Selected viewpoint publisher timer
         self.create_timer(
@@ -138,7 +151,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             'model.camera.focal_distance').get_parameter_value().double_value
         self.viewpoint_generation.cuda_enabled = self.get_parameter(
             'settings.cuda_enabled').get_parameter_value().bool_value
-        
+
         self.select_viewpoint(self.get_parameter('regions.selected_region').get_parameter_value().integer_value,
                               self.get_parameter('regions.selected_cluster').get_parameter_value().integer_value)
 
@@ -253,12 +266,14 @@ class ViewpointGenerationNode(rclpy.node.Node):
             attached_object.object.meshes = [mesh]
             attached_object.object.mesh_poses = [Pose()]
             attached_object.object.operation = CollisionObject.ADD
-            attached_object.touch_links = ['turntable_disc_link', 'turntable_base_link']
+            attached_object.touch_links = [
+                'turntable_disc_link', 'turntable_base_link']
 
             planning_scene = PlanningScene()
             planning_scene.world.collision_objects.clear()
             planning_scene.world.collision_objects.append(remove_object)
-            planning_scene.robot_state.attached_collision_objects.append(attached_object)
+            planning_scene.robot_state.attached_collision_objects.append(
+                attached_object)
             planning_scene.robot_state.is_diff = True
             planning_scene.is_diff = True
 
@@ -829,7 +844,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.set_parameters([selected_region_param])
             self.block_next_param_callback = True
             self.set_parameters([selected_cluster_param])
-            
+
             # Unpack viewpoint dictionary into PoseStamped message
             viewpoint_pose = PoseStamped()
             viewpoint_pose.header.frame_id = 'object_frame'
@@ -853,15 +868,42 @@ class ViewpointGenerationNode(rclpy.node.Node):
         if self.selected_viewpoint_pose is not None:
             self.viewpoint_publisher.publish(self.selected_viewpoint_pose)
 
-
     def move_to_viewpoint_callback(self, request, response):
         """
         Callback for the move to viewpoint service.
         :return: True if the viewpoint was successfully moved to, False otherwise.
         """
+        self.move_to_selected_viewpoint()
 
-        region_index = self.get_parameter('regions.selected_region').get_parameter_value().integer_value
-        cluster_index = self.get_parameter('regions.selected_cluster').get_parameter_value().integer_value
+        return response
+        # rclpy.spin_until_future_complete(self, future)
+
+        if future.result() is not None:
+            if future.result().success:
+                self.get_logger().info('Successfully moved to viewpoint.')
+            else:
+                self.get_logger().error(
+                    f'Failed to move to viewpoint: {future.result().message}')
+
+            response.success = future.result().success
+            response.message = future.result().message
+        else:
+            response.success = False
+            response.message = 'Failed to move to viewpoint. Service call failed.'
+
+        return response
+
+    def move_to_selected_viewpoint(self):
+        while self.moving:
+            self.get_logger().info("Waiting for previous viewpoint movement to complete...")
+            time.sleep(0.1)
+
+        self.moving = True
+
+        region_index = self.get_parameter(
+            'regions.selected_region').get_parameter_value().integer_value
+        cluster_index = self.get_parameter(
+            'regions.selected_cluster').get_parameter_value().integer_value
 
         viewpoint, message = self.viewpoint_generation.get_viewpoint(
             region_index, cluster_index)
@@ -890,29 +932,53 @@ class ViewpointGenerationNode(rclpy.node.Node):
         future = self.move_to_pose_stamped_client.call_async(request)
         future.add_done_callback(self.move_to_viewpoint_future_callback)
 
-        # TODO: Fix to return actual future reponse
-        response.success = True
-        response.message = 'Moving to viewpoint...'
-        return response
-
     def move_to_viewpoint_future_callback(self, future):
         """
         Callback for the MoveToPoseStamped result.
         :param future: The future object containing the result of the action.
         """
+        self.moving = False
         try:
             result = future.result()
             if result.success:
                 self.get_logger().info('Successfully moved to viewpoint.')
+                self.move_to_viewpoint_done_pub.publish(Bool(data=True))
             else:
                 self.get_logger().error(
                     f'Failed to move to viewpoint: {result.message}')
+                self.move_to_viewpoint_done_pub.publish(Bool(data=False))
         except Exception as e:
-            self.get_logger().error(f'Exception while moving to viewpoint: {e}')
+            self.get_logger().error(
+                f'Exception while moving to viewpoint: {e}')
+
+    def image_region_callback(self, request, response):
+        """
+        Callback for the image region service.
+        :param request: The service request.
+        :param response: The service response.
+        """
+        self.get_logger().info('Image region service called.')
+
+        selected_region = self.get_parameter(
+            'regions.selected_region').get_parameter_value().integer_value
+        valid = True
+        selected_viewpoint = 0
+        while valid:
+            self.select_viewpoint(selected_region, selected_viewpoint)
+            self.move_to_selected_viewpoint()
+            while self.moving:
+                print("...")
+                time.sleep(0.1)
+            selected_viewpoint += 1
+
+        response.success = True
+        response.message = 'Image region service executed successfully.'
+        return response
 
     def optimize_traversal(self, request, response):
         request = OptimizeViewpointTraversal.Request()
-        request.viewpoint_dict_path = self.get_parameter('regions.file').get_parameter_value().string_value
+        request.viewpoint_dict_path = self.get_parameter(
+            'regions.file').get_parameter_value().string_value
 
         future = self.optimize_traversal_client.call_async(request)
         future.add_done_callback(self.optimize_traversal_callback)
@@ -920,7 +986,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         response.success = True
         response.message = 'Optimization started...'
         return response
-    
+
     def optimize_traversal_callback(self, future):
         try:
             result = future.result()
@@ -935,9 +1001,11 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 )
                 self.block_next_param_callback = True
                 self.set_parameters([regions_file_param])
-                self.get_logger().info(f'New viewpoint dictionary saved at: {new_viewpoint_dict_path}')
+                self.get_logger().info(
+                    f'New viewpoint dictionary saved at: {new_viewpoint_dict_path}')
             else:
-                self.get_logger().error(f'Optimization failed: {result.message}')
+                self.get_logger().error(
+                    f'Optimization failed: {result.message}')
                 return
         except Exception as e:
             self.get_logger().error(f"Optimization failed: {e}")

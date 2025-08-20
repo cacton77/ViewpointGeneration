@@ -16,6 +16,7 @@ from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterValue, Parame
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from ament_index_python.packages import get_package_prefix
 
+from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 
@@ -137,6 +138,8 @@ class ROSThread(Node):
                                                            f'{self.viewpoint_generation_node_name}/move_to_viewpoint',
                                                            callback_group=services_cb_group
                                                            )
+        self.create_subscription(
+            Bool, self.viewpoint_generation_node_name + '/move_to_viewpoint/done', self.move_to_viewpoint_done_callback, qos_profile=10)
         self.optimize_traversal_client = self.create_client(Trigger,
                                                             f'{self.viewpoint_generation_node_name}/optimize_traversal',
                                                             callback_group=services_cb_group
@@ -415,6 +418,7 @@ class ROSThread(Node):
 
     def move_to_viewpoint(self):
         """Move the robot to the selected viewpoint"""
+        self.robot_moving = True
 
         request = Trigger.Request()
         future = self.move_to_viewpoint_client.call_async(request)
@@ -430,6 +434,24 @@ class ROSThread(Node):
                     f'Failed to move to viewpoint: {future.result().message}')
         else:
             self.get_logger().error('Failed to call move_to_viewpoint service')
+
+    def move_to_viewpoint_done_callback(self, msg):
+        """Callback for the move to viewpoint done topic"""
+        self.robot_moving = False
+
+        if msg.data:
+            self.get_logger().info('Move to viewpoint completed successfully')
+        else:
+            self.get_logger().error('Move to viewpoint failed')
+
+    def image_selected_region(self, path):
+        """Move to all viewpoints in region"""
+        for viewpoint_index in path:
+            self.select_cluster(viewpoint_index)
+            self.move_to_viewpoint()
+            while self.robot_moving:
+                time.sleep(0.1)
+                print("...")
 
     def optimize_traversal(self):
         """Optimize the viewpoint traversal path"""

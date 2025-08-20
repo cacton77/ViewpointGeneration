@@ -19,6 +19,7 @@ import pprint
 from std_srvs.srv import Trigger
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 
 class ViewpointTraversalNode(Node):
@@ -74,20 +75,25 @@ class ViewpointTraversalNode(Node):
 
         print("Planning component initialized successfully")
         # Create a service to move to a specific pose
+
+        services_cb_group = MutuallyExclusiveCallbackGroup()
         self.create_service(
             MoveToPoseStamped,
             'viewpoint_traversal/move_to_pose_stamped',
-            self.move_to_pose_stamped_callback
+            self.move_to_pose_stamped_callback,
+            callback_group=services_cb_group
         )
         self.get_logger().info("Service 'move_to_pose_stamped' created successfully")
 
         self.create_service(OptimizeViewpointTraversal,
-            f'{node_name}/optimize_traversal',
-            self.optimize_traversal
-        )
-    
+                            f'{node_name}/optimize_traversal',
+                            self.optimize_traversal,
+                            callback_group=services_cb_group
+                            )
+
     def optimize_traversal(self, request, response):
-        self.get_logger().info(f'Optimizing traversal for file {request.viewpoint_dict_path}')
+        self.get_logger().info(
+            f'Optimizing traversal for file {request.viewpoint_dict_path}')
         with open(request.viewpoint_dict_path, 'r') as f:
             viewpoint_dict = json.load(f)
 
@@ -112,15 +118,16 @@ class ViewpointTraversalNode(Node):
             clusters_dict = region['clusters']
 
             viewpoints = []
-            
+
             for cluster_name, cluster in clusters_dict.items():
                 viewpoints.append(cluster['viewpoint']['position'])
 
             path, total_distance = self.nearest_neighbors_tsp(viewpoints)
-            self.get_logger().info(f"Optimized path for region '{region_name}' with total distance {total_distance}")
+            self.get_logger().info(
+                f"Optimized path for region '{region_name}' with total distance {total_distance}")
 
             viewpoint_dict['regions'][region_name]['order'] = path
-            
+
         return viewpoint_dict
 
     def nearest_neighbors_tsp(self, points):
@@ -142,7 +149,6 @@ class ViewpointTraversalNode(Node):
             unvisited.remove(current_point)
 
         return path, total_distance
-
 
     def add_ground_plane(self):
         with self.planning_scene_monitor.read_write() as scene:
@@ -196,11 +202,11 @@ class ViewpointTraversalNode(Node):
 
         # success = self.plan_and_execute(
         #     multi_plan_parameters=multi_pipeline_plan_request_params)
-        print("DEBUG: Plan and execute called, success:", success)
+        self.get_logger().info(f"Plan and execute called, success: {success}")
 
         # Prepare the response
         response.success = success
-        # response.message = "Motion completed successfully" if success else "Motion failed"
+        response.message = "Motion completed successfully" if success else "Motion failed"
 
         return response
 
@@ -242,12 +248,10 @@ class ViewpointTraversalNode(Node):
             robot_trajectory = plan_result.trajectory
             # Check if the controller name is correct
             self.robot.execute(plan_result.trajectory, controllers=[])
+            return True
         else:
             self.get_logger().error("No trajectory found to execute")
             return False
-
-        # Return success
-        return True
 
     # def plan1(self):
     #     ###################################################################

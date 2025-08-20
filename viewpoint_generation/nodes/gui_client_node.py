@@ -52,6 +52,8 @@ class GUIClient():
     camera_fov_height = 0.02
     last_intersection_point = np.array([0.0, 0.0, 0.0], dtype=np.float32)
 
+    region_number = 0
+    cluster_number = 0
     region_names = []
     cluster_names = []
     last_slider_value = 1
@@ -926,8 +928,10 @@ class GUIClient():
         def _on_region_tab_changed(value):
             """Handle region tab change"""
             self.ros_thread.select_region(value)
+            max_value = len(
+                self.traversal_order[value]) - 1 if self.traversal_order else 0
             self.viewpoint_slider.set_limits(
-                0, len(self.traversal_order[value]) - 1)
+                0, max_value)
             self.viewpoint_slider.int_value = 0
 
         self.region_tabs.set_on_selected_tab_changed(_on_region_tab_changed)
@@ -936,8 +940,9 @@ class GUIClient():
 
         # Create a UI slider for selection of Viewpoints with 3 buttons to its right
         self.viewpoint_slider = gui.Slider(gui.Slider.INT)
-        self.viewpoint_slider.set_limits(0, len(
-            self.traversal_order[self.region_tabs.selected_tab_index]) - 1)  # Example range
+        max_value = len(
+            self.traversal_order[self.region_tabs.selected_tab_index]) - 1 if self.traversal_order else 0
+        self.viewpoint_slider.set_limits(0, max_value)  # Example range
 
         def _on_viewpoint_slider_changed(value):
             """Handle viewpoint slider change"""
@@ -956,12 +961,22 @@ class GUIClient():
         move_button.background_color = Materials.button_background_color
         move_button.set_on_clicked(self.ros_thread.move_to_viewpoint)
 
+        go_button = gui.Button("Go")
+        go_button.background_color = Materials.go_button_background_color
+
+        def _on_go_button_clicked():
+            path = self.traversal_order[self.region_number]
+            self.ros_thread.image_selected_region(path)
+
+        go_button.set_on_clicked(_on_go_button_clicked)
+
         optimize_button = gui.Button("Optimize Traversal")
         optimize_button.background_color = Materials.button_background_color
         optimize_button.set_on_clicked(self.ros_thread.optimize_traversal)
 
         horiz.add_child(optimize_button)
         horiz.add_child(move_button)
+        horiz.add_child(go_button)
 
         self.viewpoint_traversal_layout.add_child(horiz)
 
@@ -1227,10 +1242,10 @@ class GUIClient():
                             self.import_curvature(param_value)
                         elif 'regions.file' in param_name:
                             self.import_regions(param_value)
-                        # elif 'regions.region' in param_name:
-                        #     self.select_region(param_value)
-                        # elif 'regions.cluster' in param_name:
-                        #     self.select_cluster(param_value)
+                        elif 'regions.selected_region' in param_name:
+                            self.select_region(param_value)
+                        elif 'regions.selected_cluster' in param_name:
+                            self.select_cluster(param_value)
                         elif 'model.camera.fov.height' in param_name:
                             self.camera_fov_height = param_value
                             self.camera_updated = True
@@ -1427,232 +1442,269 @@ class GUIClient():
         print(f"Importing regions from {file_path}")
         """ Load regions from file and paint point cloud based on regions """
         regions_cloud = copy.deepcopy(self.point_cloud)
-        try:
+        # try:
 
-            self.point_cloud.paint_uniform_color((1, 1, 1))
+        self.point_cloud.paint_uniform_color((1, 1, 1))
 
-            regions_dict = json.load(open(file_path, 'r'))
+        regions_dict = json.load(open(file_path, 'r'))
 
-            np.random.seed(42)  # For reproducible colors
+        np.random.seed(42)  # For reproducible colors
 
-            # Initialize empty geometries for visualization
-            region_surface_clouds = []
-            cluster_meshes = []
-            viewpoint_meshes = []
-            region_view_meshes = []
-            region_path_lines = []
+        # Initialize empty geometries for visualization
+        geometries_dict = {}
 
-            show_clusters = False
-            show_viewpoints = False
+        show_clusters = False
+        show_viewpoints = False
 
-            self.region_names = []
-            region_order = regions_dict['order']
-            self.traversal_order = []
+        self.region_names = []
+        self.cluster_names = []
+        region_order = regions_dict['order']
+        self.traversal_order = []
 
-            for region_id in region_order:
-                region_dict = regions_dict['regions'][str(region_id)]
-                region_indices = region_dict['points']
-                region_point_cloud = self.point_cloud.select_by_index(
-                    region_indices)
-                region_color = np.random.rand(3)
+        for region_id in region_order:
+            region_name = f"region_{region_id}"
 
-                region_view_cloud = o3d.geometry.PointCloud()
-                region_view_points = []
-                region_view_normals = []
+            region_dict = regions_dict['regions'][str(region_id)]
+            region_indices = region_dict['points']
+            region_point_cloud = self.point_cloud.select_by_index(
+                region_indices)
+            region_color = np.random.rand(3)
 
-                region_point_cloud.paint_uniform_color(region_color)
-                region_surface_clouds.append(region_point_cloud)
+            region_view_cloud = o3d.geometry.PointCloud()
+            region_view_points = []
+            region_view_normals = []
 
-                # If dict has 'clusters' key, process and display them
-                if 'clusters' in region_dict:
-                    show_clusters = True
+            region_point_cloud.paint_uniform_color(region_color)
 
-                    path_line = o3d.geometry.LineSet()
-                    path_points = []
+            geometries_dict[region_name] = {'cloud': region_point_cloud}
 
-                    cluster_order = region_dict['order']
-                    # Add cluster order to traversal order for lookup by slider
-                    self.traversal_order.append(cluster_order)
+            # If dict has 'clusters' key, process and display them
+            if 'clusters' in region_dict:
+                show_clusters = True
 
-                    for cluster_id in cluster_order:
-                        cluster_dict = region_dict['clusters'][str(cluster_id)]
-                        cluster_point_indices = cluster_dict['points']
-                        cluster_color = region_color + \
-                            0.1*(np.random.rand(3) - 0.5)
-                        cluster_color = np.clip(cluster_color, 0, 1)
+                path_line = o3d.geometry.LineSet()
+                path_points = []
 
-                        fov_point_cloud = region_point_cloud.select_by_index(
-                            cluster_point_indices)
-                        # Remove outliers from fov_point_cloud
-                        fov_point_cloud, _ = fov_point_cloud.remove_statistical_outlier(
-                            nb_neighbors=20, std_ratio=2.0)
-                        fov_mesh = fov_point_cloud.compute_convex_hull(joggle_inputs=True)[
-                            0]
-                        fov_mesh.paint_uniform_color(cluster_color)
-                        fov_mesh.compute_vertex_normals()
-                        avg_normal = np.mean(np.asarray(
-                            fov_point_cloud.normals), axis=0)
-                        fov_mesh.translate(avg_normal * 0.005)
+                cluster_order = region_dict['order']
+                # Add cluster order to traversal order for lookup by slider
+                self.traversal_order.append(cluster_order)
 
-                        if 'viewpoint' in cluster_dict:
+                geometries_dict[region_name]['clusters'] = {}
 
-                            show_viewpoints = True
-                            viewpoint_mesh = o3d.geometry.TriangleMesh.create_sphere(
-                                radius=5)
-                            viewpoint_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame(
-                                size=Materials.viewpoint_size, origin=[0, 0, 0])
-                            origin = 1000 * \
-                                np.array(
-                                    cluster_dict['viewpoint']['origin'])
-                            position = 1000 * \
-                                np.array(
-                                    cluster_dict['viewpoint']['position'])
-                            direction = np.array(
-                                cluster_dict['viewpoint']['direction'])
-                            orientation = np.array(
-                                cluster_dict['viewpoint']['orientation'])
+                for cluster_id in cluster_order:
+                    cluster_name = f"{region_name}_cluster_{cluster_id}"
 
-                            # Rotate viewpoint_mesh to match the direction
-                            # First convert orientation to quat_wxyz
-                            viewpoint_mesh.rotate(
-                                o3d.geometry.get_rotation_matrix_from_quaternion(
-                                    np.array([orientation[3],
-                                              orientation[0],
-                                              orientation[1],
-                                              orientation[2]])),
-                                center=(0, 0, 0)
-                            )
+                    cluster_dict = region_dict['clusters'][str(cluster_id)]
+                    cluster_point_indices = cluster_dict['points']
+                    cluster_color = region_color + \
+                        0.1*(np.random.rand(3) - 0.5)
+                    cluster_color = np.clip(cluster_color, 0, 1)
 
-                            # Add to region view points
-                            region_view_points.append(position.tolist())
-                            region_view_normals.append(direction.tolist())
+                    fov_point_cloud = region_point_cloud.select_by_index(
+                        cluster_point_indices)
+                    # Remove outliers from fov_point_cloud
+                    fov_point_cloud, _ = fov_point_cloud.remove_statistical_outlier(
+                        nb_neighbors=20, std_ratio=2.0)
+                    fov_mesh = fov_point_cloud.compute_convex_hull(joggle_inputs=True)[
+                        0]
+                    fov_mesh.paint_uniform_color(cluster_color)
+                    fov_mesh.compute_vertex_normals()
+                    avg_normal = np.mean(np.asarray(
+                        fov_point_cloud.normals), axis=0)
+                    fov_mesh.translate(avg_normal * 0.005)
 
-                            viewpoint_mesh.translate(position)
+                    geometries_dict[region_name]['clusters'][cluster_name] = {
+                        'mesh': fov_mesh}
 
-                            # Add viewpoint position to path line
-                            path_points.append(position)
+                    if 'viewpoint' in cluster_dict:
 
-                            viewpoint_mesh.paint_uniform_color([1.0, 1.0, 1.0])
-                            viewpoint_meshes.append(viewpoint_mesh)
+                        show_viewpoints = True
+                        viewpoint_mesh = o3d.geometry.TriangleMesh.create_sphere(
+                            radius=5)
+                        viewpoint_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame(
+                            size=Materials.viewpoint_size, origin=[0, 0, 0])
+                        origin = 1000 * \
+                            np.array(
+                                cluster_dict['viewpoint']['origin'])
+                        position = 1000 * \
+                            np.array(
+                                cluster_dict['viewpoint']['position'])
+                        direction = np.array(
+                            cluster_dict['viewpoint']['direction'])
+                        orientation = np.array(
+                            cluster_dict['viewpoint']['orientation'])
 
-                        cluster_meshes.append(fov_mesh)
+                        # Rotate viewpoint_mesh to match the direction
+                        # First convert orientation to quat_wxyz
+                        viewpoint_mesh.rotate(
+                            o3d.geometry.get_rotation_matrix_from_quaternion(
+                                np.array([orientation[3],
+                                          orientation[0],
+                                          orientation[1],
+                                          orientation[2]])),
+                            center=(0, 0, 0)
+                        )
 
-                # Region View Surface
-                if show_viewpoints:
-                    region_view_cloud.points = o3d.utility.Vector3dVector(
-                        np.array(region_view_points))
-                    region_view_cloud.normals = o3d.utility.Vector3dVector(
-                        np.array(region_view_normals))
-                    if len(region_view_cloud.points) > 4:
-                        region_view_mesh = region_view_cloud.compute_convex_hull(
-                            joggle_inputs=True)[0]
-                        # region_view_mesh.paint_uniform_color(region_color)
-                        region_view_meshes.append(region_view_mesh)
+                        # Add to region view points
+                        region_view_points.append(position.tolist())
+                        region_view_normals.append(direction.tolist())
 
+                        viewpoint_mesh.translate(position)
+
+                        # Add viewpoint position to path line
+                        path_points.append(position)
+
+                        viewpoint_mesh.paint_uniform_color([1.0, 1.0, 1.0])
+                        geometries_dict[region_name]['clusters'][cluster_name]['viewpoint'] = {
+                            'mesh': viewpoint_mesh
+                        }
+
+            # Region View Surface
+            if show_viewpoints:
+                region_view_cloud.points = o3d.utility.Vector3dVector(
+                    np.array(region_view_points))
+                region_view_cloud.normals = o3d.utility.Vector3dVector(
+                    np.array(region_view_normals))
+                if len(region_view_cloud.points) > 4:
+                    region_view_mesh = region_view_cloud.compute_convex_hull(
+                        joggle_inputs=True)[0]
+                    # region_view_mesh.paint_uniform_color(region_color)
+                    geometries_dict[region_name]['view_mesh'] = region_view_mesh
+                else:
+                    geometries_dict[region_name]['view_mesh'] = None
+
+                if len(path_points) > 1:
                     path_line.points = o3d.utility.Vector3dVector(
                         np.array(path_points))
                     path_line.lines = o3d.utility.Vector2iVector(
                         [[i, i + 1] for i in range(len(path_points) - 1)])
-                    region_path_lines.append(path_line)
-
-            # Create noise point cloud
-            noise_points = regions_dict['noise_points']
-            noise_point_cloud = self.point_cloud.select_by_index(
-                noise_points)
-            noise_point_cloud.paint_uniform_color(
-                [1.0, 0.0, 0.0])  # Red for noise points
-
-            self.clear_regions()
-            self.scene_widget.scene.remove_geometry("noise_points")
-            self.clear_clusters()
-            self.clear_viewpoints()
-            self.clear_region_view_manifolds()
-            self.clear_paths()
-
-            for i in range(len(region_surface_clouds)):
-                region_name = f"region_{i}"
-                self.add_geometry(
-                    f'{region_name}', region_surface_clouds[i], Materials.point_cloud_material)
-                self.region_names.append(region_name)
-            self.add_geometry(
-                "noise_points", noise_point_cloud, Materials.point_cloud_material)
-            # Add FOV cluster meshes
-            for i in range(len(cluster_meshes)):
-                cluster_name = f"cluster_{i}"
-                self.add_geometry(
-                    cluster_name, cluster_meshes[i], Materials.cluster_material)
-                self.cluster_names.append(cluster_name)
-            # Add Viewpoint meshes
-            for i in range(len(viewpoint_meshes)):
-                viewpoint_name = f"cluster_{i}_viewpoint"
-                self.add_geometry(
-                    viewpoint_name, viewpoint_meshes[i], Materials.viewpoint_material)
-            # Add Region View Manifolds
-            for i in range(len(region_view_meshes)):
-                region_name = f"region_{i}"
-                self.add_geometry(
-                    f'{region_name}_view_mesh', region_view_meshes[i], Materials.region_view_material)
-            for i in range(len(region_path_lines)):
-                region_name = f"region_{i}"
-                self.add_geometry(
-                    f'{region_name}_path', region_path_lines[i], Materials.path_material)
-            if show_clusters:
-                self.show_regions(False)
-                self.show_noise_points(False)
-                self.show_fov_clusters(True)
-                if show_viewpoints:
-                    self.show_viewpoints(True)
-                    self.show_region_view_manifolds(True)
-                    # Set camera view to fit the mesh
-                    bbox = self.scene_widget.scene.bounding_box
-
-                    # Set up camera to view the entire bounding box
-                    self.scene_widget.setup_camera(
-                        60.0,          # Field of view in degrees
-                        bbox,           # Bounding box to fit
-                        bbox.get_center()  # Center point
-                    )
-
+                    geometries_dict[region_name]['path'] = path_line
                 else:
-                    self.show_viewpoints(False)
+                    geometries_dict[region_name]['path'] = None
+
+        # Create noise point cloud
+        noise_points = regions_dict['noise_points']
+        noise_point_cloud = self.point_cloud.select_by_index(
+            noise_points)
+        noise_point_cloud.paint_uniform_color(
+            [1.0, 0.0, 0.0])  # Red for noise points
+
+        self.clear_regions()
+        self.scene_widget.scene.remove_geometry("noise_points")
+        self.clear_clusters()
+        self.clear_viewpoints()
+        self.clear_region_view_manifolds()
+        self.clear_paths()
+
+        # Add Noise Points from region growth
+        self.add_geometry(
+            "noise_points", noise_point_cloud, Materials.point_cloud_material)
+
+        # Add Region Clouds
+        for region_name, region_data in geometries_dict.items():
+            self.region_names.append(region_name)
+            self.add_geometry(
+                region_name, region_data['cloud'], Materials.point_cloud_material)
+            if show_clusters:
+                # Add Cluster Mesh
+                for cluster_name, cluster_data in region_data['clusters'].items():
+                    self.cluster_names.append(cluster_name)
+                    self.add_geometry(
+                        cluster_name, cluster_data['mesh'], Materials.cluster_material)
+                    # Add Cluster Viewpoint
+                    if show_viewpoints:
+                        self.add_geometry(
+                            f"{cluster_name}_viewpoint", cluster_data['viewpoint']['mesh'], Materials.viewpoint_material)
+
+                if show_viewpoints:
+                    # Add Region View Mesh
+                    if region_data['view_mesh'] is not None:
+                        self.add_geometry(
+                            f"{region_name}_view_mesh", region_data['view_mesh'], Materials.region_view_material)
+                    # Add Path
+                    if region_data['path'] is not None:
+                        self.add_geometry(
+                            f"{region_name}_path", region_data['path'], Materials.path_material)
+
+        # Set visibility
+        if show_clusters:
+            self.show_regions(False)
+            self.show_noise_points(False)
+            self.show_fov_clusters(True)
+            if show_viewpoints:
+                self.show_viewpoints(True)
+                self.show_region_view_manifolds(True)
+                # Set camera view to fit the mesh
+                bbox = self.scene_widget.scene.bounding_box
+
+                # Set up camera to view the entire bounding box
+                self.scene_widget.setup_camera(
+                    60.0,          # Field of view in degrees
+                    bbox,           # Bounding box to fit
+                    bbox.get_center()  # Center point
+                )
 
             else:
-                self.show_regions(True)
-                self.show_noise_points(True)
-                self.show_fov_clusters(False)
                 self.show_viewpoints(False)
 
-            print(
-                f"Loaded regions from {file_path} and updated point cloud colors")
+        else:
+            self.show_regions(True)
+            self.show_noise_points(True)
+            self.show_fov_clusters(False)
+            self.show_viewpoints(False)
 
-            self.init_viewpoint_traversal_layout()
+        print(
+            f"Loaded regions from {file_path} and updated point cloud colors")
 
-        except Exception as e:
-            print(f"Error loading regions from {file_path}: {e}")
+        self.init_viewpoint_traversal_layout()
+
+        # except Exception as e:
+        #     print(f"Error loading regions from {file_path}: {e}")
+        #     return
+
+    def select_region(self, region_number):
+        if not self.region_names:
+            return
+        elif region_number < 0 or region_number >= len(self.region_names):
             return
 
-    def select_viewpoint(self, region_number, cluster_number):
-        # Get cluster mesh from the scene and paint it green
-        cluster_name = f"region{self.region_number}_cluster{self.cluster_number}"
+        # Get last view mesh from the scene and restore to regular material
+        region_name = self.region_names[self.region_number]
         self.scene_widget.scene.modify_geometry_material(
-            cluster_name, Materials.selected_cluster_material)
-        # Get region view mesh and paint it green
-        region_view_mesh_name = f"{self.region_names[self.region_number]}_view_mesh"
-        self.scene_widget.scene.modify_geometry_material(
-            region_view_mesh_name, Materials.selected_region_view_material)
-        # Update the viewpoint in the scene
-        self.scene_widget.scene.modify_geometry_material(
-            f"{cluster_name}_viewpoint", Materials.selected_viewpoint_material)
+            f"{region_name}_view_mesh", Materials.region_view_material)
 
-        # Reset last selected objects to default materials
-        last_cluster_name = f"region{self.last_region_number}_cluster{self.last_cluster_number}"
+        self.region_number = region_number
+
+        # Get region view mesh from the scene and paint it green
+        region_name = self.region_names[self.region_number]
+        self.scene_widget.scene.modify_geometry_material(
+            f"{region_name}_view_mesh", Materials.selected_region_view_material)
+
+    def select_cluster(self, cluster_number):
+        if not self.region_names:
+            return
+        elif cluster_number < 0 or cluster_number >= len(self.traversal_order[self.region_number]):
+            return
+
+        # Restore last selected cluster to regular material
+        last_cluster_name = f"region_{self.region_number}_cluster_{self.cluster_number}"
         self.scene_widget.scene.modify_geometry_material(
             last_cluster_name, Materials.cluster_material)
-        last_region_view_mesh_name = f"{self.region_names[self.last_region_number]}_view_mesh"
+        # Restore last selected viewpoint to regular material
+        last_viewpoint_name = f"{last_cluster_name}_viewpoint"
         self.scene_widget.scene.modify_geometry_material(
-            last_region_view_mesh_name, Materials.region_view_material)
+            last_viewpoint_name, Materials.viewpoint_material)
+
+        self.cluster_number = cluster_number
+
+        # Get cluster mesh from the scene and paint it green
+        cluster_name = f"region_{self.region_number}_cluster_{self.cluster_number}"
         self.scene_widget.scene.modify_geometry_material(
-            f"{last_cluster_name}_viewpoint", Materials.viewpoint_material)
+            cluster_name, Materials.selected_cluster_material)
+        # Get viewpoint mesh from the scene and paint it green
+        viewpoint_name = f"{cluster_name}_viewpoint"
+        self.scene_widget.scene.modify_geometry_material(
+            viewpoint_name, Materials.selected_viewpoint_material)
 
     def clear_regions(self):
         print("Clearing regions...")
