@@ -31,7 +31,6 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/ViewpointGeneration.action"
   "srv/MoveToPoseStamped.srv"
-  "srv/SaveAs.srv"
   "srv/OptimizeViewpointTraversal.srv"
   DEPENDENCIES geometry_msgs
 )

@@ -463,6 +463,9 @@ class ROSThread(Node):
             viewpoint_index = self.path.pop(0)
             self.select_cluster(viewpoint_index)
             self.move_to_viewpoint()
+            if not self.path:
+                self.get_logger().info('All viewpoints in region processed')
+                self.select_cluster(0)
 
     def optimize_traversal(self):
         """Optimize the viewpoint traversal path"""
