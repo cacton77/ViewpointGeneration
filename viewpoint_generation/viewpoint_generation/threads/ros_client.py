@@ -386,7 +386,10 @@ class ROSThread(Node):
         else:
             self.get_logger().error('Failed to trigger viewpoint projection')
             return False
-        
+    
+    def select_region(self, region_index):
+        self.set_parameter('regions.selected_region', region_index)
+
     def select_viewpoint(self, region_index, cluster_index):
         """Select a viewpoint based on region and cluster indices"""
         self.set_parameter('regions.selected_region', region_index)
