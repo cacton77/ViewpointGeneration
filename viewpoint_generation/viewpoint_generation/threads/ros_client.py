@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 import os
+import copy
 import time
 import yaml
 import threading
@@ -26,6 +27,9 @@ class ROSThread(Node):
     node_name = 'gui'
     viewpoint_generation_node_name = 'viewpoint_generation'
     traversal_node_name = 'viewpoint_traversal'
+
+    robot_moving = False
+    path = []  # Move to task planning node eventually
 
     def __init__(self, stream_id=0):
         super().__init__(self.node_name)
@@ -138,12 +142,14 @@ class ROSThread(Node):
                                                            f'{self.viewpoint_generation_node_name}/move_to_viewpoint',
                                                            callback_group=services_cb_group
                                                            )
+        # Will move these to a task planning node eventually
         self.create_subscription(
             Bool, self.viewpoint_generation_node_name + '/move_to_viewpoint/done', self.move_to_viewpoint_done_callback, qos_profile=10)
         self.optimize_traversal_client = self.create_client(Trigger,
                                                             f'{self.viewpoint_generation_node_name}/optimize_traversal',
                                                             callback_group=services_cb_group
                                                             )
+        self.create_timer(0.1, self.process_path)
 
         # ROSOUT log subscription
         rosout_sub = self.create_subscription(
@@ -446,12 +452,17 @@ class ROSThread(Node):
 
     def image_selected_region(self, path):
         """Move to all viewpoints in region"""
-        for viewpoint_index in path:
+        self.path = copy.deepcopy(path)
+
+    def process_path(self):
+        if not self.path:
+            return
+        elif self.robot_moving:
+            return
+        else:
+            viewpoint_index = self.path.pop(0)
             self.select_cluster(viewpoint_index)
             self.move_to_viewpoint()
-            while self.robot_moving:
-                time.sleep(0.1)
-                print("...")
 
     def optimize_traversal(self):
         """Optimize the viewpoint traversal path"""

@@ -895,7 +895,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
     def move_to_selected_viewpoint(self):
         while self.moving:
-            self.get_logger().info("Waiting for previous viewpoint movement to complete...")
             time.sleep(0.1)
 
         self.moving = True

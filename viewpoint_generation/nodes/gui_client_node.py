@@ -1706,6 +1706,10 @@ class GUIClient():
         self.scene_widget.scene.modify_geometry_material(
             viewpoint_name, Materials.selected_viewpoint_material)
 
+        # Update slider
+        self.viewpoint_slider.int_value = self.traversal_order[self.region_number].index(
+            int(self.cluster_number))
+
     def clear_regions(self):
         print("Clearing regions...")
         for region_name in self.region_names:

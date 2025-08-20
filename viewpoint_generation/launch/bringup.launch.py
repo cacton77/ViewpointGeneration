@@ -30,7 +30,7 @@ def generate_launch_description():
                               description="Launch MoveIt for motion planning."),
         DeclareLaunchArgument("use_tool_communication", default_value="false",
                               description="Use tool communication for the robot."),
-        DeclareLaunchArgument("viewpoint_generation_config_file", default_value="default.yaml",
+        DeclareLaunchArgument("config_file", default_value="default.yaml",
                               description="Configuration file for viewpoint generation."),
         DeclareLaunchArgument("generation", default_value="true"),
     ]
@@ -87,7 +87,7 @@ def generate_launch_description():
             ])
         ]),
         launch_arguments={
-            "config_file": LaunchConfiguration("viewpoint_generation_config_file")
+            "config_file": LaunchConfiguration("config_file")
         }.items()
     )
 
@@ -103,7 +103,7 @@ def generate_launch_description():
 
     return LaunchDescription(declared_arguments + [
         simulation_launch,
-        #hardware_launch,
+        # hardware_launch,
         viewpoint_generation_launch,
         viewpoint_traversal_launch
     ])
