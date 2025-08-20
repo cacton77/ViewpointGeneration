@@ -55,6 +55,7 @@ class GUIClient():
     region_names = []
     cluster_names = []
     last_slider_value = 1
+    traversal_order = [[0]]
 
     def __init__(self):
         self.app = gui.Application.instance
@@ -898,6 +899,7 @@ class GUIClient():
 
     def init_viewpoint_traversal_layout(self):
         """Initialize the region tabs"""
+        # Disable the previous layout
         self.viewpoint_traversal_layout.enabled = False
         self.viewpoint_traversal_layout.visible = False
 
@@ -914,15 +916,19 @@ class GUIClient():
         self.region_tabs = gui.TabControl()
         self.region_tabs.background_color = Materials.panel_color
 
-        print(self.region_names)
         for region_name in self.region_names:
             # region_data = self.get_region_data(region_name)
-            self.region_tabs.add_tab(region_name, gui.Vert(0.5*em, gui.Margins(0.25*em)))
+            # replace _ in region name with space and capitalize first letter
+            formatted_name = region_name.replace("_", " ").capitalize()
+            self.region_tabs.add_tab(
+                formatted_name, gui.Vert(0.5*em, gui.Margins(0.25*em)))
 
         def _on_region_tab_changed(value):
             """Handle region tab change"""
             self.ros_thread.select_region(value)
-            self.viewpoint_slider.set_limits(0)
+            self.viewpoint_slider.set_limits(
+                0, len(self.traversal_order[value]) - 1)
+            self.viewpoint_slider.int_value = 0
 
         self.region_tabs.set_on_selected_tab_changed(_on_region_tab_changed)
 
@@ -930,19 +936,14 @@ class GUIClient():
 
         # Create a UI slider for selection of Viewpoints with 3 buttons to its right
         self.viewpoint_slider = gui.Slider(gui.Slider.INT)
-        self.viewpoint_slider.set_limits(0, 100)  # Example range
+        self.viewpoint_slider.set_limits(0, len(
+            self.traversal_order[self.region_tabs.selected_tab_index]) - 1)  # Example range
 
         def _on_viewpoint_slider_changed(value):
             """Handle viewpoint slider change"""
-
-            # Update the viewpoint based on slider value
-            region_index, viewpoint_index = self.traversal_order[int(
-                value - 1)]
-            self.ros_thread.select_viewpoint(region_index, viewpoint_index)
-
-            
-
-            self.last_slider_value = value
+            cluster_index = self.traversal_order[
+                int(self.region_tabs.selected_tab_index)][int(value)]
+            self.ros_thread.select_cluster(cluster_index)
 
             return gui.Widget.EventCallbackResult.HANDLED
 
@@ -959,7 +960,7 @@ class GUIClient():
         optimize_button.background_color = Materials.button_background_color
         optimize_button.set_on_clicked(self.ros_thread.optimize_traversal)
 
-        horiz.add_child(optimize_button) 
+        horiz.add_child(optimize_button)
         horiz.add_child(move_button)
 
         self.viewpoint_traversal_layout.add_child(horiz)
@@ -1445,8 +1446,8 @@ class GUIClient():
             show_viewpoints = False
 
             self.region_names = []
-            traversal_order = []
             region_order = regions_dict['order']
+            self.traversal_order = []
 
             for region_id in region_order:
                 region_dict = regions_dict['regions'][str(region_id)]
@@ -1456,7 +1457,6 @@ class GUIClient():
                 region_color = np.random.rand(3)
 
                 region_view_cloud = o3d.geometry.PointCloud()
-                region_points = np.asarray(region_point_cloud.points)
                 region_view_points = []
                 region_view_normals = []
 
@@ -1471,8 +1471,10 @@ class GUIClient():
                     path_points = []
 
                     cluster_order = region_dict['order']
+                    # Add cluster order to traversal order for lookup by slider
+                    self.traversal_order.append(cluster_order)
+
                     for cluster_id in cluster_order:
-                        traversal_order.append((region_id, cluster_id))
                         cluster_dict = region_dict['clusters'][str(cluster_id)]
                         cluster_point_indices = cluster_dict['points']
                         cluster_color = region_color + \
@@ -1533,7 +1535,6 @@ class GUIClient():
                             viewpoint_mesh.paint_uniform_color([1.0, 1.0, 1.0])
                             viewpoint_meshes.append(viewpoint_mesh)
 
-
                         cluster_meshes.append(fov_mesh)
 
                 # Region View Surface
@@ -1553,7 +1554,6 @@ class GUIClient():
                     path_line.lines = o3d.utility.Vector2iVector(
                         [[i, i + 1] for i in range(len(path_points) - 1)])
                     region_path_lines.append(path_line)
-                
 
             # Create noise point cloud
             noise_points = regions_dict['noise_points']
@@ -1616,13 +1616,6 @@ class GUIClient():
                 else:
                     self.show_viewpoints(False)
 
-                # Save cluster order for later use
-                self.traversal_order = traversal_order
-                # Update the viewpoint slider limits
-                self.viewpoint_slider.set_limits(
-                    1, len(self.traversal_order))
-                self.viewpoint_slider.int_value = 1  # Reset to first viewpoint
-
             else:
                 self.show_regions(True)
                 self.show_noise_points(True)
@@ -1660,7 +1653,7 @@ class GUIClient():
             last_region_view_mesh_name, Materials.region_view_material)
         self.scene_widget.scene.modify_geometry_material(
             f"{last_cluster_name}_viewpoint", Materials.viewpoint_material)
-    
+
     def clear_regions(self):
         print("Clearing regions...")
         for region_name in self.region_names:

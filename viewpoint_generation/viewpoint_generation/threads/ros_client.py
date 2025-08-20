@@ -19,6 +19,7 @@ from ament_index_python.packages import get_package_prefix
 from geometry_msgs.msg import PoseStamped
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 
+
 class ROSThread(Node):
 
     node_name = 'gui'
@@ -47,20 +48,34 @@ class ROSThread(Node):
             ]
         )
 
-        self.show_axes = self.get_parameter('show_axes').get_parameter_value().bool_value
-        self.show_grid = self.get_parameter('show_grid').get_parameter_value().bool_value
-        self.show_model_bounding_box = self.get_parameter('show_model_bounding_box').get_parameter_value().bool_value
-        self.show_reticle = self.get_parameter('show_reticle').get_parameter_value().bool_value
-        self.show_skybox = self.get_parameter('show_skybox').get_parameter_value().bool_value
-        self.show_mesh = self.get_parameter('show_mesh').get_parameter_value().bool_value
-        self.show_point_cloud = self.get_parameter('show_point_cloud').get_parameter_value().bool_value
-        self.show_curvatures = self.get_parameter('show_curvatures').get_parameter_value().bool_value
-        self.show_regions = self.get_parameter('show_regions').get_parameter_value().bool_value
-        self.show_noise_points = self.get_parameter('show_noise_points').get_parameter_value().bool_value
-        self.show_fov_clusters = self.get_parameter('show_fov_clusters').get_parameter_value().bool_value
-        self.show_viewpoints = self.get_parameter('show_viewpoints').get_parameter_value().bool_value
-        self.show_region_view_manifolds = self.get_parameter('show_region_view_manifolds').get_parameter_value().bool_value
-        self.show_path = self.get_parameter('show_path').get_parameter_value().bool_value
+        self.show_axes = self.get_parameter(
+            'show_axes').get_parameter_value().bool_value
+        self.show_grid = self.get_parameter(
+            'show_grid').get_parameter_value().bool_value
+        self.show_model_bounding_box = self.get_parameter(
+            'show_model_bounding_box').get_parameter_value().bool_value
+        self.show_reticle = self.get_parameter(
+            'show_reticle').get_parameter_value().bool_value
+        self.show_skybox = self.get_parameter(
+            'show_skybox').get_parameter_value().bool_value
+        self.show_mesh = self.get_parameter(
+            'show_mesh').get_parameter_value().bool_value
+        self.show_point_cloud = self.get_parameter(
+            'show_point_cloud').get_parameter_value().bool_value
+        self.show_curvatures = self.get_parameter(
+            'show_curvatures').get_parameter_value().bool_value
+        self.show_regions = self.get_parameter(
+            'show_regions').get_parameter_value().bool_value
+        self.show_noise_points = self.get_parameter(
+            'show_noise_points').get_parameter_value().bool_value
+        self.show_fov_clusters = self.get_parameter(
+            'show_fov_clusters').get_parameter_value().bool_value
+        self.show_viewpoints = self.get_parameter(
+            'show_viewpoints').get_parameter_value().bool_value
+        self.show_region_view_manifolds = self.get_parameter(
+            'show_region_view_manifolds').get_parameter_value().bool_value
+        self.show_path = self.get_parameter(
+            'show_path').get_parameter_value().bool_value
 
         self.t = threading.Thread(target=self.update, args=())
         self.t.daemon = True  # daemon threads run in background
@@ -119,14 +134,13 @@ class ROSThread(Node):
 
         # Create passthrough client for viewpoint traversal service
         self.move_to_viewpoint_client = self.create_client(Trigger,
-                                                             f'{self.viewpoint_generation_node_name}/move_to_viewpoint',
-                                                             callback_group=services_cb_group
-                                                             )
+                                                           f'{self.viewpoint_generation_node_name}/move_to_viewpoint',
+                                                           callback_group=services_cb_group
+                                                           )
         self.optimize_traversal_client = self.create_client(Trigger,
-                                                             f'{self.viewpoint_generation_node_name}/optimize_traversal',
-                                                             callback_group=services_cb_group
-                                                             )
-
+                                                            f'{self.viewpoint_generation_node_name}/optimize_traversal',
+                                                            callback_group=services_cb_group
+                                                            )
 
         # ROSOUT log subscription
         rosout_sub = self.create_subscription(
@@ -161,10 +175,10 @@ class ROSThread(Node):
                 f'Unsupported parameter type: {type(new_value)} for {param_name}')
             return
         param = rclpy.parameter.Parameter(
-                param_name,
-                param_type,
-                new_value
-            )
+            param_name,
+            param_type,
+            new_value
+        )
         self.set_parameters([param])
 
     def wait_for_services(self):
@@ -185,7 +199,7 @@ class ROSThread(Node):
         while not self.set_params_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
                 f'Waiting for {self.viewpoint_generation_node_name}/set_parameters service...')
-            
+
         # Wait for viewpoint generation services
         while not self.sampling_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
@@ -202,9 +216,9 @@ class ROSThread(Node):
         while not self.viewpoint_projection_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
                 f'Waiting for {self.viewpoint_generation_node_name}/viewpoint_projection service...')
-        
+
         self.get_logger().info(
-                f'Waiting for {self.viewpoint_generation_node_name}/move_to_viewpoint service...')
+            f'Waiting for {self.viewpoint_generation_node_name}/move_to_viewpoint service...')
         if not self.move_to_viewpoint_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().warning(
                 f'{self.viewpoint_generation_node_name}/move_to_viewpoint service not available, viewpoint traversal will not work')
@@ -214,55 +228,60 @@ class ROSThread(Node):
     def save_parameters_to_file(self, file_path):
         """Save all current and connected inspection node parameters to a file"""
         output_dict = {}
-        
+
         gui_params = self.get_node_parameters(self.node_name)
         output_dict[self.node_name] = {'ros__parameters': gui_params}
-        viewpoint_generation_params = self.get_node_parameters(self.viewpoint_generation_node_name)
-        output_dict[self.viewpoint_generation_node_name] = {'ros__parameters': viewpoint_generation_params}
+        viewpoint_generation_params = self.get_node_parameters(
+            self.viewpoint_generation_node_name)
+        output_dict[self.viewpoint_generation_node_name] = {
+            'ros__parameters': viewpoint_generation_params}
         # viewpoint_traversal_params = self.get_node_parameters(self.traversal_node_name)
         # output_dict[self.traversal_node_name] = {'ros__parameters': viewpoint_traversal_params}
-        
+
         # Write to file
         with open(file_path, 'w') as f:
             yaml.dump(output_dict, f, default_flow_style=False)
-        
+
         self.get_logger().info(f'Parameters saved to {file_path}')
 
     def get_node_parameters(self, target_node_name):
         # Create parameter client for the target node
-        param_client = self.create_client(ListParameters, f'/{target_node_name}/list_parameters')
-        get_client = self.create_client(GetParameters, f'/{target_node_name}/get_parameters')
-        
+        param_client = self.create_client(
+            ListParameters, f'/{target_node_name}/list_parameters')
+        get_client = self.create_client(
+            GetParameters, f'/{target_node_name}/get_parameters')
+
         if not param_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error(f'Parameter service not available for {target_node_name}')
-            return None 
-            
+            self.get_logger().error(
+                f'Parameter service not available for {target_node_name}')
+            return None
+
         # List all parameters
         list_request = ListParameters.Request()
         list_future = param_client.call_async(list_request)
         rclpy.spin_until_future_complete(self, list_future)
-        
+
         if list_future.result() is not None:
             param_names = list_future.result().result.names
-            
+
             # Get parameter values
             get_request = GetParameters.Request()
             get_request.names = param_names
             get_future = get_client.call_async(get_request)
             rclpy.spin_until_future_complete(self, get_future)
-            
+
             if get_future.result() is not None:
                 param_values = get_future.result().values
-                
+
                 # Create parameter dictionary
                 params_dict = {}
                 for name, value in zip(param_names, param_values):
                     params_dict[name] = self._parameter_value_to_python(value)
-                
-                return params_dict        
-        
+
+                return params_dict
+
         return None
-    
+
     def _parameter_value_to_python(self, param_value):
         """Convert ROS parameter value to Python type"""
         if param_value.type == Parameter.Type.BOOL.value:
@@ -386,13 +405,12 @@ class ROSThread(Node):
         else:
             self.get_logger().error('Failed to trigger viewpoint projection')
             return False
-    
+
     def select_region(self, region_index):
         self.set_parameter('regions.selected_region', region_index)
 
-    def select_viewpoint(self, region_index, cluster_index):
-        """Select a viewpoint based on region and cluster indices"""
-        self.set_parameter('regions.selected_region', region_index)
+    def select_cluster(self, cluster_index):
+        """Select a cluster based on cluster index"""
         self.set_parameter('regions.selected_cluster', cluster_index)
 
     def move_to_viewpoint(self):
