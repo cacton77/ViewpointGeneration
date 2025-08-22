@@ -108,7 +108,7 @@ class ViewpointTraversalNode(Node):
                             callback_group=services_cb_group
                             )
 
-        self.init_workspace()
+        # self.init_workspace()
 
     def init_workspace(self):
         with self.planning_scene_monitor.read_write() as scene:

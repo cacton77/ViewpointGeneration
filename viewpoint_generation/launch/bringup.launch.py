@@ -8,6 +8,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     declared_arguments = [
+        DeclareLaunchArgument("cell", default_value="alpha"),
         DeclareLaunchArgument("sim", default_value="false",),
         DeclareLaunchArgument("ur_type", default_value="ur5e"),
         # DeclareLaunchArgument("use_fake_hardware", default_value="true"),
@@ -44,7 +45,7 @@ def generate_launch_description():
             PathJoinSubstitution([
                 FindPackageShare("inspection_cell_moveit_config"),
                 "launch",
-                "inspection_cell_sim.launch.py"
+                "inspection_cell.launch.py"
             ])
         ]),
         launch_arguments={
