@@ -825,7 +825,6 @@ class ROSThread(Node):
         success = self.wait_for_services()
         if not success:
             self.get_logger().error('Failed to wait for services')
-            rclpy.shutdown()
             return
 
         # Activate servo control by default

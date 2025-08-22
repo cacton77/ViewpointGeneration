@@ -33,6 +33,10 @@ def generate_launch_description():
         DeclareLaunchArgument("config_file", default_value="default.yaml",
                               description="Configuration file for viewpoint generation."),
         DeclareLaunchArgument("generation", default_value="true"),
+        DeclareLaunchArgument("teleop_config_file",
+                              default_value="xbox_controller.yaml", description="Controller configuration file for teleoperation."),
+        DeclareLaunchArgument("admittance_config_file", default_value="admittance_control.yaml",
+                              description="Configuration file for admittance control."),
     ]
 
     simulation_launch = IncludeLaunchDescription(
@@ -101,9 +105,24 @@ def generate_launch_description():
         ]),
     )
 
+    admittance_control_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare("inspection_control"),
+                "launch",
+                "admittance_control.launch.py"
+            ])
+        ]),
+        launch_arguments={
+            "teleop_config_file": LaunchConfiguration("teleop_config_file"),
+            "admittance_config_file": LaunchConfiguration("admittance_config_file")
+        }.items()
+    )
+
     return LaunchDescription(declared_arguments + [
         simulation_launch,
         # hardware_launch,
         viewpoint_generation_launch,
-        viewpoint_traversal_launch
+        viewpoint_traversal_launch,
+        admittance_control_launch
     ])
