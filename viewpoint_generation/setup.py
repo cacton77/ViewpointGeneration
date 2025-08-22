@@ -27,6 +27,7 @@ setup(
             'viewpoint_generation_node = nodes.viewpoint_generation_node:main',
             'gui_client_node = nodes.gui_client_node:main',
             'viewpoint_traversal_node = nodes.viewpoint_traversal_node:main',
+            'position_constraint_publisher = nodes.position_constraint_publisher:main'
         ],
     },
 )

@@ -13,9 +13,11 @@ from moveit.planning import (
     MultiPipelinePlanRequestParameters,
 )
 from rclpy.logging import get_logger
+from rcl_interfaces.msg import SetParametersResult
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped, OptimizeViewpointTraversal
 from geometry_msgs.msg import PoseStamped, Pose
 import pprint
+
 from std_srvs.srv import Trigger
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
@@ -36,6 +38,12 @@ class ViewpointTraversalNode(Node):
                 ('planning_group', 'disc_to_ur5e'),
                 ('planner', 'chomp'),
                 ('multiplanning', False),
+                ('workspace.min_x', -1.0),
+                ('workspace.max_x', 1.0),
+                ('workspace.min_y', -1.0),
+                ('workspace.max_y', 1.0),
+                ('workspace.min_z', -1.0),
+                ('workspace.max_z', 1.0)
             ]
         )
 
@@ -45,6 +53,15 @@ class ViewpointTraversalNode(Node):
             'planner').get_parameter_value().string_value
         self.multiplanning = self.get_parameter(
             'multiplanning').get_parameter_value().bool_value
+
+        self.workspace = {
+            'min_x': self.get_parameter('workspace.min_x').get_parameter_value().double_value,
+            'max_x': self.get_parameter('workspace.max_x').get_parameter_value().double_value,
+            'min_y': self.get_parameter('workspace.min_y').get_parameter_value().double_value,
+            'max_y': self.get_parameter('workspace.max_y').get_parameter_value().double_value,
+            'min_z': self.get_parameter('workspace.min_z').get_parameter_value().double_value,
+            'max_z': self.get_parameter('workspace.max_z').get_parameter_value().double_value
+        }
 
         self.robot = MoveItPy(node_name='moveit_py')
 
@@ -90,6 +107,40 @@ class ViewpointTraversalNode(Node):
                             self.optimize_traversal,
                             callback_group=services_cb_group
                             )
+
+        self.init_workspace()
+
+    def init_workspace(self):
+        with self.planning_scene_monitor.read_write() as scene:
+            collision_object = CollisionObject()
+            collision_object.header.frame_id = "ur_base_link"
+            collision_object.id = "workspace"
+
+            box_pose = Pose()
+            box_pose.position.x = (
+                self.workspace['max_x'] - self.workspace['min_x']) / 2
+            box_pose.position.y = (
+                self.workspace['max_y'] - self.workspace['min_y']) / 2
+            box_pose.position.z = (
+                self.workspace['max_z'] - self.workspace['min_z']) / 2
+
+            box = SolidPrimitive()
+            box.type = SolidPrimitive.BOX
+            box.dimensions = (
+                self.workspace['max_x'] - self.workspace['min_x'],
+                self.workspace['max_y'] - self.workspace['min_y'],
+                self.workspace['max_z'] - self.workspace['min_z']
+            )
+
+            collision_object.primitives.append(box)
+            collision_object.primitive_poses.append(box_pose)
+            collision_object.operation = CollisionObject.ADD
+
+            scene.apply_collision_object(collision_object)
+            scene.current_state.update()  # Important to ensure the scene is updated
+
+        self.get_logger().info("Workspace initialized successfully")
+        self.get_logger().info(f"Workspace boundaries: {self.workspace}")
 
     def optimize_traversal(self, request, response):
         self.get_logger().info(
@@ -149,23 +200,6 @@ class ViewpointTraversalNode(Node):
             unvisited.remove(current_point)
 
         return path, total_distance
-
-    def add_ground_plane(self):
-        with self.planning_scene_monitor.read_write() as scene:
-            collision_object = CollisionObject()
-            collision_object.header.frame_id = "table_link"
-            collision_object.id = "ground_plane"
-
-            ground = SolidPrimitive()
-            ground.type = SolidPrimitive.BOX
-            ground.dimensions = [10.0, 10.0, 0.01]
-
-            collision_object.primitives = [ground]
-            collision_object.primitive_poses = [Pose()]
-            collision_object.operation = CollisionObject.ADD
-
-            scene.apply_collision_object(collision_object)
-            scene.current_state.update()
 
     def move_to_pose_stamped_callback(self, request, response):
         if not self.planning_component:
@@ -253,88 +287,31 @@ class ViewpointTraversalNode(Node):
             self.get_logger().error("No trajectory found to execute")
             return False
 
-    # def plan1(self):
-    #     ###################################################################
-    #     # Define the goal pose for the disc_to_ur5e group
-    #     ###################################################################
-    #     self.planning_component.set_start_state_to_current_state()
-    #     pose_goal = PoseStamped()
-    #     pose_goal.header.frame_id = "eoat_camera_link"
-    #     pose_goal.pose.position.x = 0.05
-    #     pose_goal.pose.position.y = 0.0
-    #     pose_goal.pose.position.z = 0.05
-    #     pose_goal.pose.orientation.w = 1.0
-    #     pose_goal.pose.orientation.x = 0.0
-    #     pose_goal.pose.orientation.y = 0.0
-    #     pose_goal.pose.orientation.z = 0.0
+    def parameter_callback(self, params):
+        """ Callback for parameter changes.
+        :param params: List of parameters that have changed.
+        :return: SetParametersResult indicating success or failure.
+        """
 
-    #     # Set the goal pose for the disc_to_ur5e group
-    #     self.planning_component.set_goal_state(
-    #         pose_stamped_msg=pose_goal, pose_link="eoat_camera_link")
-    #     plan_result = self.planning_component.plan()
-    #     if plan_result.error_code.val != 1:
-    #         self.get_logger().error("Failed to plan trajectory")
-    #         return False
+        # Iterate through the parameters and set the corresponding values
+        # based on the parameter name
+        for param in params:
+            if param.name == 'workspace.min_x':
+                self.workspace['min_x'] = param.value
+            elif param.name == 'workspace.min_y':
+                self.workspace['min_y'] = param.value
+            elif param.name == 'workspace.min_z':
+                self.workspace['min_z'] = param.value
+            elif param.name == 'workspace.max_x':
+                self.workspace['max_x'] = param.value
+            elif param.name == 'workspace.max_y':
+                self.workspace['max_y'] = param.value
+            elif param.name == 'workspace.max_z':
+                self.workspace['max_z'] = param.value
 
-    #     # Execute the planned trajectory
-    #     self.get_logger().info("Executing plan")
-    #     robot_trajectory = plan_result.trajectory
-    #     self.robot.execute(robot_trajectory, controllers=[
-    #         'inspection_cell_controller'])
+        self.init_workspace()
 
-    def test_service_callback(self, request, response):
-        self.get_logger().info("Test service called")
-        self.plan2()
-        response.success = True
-        response.message = "Test service executed successfully"
-        return response
-
-    def plan2(self):
-        ###################################################################
-        # Define the goal using joint states
-        ###################################################################
-        # Create RobotState objects
-        robot_initial_state = RobotState(self.robot.get_robot_model())
-        robot_state = RobotState(self.robot.get_robot_model())
-
-        # # Set robot state to default values (zero angles)
-        # robot_state.set_to_default_values()
-
-        # Set robot state to custom values
-        joint_positions = {
-            "turntable_disc_joint": 0.0,  # radians
-            "shoulder_pan_joint": 3.14,     # radians
-            "shoulder_lift_joint": -1.8398,   # radians
-            "elbow_joint": -1.8224,            # radians
-            "wrist_1_joint": -1.0,         # radians
-            "wrist_2_joint": 1.57,          # radians
-            "wrist_3_joint": 1.57           # radians
-        }
-
-        # Get current joint positions and modify specific ones
-        goal_positions = robot_state.joint_positions
-        for joint_name, position in joint_positions.items():
-            if joint_name in goal_positions:
-                goal_positions[joint_name] = position
-        robot_state.joint_positions = goal_positions
-
-        # Set start state to current state
-        self.planning_component.set_start_state_to_current_state()
-        self.get_logger().info("Set goal state to the initialized robot state")
-
-        # Set goal state using the robot state
-        self.planning_component.set_goal_state(robot_state=robot_state)
-
-        # Plan the trajectory
-        plan_result = self.planning_component.plan()
-        if plan_result:
-            self.get_logger().info("Executing plan")
-            self.robot.execute(plan_result.trajectory, controllers=[])
-        else:
-            self.get_logger().error("Planning failed")
-            return False
-
-        return True
+        return SetParametersResult(successful=True)
 
 
 def main():
@@ -343,22 +320,6 @@ def main():
     traversal_node = ViewpointTraversalNode()
     # traversal_node.plan1()  # Call the plan1 method to execute the first plan
     rclpy.spin(traversal_node)
-
-    # rclpy.init()
-    # logger = get_logger("moveit_py.pose_goal")
-
-    # # instantiate MoveItPy instance and get planning component
-    # robot = MoveItPy(node_name="moveit_py")
-    # disc_to_ur5e = robot.get_planning_component("disc_to_ur5e")
-    # logger.info("MoveItPy instance created")
-    # while True:
-    #     try:
-    #         # Create a RobotState object
-    #         robot_state = RobotState(robot.get_robot_model())
-    #         logger.info("RobotState object created successfully")
-    #     except Exception as e:
-    #         logger.error(f"Failed to create RobotState object: {e}")
-    #     time.sleep(1)
 
 
 if __name__ == '__main__':

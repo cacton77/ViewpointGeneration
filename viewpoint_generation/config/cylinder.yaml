@@ -15,6 +15,7 @@ gui:
     show_skybox: true
     show_viewpoints: false
     use_sim_time: false
+
 viewpoint_generation:
   ros__parameters:
     model.camera.dof: 0.02
