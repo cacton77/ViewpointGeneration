@@ -16,7 +16,7 @@ def generate_launch_description():
                               "Used only if 'use_fake_hardware' parameter is true."),
         DeclareLaunchArgument("headless_mode", default_value="false",
                               description="Run in headless mode (without GUI)."),
-        DeclareLaunchArgument("robot_ip", default_value="192.168.1.102",
+        DeclareLaunchArgument("robot_ip", default_value="192.168.0.12",
                               description="IP address of the robot."),
         DeclareLaunchArgument("safety_limits", default_value="true",
                               description="Enable safety limits controller."),

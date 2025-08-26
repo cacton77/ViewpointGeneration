@@ -22,12 +22,6 @@ def launch_setup(context):
         'headless_mode': LaunchConfiguration("headless_mode").perform(context),
     }
 
-    urdf_file_path = PathJoinSubstitution([
-        FindPackageShare("inspection_cell_description"),
-        "urdf",
-        "inspection_cell.urdf.xacro"
-    ]).perform(context)
-
     joint_limits_file = PathJoinSubstitution([
         FindPackageShare("inspection_cell_description"),
         "config",
@@ -36,11 +30,9 @@ def launch_setup(context):
     ]).perform(context)
 
     moveit_config = (
-        MoveItConfigsBuilder(
-            "inspection_cell", package_name="inspection_cell_moveit_config"
-        )
-        .robot_description(file_path=urdf_file_path,
-                           mappings=xacro_mappings)
+        MoveItConfigsBuilder("inspection_cell")
+        .robot_description(
+            mappings=xacro_mappings)
         .robot_description_semantic(file_path="config/inspection_cell.srdf")
         .moveit_cpp(file_path="config/motion_planning.yaml")
         .joint_limits(file_path=joint_limits_file)
@@ -62,7 +54,7 @@ def launch_setup(context):
         package="viewpoint_generation",
         executable="viewpoint_traversal_node",
         output="both",
-        parameters=[moveit_config.to_dict()],
+        parameters=[moveit_config.to_dict()]
     )
 
     return [
