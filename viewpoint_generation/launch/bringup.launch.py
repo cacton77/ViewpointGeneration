@@ -11,7 +11,6 @@ def generate_launch_description():
         DeclareLaunchArgument("cell", default_value="alpha"),
         DeclareLaunchArgument("sim", default_value="false",),
         DeclareLaunchArgument("ur_type", default_value="ur5e"),
-        # DeclareLaunchArgument("use_fake_hardware", default_value="true"),
         DeclareLaunchArgument("mock_sensor_commands", default_value="false",
                               description="Enable fake command interfaces for sensors used for simple simulations. "
                               "Used only if 'use_fake_hardware' parameter is true."),
@@ -85,6 +84,13 @@ def generate_launch_description():
                 "viewpoint_traversal.launch.py"
             ])
         ]),
+        launch_arguments={
+            "cell": LaunchConfiguration("cell"),
+            "use_fake_hardware": LaunchConfiguration("sim"),
+            "ur_type": LaunchConfiguration("ur_type"),
+            "mock_sensor_commands": LaunchConfiguration("mock_sensor_commands"),
+            "headless_mode": LaunchConfiguration("headless_mode"),
+        }.items(),
     )
 
     admittance_control_launch = IncludeLaunchDescription(
@@ -103,8 +109,7 @@ def generate_launch_description():
 
     return LaunchDescription(declared_arguments + [
         simulation_launch,
-        # hardware_launch,
-        # viewpoint_generation_launch,
-        # viewpoint_traversal_launch,
-        # admittance_control_launch
+        viewpoint_generation_launch,
+        viewpoint_traversal_launch,
+        admittance_control_launch
     ])
