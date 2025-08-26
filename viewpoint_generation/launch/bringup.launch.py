@@ -49,6 +49,7 @@ def generate_launch_description():
             ])
         ]),
         launch_arguments={
+            "cell": LaunchConfiguration("cell"),
             "use_fake_hardware": LaunchConfiguration("sim"),
             "ur_type": LaunchConfiguration("ur_type"),
             "mock_sensor_commands": LaunchConfiguration("mock_sensor_commands"),
@@ -62,26 +63,6 @@ def generate_launch_description():
             "use_tool_communication": LaunchConfiguration("use_tool_communication"),
         }.items()
     )
-
-    # hardware_launch = IncludeLaunchDescription(
-    #     PythonLaunchDescriptionSource([
-    #         PathJoinSubstitution([
-    #             FindPackageShare("inspection_cell_moveit_config"),
-    #             "launch",
-    #             "inspection_cell_hw.launch.py"
-    #         ])
-    #     ]),
-    #     condition=UnlessCondition(LaunchConfiguration("sim")),
-    #     launch_arguments={
-    #         "use_fake_hardware": LaunchConfiguration("use_fake_hardware"),
-    #         "mock_sensor_commands": LaunchConfiguration("mock_sensor_commands"),
-    #         "headless_mode": LaunchConfiguration("headless_mode"),
-    #         "robot_ip": LaunchConfiguration("robot_ip"),
-    #         "safety_limits": LaunchConfiguration("safety_limits"),
-    #         "safety_pos_margin": LaunchConfiguration("safety_pos_margin"),
-    #         "safety_k_position": LaunchConfiguration("safety_k_position")
-    #     }.items()
-    # )
 
     viewpoint_generation_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -123,7 +104,7 @@ def generate_launch_description():
     return LaunchDescription(declared_arguments + [
         simulation_launch,
         # hardware_launch,
-        viewpoint_generation_launch,
-        viewpoint_traversal_launch,
-        admittance_control_launch
+        # viewpoint_generation_launch,
+        # viewpoint_traversal_launch,
+        # admittance_control_launch
     ])
