@@ -67,8 +67,6 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("cell", default_value="beta", choices=[
                                   "alpha", "beta"], description="Inspection cell type"),
-            DeclareLaunchArgument("ur_type", default_value="ur5e",
-                                  description="Type of UR robot"),
             DeclareLaunchArgument("use_fake_hardware",
                                   default_value="true", description="Sim mode"),
             DeclareLaunchArgument(

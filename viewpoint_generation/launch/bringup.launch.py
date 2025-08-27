@@ -10,14 +10,11 @@ def generate_launch_description():
     declared_arguments = [
         DeclareLaunchArgument("cell", default_value="alpha"),
         DeclareLaunchArgument("sim", default_value="false",),
-        DeclareLaunchArgument("ur_type", default_value="ur5e"),
         DeclareLaunchArgument("mock_sensor_commands", default_value="false",
                               description="Enable fake command interfaces for sensors used for simple simulations. "
                               "Used only if 'use_fake_hardware' parameter is true."),
         DeclareLaunchArgument("headless_mode", default_value="false",
                               description="Run in headless mode (without GUI)."),
-        DeclareLaunchArgument("robot_ip", default_value="192.168.0.12",
-                              description="IP address of the robot."),
         DeclareLaunchArgument("safety_limits", default_value="true",
                               description="Enable safety limits controller."),
         DeclareLaunchArgument("safety_pos_margin", default_value="0.15",
@@ -50,10 +47,8 @@ def generate_launch_description():
         launch_arguments={
             "cell": LaunchConfiguration("cell"),
             "use_fake_hardware": LaunchConfiguration("sim"),
-            "ur_type": LaunchConfiguration("ur_type"),
             "mock_sensor_commands": LaunchConfiguration("mock_sensor_commands"),
             "headless_mode": LaunchConfiguration("headless_mode"),
-            "robot_ip": LaunchConfiguration("robot_ip"),
             "safety_limits": LaunchConfiguration("safety_limits"),
             "safety_pos_margin": LaunchConfiguration("safety_pos_margin"),
             "safety_k_position": LaunchConfiguration("safety_k_position"),
@@ -87,7 +82,6 @@ def generate_launch_description():
         launch_arguments={
             "cell": LaunchConfiguration("cell"),
             "use_fake_hardware": LaunchConfiguration("sim"),
-            "ur_type": LaunchConfiguration("ur_type"),
             "mock_sensor_commands": LaunchConfiguration("mock_sensor_commands"),
             "headless_mode": LaunchConfiguration("headless_mode"),
         }.items(),
