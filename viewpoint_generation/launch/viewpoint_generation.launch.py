@@ -10,8 +10,8 @@ from launch_ros.actions import Node
 def generate_launch_description():
     ld = LaunchDescription()
 
-    config_file_arg = DeclareLaunchArgument(
-        'config_file',
+    object_arg = DeclareLaunchArgument(
+        'object',
         default_value='default.yaml',
         description='Name of the config file'
     )
@@ -20,7 +20,7 @@ def generate_launch_description():
     config = PathJoinSubstitution([
         FindPackageShare('viewpoint_generation'),
         'config',
-        LaunchConfiguration('config_file')
+        LaunchConfiguration('object')
     ])
 
     viewpoint_generation_node = Node(
@@ -32,12 +32,6 @@ def generate_launch_description():
         emulate_tty=True
     )
 
-    rqt_configure = Node(
-        package='rqt_reconfigure',
-        executable='rqt_reconfigure',
-        output='screen'
-    )
-
     gui_client_node = Node(
         package='viewpoint_generation',
         executable='gui_client_node',
@@ -45,7 +39,7 @@ def generate_launch_description():
         parameters=[config],
         output='screen',)
 
-    ld.add_action(config_file_arg)  # Don't forget to add the argument!
+    ld.add_action(object_arg)  # Don't forget to add the argument!
     ld.add_action(gui_client_node)
     ld.add_action(viewpoint_generation_node)
 

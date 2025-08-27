@@ -27,7 +27,7 @@ def generate_launch_description():
                               description="Launch MoveIt for motion planning."),
         DeclareLaunchArgument("use_tool_communication", default_value="false",
                               description="Use tool communication for the robot."),
-        DeclareLaunchArgument("config_file", default_value="default.yaml",
+        DeclareLaunchArgument("object", default_value="default.yaml",
                               description="Configuration file for viewpoint generation."),
         DeclareLaunchArgument("generation", default_value="true"),
         DeclareLaunchArgument("teleop_config_file",
@@ -67,7 +67,7 @@ def generate_launch_description():
             ])
         ]),
         launch_arguments={
-            "config_file": LaunchConfiguration("config_file")
+            "object": LaunchConfiguration("object")
         }.items()
     )
 
