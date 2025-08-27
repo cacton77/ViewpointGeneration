@@ -267,7 +267,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             attached_object.object.mesh_poses = [Pose()]
             attached_object.object.operation = CollisionObject.ADD
             attached_object.touch_links = [
-                'turntable_disc_link', 'turntable_base_link']
+                'turntable_disc_link', 'turntable_base_link', 'planning_volume']
 
             planning_scene = PlanningScene()
             planning_scene.world.collision_objects.clear()
