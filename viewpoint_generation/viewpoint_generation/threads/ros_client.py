@@ -154,7 +154,9 @@ class ROSThread(Node):
         # Will move these to a task planning node eventually
         self.init_task_planning()
 
-        self.create_timer(0.1, self.process_path)
+        timer_cb_group = ReentrantCallbackGroup()
+        self.create_timer(0.1, self.process_path,
+                          callback_group=timer_cb_group)
 
         # ROSOUT log subscription
         rosout_sub = self.create_subscription(
@@ -788,17 +790,18 @@ class ROSThread(Node):
         self.declare_parameters(
             namespace='task_planning',
             parameters=[
-                ('servo_controller', 'ur5e_forward_position_controller'),
-                ('trajectory_controller', 'inspection_cell_controller'),
+                ('servo_controllers', ['ur5e_forward_position_controller',
+                                       'turntable_forward_position_controller']),
+                ('trajectory_controllers', ['inspection_cell_controller']),
                 ('servo_node_name', 'servo_node'),
                 ('controller_manager_name', '/controller_manager'),
             ]
         )
 
-        self.servo_controller = self.get_parameter(
-            'task_planning.servo_controller').get_parameter_value().string_value
-        self.trajectory_controller = self.get_parameter(
-            'task_planning.trajectory_controller').get_parameter_value().string_value
+        self.servo_controllers = self.get_parameter(
+            'task_planning.servo_controllers').get_parameter_value().string_array_value
+        self.trajectory_controllers = self.get_parameter(
+            'task_planning.trajectory_controllers').get_parameter_value().string_array_value
         self.servo_node_name = self.get_parameter(
             'task_planning.servo_node_name').get_parameter_value().string_value
         self.controller_manager_name = self.get_parameter(
@@ -868,8 +871,8 @@ class ROSThread(Node):
 
     def activate_forward_position_controller(self):
         req = SwitchController.Request()
-        req.start_controllers = [self.servo_controller]
-        req.stop_controllers = [self.trajectory_controller]
+        req.start_controllers = self.servo_controllers
+        req.stop_controllers = self.trajectory_controllers
         self.get_logger().info('Activating forward position controller...')
         future = self.controller_manager_client.call_async(req)
         future.add_done_callback(
@@ -939,8 +942,8 @@ class ROSThread(Node):
         # self.state = STOPPING_SERVO
 
         req = SwitchController.Request()
-        req.start_controllers = [self.trajectory_controller]
-        req.stop_controllers = [self.servo_controller]
+        req.start_controllers = self.trajectory_controllers
+        req.stop_controllers = self.servo_controllers
         self.get_logger().info('Activating joint trajectory controller...')
 
         future = self.controller_manager_client.call_async(req)
@@ -997,16 +1000,25 @@ class ROSThread(Node):
     def image_selected_region(self, path):
         """Move to all viewpoints in region"""
         self.path = copy.deepcopy(path)
+        self.trigger('start_trajectory_control')
 
     def process_path(self):
         if not self.path:
             return
         elif self.state == 'executing_trajectory':
             return
+        elif self.state != 'trajectory_control':
+            self.get_logger().info(
+                'Waiting for trajectory control to be activated before processing path...')
+            self.stop_servo_control()
+            return
         else:
             viewpoint_index = self.path.pop(0)
             self.select_cluster(viewpoint_index)
-            self.move_to_viewpoint()
+            # self.move_to_viewpoint()
+            self.trigger('execute_trajectory')
+            self.move_to_viewpoint_client.call_async(Trigger.Request())
             if not self.path:
                 self.get_logger().info('All viewpoints in region processed')
                 self.select_cluster(0)
+                self.start_servo_control()
