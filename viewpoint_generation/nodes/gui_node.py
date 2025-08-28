@@ -76,18 +76,16 @@ class GUIClient():
         self.ros_thread.start()
 
         # Wait until self.ros_thread.parameters_dict is populated
-        while not self.ros_thread.parameters_dict:
-            print("Waiting for parameters from ROS...")
+        while any(value == {} for value in self.ros_thread.parameters_dict.values()):
             time.sleep(0.1)
-        self.parameters_dict = self.ros_thread.expand_dict_keys()
+        self.parameters_dict = self.ros_thread.expand_params_dict()
 
         w = self.window
         self.window.set_on_close(self.on_main_window_closing)
         self.update_delay = -1  # Set to -1 to use tick event
         self.window.set_on_tick_event(self.on_main_window_tick_event)
 
-        self.parameter_widgets = {}
-        self.init_gui()
+        self.init_main_layout()
         self.init_menu_bar()
 
         # 3D SCENE ################################################################
@@ -648,72 +646,65 @@ class GUIClient():
         self.ros_thread.show_noise_points = show
         self.ros_thread.set_param('show_noise_points', show)
 
-    def init_gui(self):
-        """Initialize the Open3D GUI"""
+    # ============================================================================
+    # INIT MAIN LAYOUT
+    # ============================================================================
 
+    def init_main_layout(self):
+        """Initialize the Open3D GUI with fixed tabs"""
+        self.parameter_widgets = {}
         # Get theme for consistent styling
         theme = self.window.theme
         em = theme.font_size
 
-        # Create main layout
-        self.main_layout = gui.Vert(0.5 * em, gui.Margins(0.5 * em))
+        # Create tab widget directly - NO intermediate scrollable layout
+        self.main_layout = gui.TabControl()
         self.main_layout.background_color = Materials.panel_color
 
-        # Create tab widget
-        self.tab_widget = gui.TabControl()
-        # self.tab_widget.background_color = Materials.panel_color
-
         # Create tabs for each top-level key
-        for tab_name, tab_data in self.parameters_dict.items():
-            tab_panel = self.create_tab_panel(tab_name, tab_data, em)
-            self.tab_widget.add_tab(tab_name.title(), tab_panel)
+        for node_name, tab_data in self.parameters_dict.items():
+            self.parameter_widgets[node_name] = {}
+            tab_panel = self.create_tab_panel(node_name, tab_data, em)
+            # Replace _ with a space in node_name
+            self.main_layout.add_tab(
+                node_name.title().replace('_', ' '), tab_panel)
 
-        # Add tab widget to main layout
-        self.main_layout.add_child(self.tab_widget)
+        # Create a log layout with widget
+        self.log_layout = gui.Vert(0.5 * em, gui.Margins(0.5 * em))
+        self.log_layout.background_color = Materials.panel_color
+        self.log_widget = gui.ListView()
+        self.log_widget.set_max_visible_items(5)
 
-        # Set the main layout
+        collapsable_log = gui.CollapsableVert(
+            "Log", 0.25 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        collapsable_log.add_child(self.log_widget)
+        collapsable_log.set_is_open(False)
+
+        self.log_layout.add_child(collapsable_log)
+
+        self.viewpoint_traversal_layout = gui.Vert(
+            0.5 * em, gui.Margins(0.5 * em))
+        self.init_viewpoint_traversal_layout()
+
         self.window.add_child(self.main_layout)
+        self.window.add_child(self.log_layout)
 
-    def create_tab_panel(self, tab_name, tab_data, em):
-        """Create a panel for a tab with nested structure"""
-        # Create scrollable area for the tab content
-        scroll_area = gui.Vert(
+    def create_tab_panel(self, node_name, tab_data, em):
+        """Create a scrollable panel for a tab - ONLY scrolling here"""
+        # Create scrollable area directly - no intermediate containers
+        scroll_area = gui.ScrollableVert(
             0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 1.25 * em, 0.25 * em))
         scroll_area.background_color = Materials.panel_color
 
         # Create the content recursively
-        content = self.create_nested_content(tab_name, tab_data, em)
+        content = self.create_nested_content(
+            node_name, node_name, tab_data, em)
         content.background_color = Materials.panel_color
         scroll_area.add_child(content)
 
         return scroll_area
 
-    def create_nested_content(self, parent_name, data, em, level=0):
-        """Recursively create nested content for parameters"""
-        container = gui.Vert(
-            0.25 * em, gui.Margins(0.25 * em, 0.00 * em, 0.00 * em, 0.00 * em))
-
-        # If this is a leaf parameter (has 'name', 'type', 'value')
-        if isinstance(data, dict) and 'name' in data and 'type' in data and 'value' in data:
-            widget_grid = self.create_parameter_widget(data, em)
-            container.add_child(widget_grid)
-        else:
-            # This is a nested structure, process each sub-item
-            for key, value in data.items():
-                if isinstance(value, dict):
-                    if 'name' in value and 'type' in value and 'value' in value:
-                        # This is a parameter
-                        widget_grid = self.create_parameter_widget(value, em)
-                        container.add_child(widget_grid)
-                    else:
-                        # This is a nested group, create a collapsable section
-                        section = self.create_collapsable_section(
-                            key, value, em, level)
-                        container.add_child(section)
-
-        return container
-
-    def create_collapsable_section(self, section_name, section_data, em, level):
+    def create_collapsable_section(self, node_name, section_name, section_data, em, level):
         """Create a collapsable section for nested parameters"""
         # Create a collapsable widget
         collapsable = gui.CollapsableVert(section_name.replace('_', ' ').title(
@@ -721,10 +712,7 @@ class GUIClient():
 
         # Add content to the collapsable section
         content = self.create_nested_content(
-            section_name, section_data, em, level + 1)
-
-        button_horiz = gui.Horiz(
-            0.25 * em, gui.Margins(0.75 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+            node_name, section_name, section_data, em, level + 1)
 
         # If section_name is 'Sampling', add a button
         if section_name == 'sampling':
@@ -761,7 +749,34 @@ class GUIClient():
 
         return collapsable
 
-    def create_parameter_widget(self, param_data, em):
+    def create_nested_content(self, node_name, parent_name, data, em, level=0):
+        """Recursively create nested content for parameters"""
+        container = gui.Vert(
+            0.25 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        container.background_color = Materials.panel_color
+
+        # If this is a leaf parameter (has 'name', 'type', 'value')
+        if isinstance(data, dict) and 'name' in data and 'type' in data and 'value' in data:
+            widget_grid = self.create_parameter_widget(node_name, data, em)
+            container.add_child(widget_grid)
+        else:
+            # This is a nested structure, process each sub-item
+            for key, value in data.items():
+                if isinstance(value, dict):
+                    if 'name' in value and 'type' in value and 'value' in value:
+                        # This is a parameter
+                        widget_grid = self.create_parameter_widget(
+                            node_name, value, em)
+                        container.add_child(widget_grid)
+                    else:
+                        # This is a nested group, create a collapsable section
+                        section = self.create_collapsable_section(
+                            node_name, key, value, em, level)
+                        container.add_child(section)
+
+        return container
+
+    def create_parameter_widget(self, node_name, param_data, em):
         """Create a widget for a single parameter"""
         # Create a grid layout for label and widget
         grid = gui.VGrid(2, 0.25 * em, gui.Margins(0.75 * em,
@@ -783,19 +798,19 @@ class GUIClient():
             widget = gui.Checkbox("")
             widget.checked = bool(param_value)
             widget.set_on_checked(
-                lambda checked, name=param_name: self.on_parameter_changed(name, checked))
+                lambda checked, name=param_name: self.on_parameter_changed(node_name, name, checked))
 
         elif param_type == 'integer':
             widget = gui.NumberEdit(gui.NumberEdit.INT)
             widget.int_value = int(param_value)
             widget.set_on_value_changed(
-                lambda value, name=param_name: self.on_parameter_changed(name, value))
+                lambda value, name=param_name: self.on_parameter_changed(node_name, name, value))
 
         elif param_type == 'double':
             widget = gui.NumberEdit(gui.NumberEdit.DOUBLE)
             widget.double_value = float(param_value)
             widget.set_on_value_changed(
-                lambda value, name=param_name: self.on_parameter_changed(name, value))
+                lambda value, name=param_name: self.on_parameter_changed(node_name, name, value))
 
         elif param_type == 'string':
             if 'file' in param_name.lower() or 'path' in param_name.lower():
@@ -806,14 +821,14 @@ class GUIClient():
                 widget.background_color = Materials.text_edit_background_color
                 widget.text_value = str(param_value)
                 widget.set_on_text_changed(
-                    lambda text, name=param_name: self.on_parameter_changed(name, text))
+                    lambda text, node_name=node_name, name=param_name: self.on_parameter_changed(node_name, name, text))
 
                 browse_button = gui.Button("...")
                 browse_button.background_color = Materials.button_background_color
                 browse_button.horizontal_padding_em = 0.5
                 browse_button.vertical_padding_em = 0
                 browse_button.set_on_clicked(
-                    lambda name=param_name: self.on_browse_file(name))
+                    lambda node_name=node_name, name=param_name: self.on_browse_file(node_name, name))
 
                 file_layout.add_child(widget)
                 # Add some space between text and button
@@ -832,7 +847,8 @@ class GUIClient():
 
                 def on_unit_changed(selected_text, selected_index):
                     """Handle unit selection change"""
-                    self.on_parameter_changed(param_name, selected_text)
+                    self.on_parameter_changed(
+                        node_name, param_name, selected_text)
 
                 widget.set_on_selection_changed(on_unit_changed)
 
@@ -843,7 +859,7 @@ class GUIClient():
                 widget.background_color = Materials.text_edit_background_color
                 widget.text_value = str(param_value)
                 widget.set_on_text_changed(
-                    lambda text, name=param_name: self.on_parameter_changed(name, text))
+                    lambda text, name=param_name: self.on_parameter_changed(node_name, name, text))
                 grid.add_child(widget)
 
         else:
@@ -852,52 +868,152 @@ class GUIClient():
             widget.background_color = Materials.text_edit_background_color
             widget.text_value = str(param_value)
             widget.set_on_text_changed(
-                lambda text, name=param_name: self.on_parameter_changed(name, text))
+                lambda text, node_name=node_name, name=param_name: self.on_parameter_changed(node_name, name, text))
             grid.add_child(widget)
 
         # Store widget reference
         if widget is not None and param_type != 'string' or 'file' not in param_name.lower():
-            self.parameter_widgets[param_name] = widget
+            self.parameter_widgets[node_name][param_name] = widget
             grid.add_child(widget)
         else:
-            self.parameter_widgets[param_name] = widget
+            self.parameter_widgets[node_name][param_name] = widget
 
         return grid
 
-    def init_gui(self):
-        """Initialize the Open3D GUI with fixed tabs"""
-        # Get theme for consistent styling
-        theme = self.window.theme
-        em = theme.font_size
+    def on_parameter_changed(self, node_name, param_name, new_value):
+        """Handle parameter value changes"""
+        print(f"Parameter {param_name} changed to: {new_value}")
+        # Update the internal dictionary
+        self.update_parameter_value(node_name, param_name, new_value)
+        # Set Parameter via ROS thread
+        self.set_parameter(node_name, param_name, new_value)
 
-        # Create tab widget directly - NO intermediate scrollable layout
-        self.main_layout = gui.TabControl()
-        self.main_layout.background_color = Materials.panel_color
+    def update_parameter_value(self, node_name, param_name, new_value):
+        """Update parameter value in the nested dictionary"""
+        keys = param_name.split('.')
+        current = self.parameters_dict[node_name]
 
-        # Create tabs for each top-level key
-        for tab_name, tab_data in self.parameters_dict.items():
-            tab_panel = self.create_tab_panel(tab_name, tab_data, em)
-            self.main_layout.add_tab(tab_name.title(), tab_panel)
+        # Navigate to the parent of the target parameter
+        for key in keys[:-1]:
+            if key in current:
+                current = current[key]
+            else:
+                return  # Path not found
 
-        # Create a log layout with widget
-        self.log_layout = gui.Vert(0.5 * em, gui.Margins(0.5 * em))
-        self.log_layout.background_color = Materials.panel_color
-        self.log_widget = gui.ListView()
-        self.log_widget.set_max_visible_items(5)
+        # Update the value if the parameter exists
+        final_key = keys[-1]
+        if final_key in current and isinstance(current[final_key], dict):
+            current[final_key]['value'] = new_value
 
-        collapsable_log = gui.CollapsableVert(
-            "Log", 0.25 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        collapsable_log.add_child(self.log_widget)
-        collapsable_log.set_is_open(False)
+    def on_browse_file(self, node_name, param_name):
+        """Handle file browse button clicks"""
+        file_dialog = gui.FileDialog(
+            gui.FileDialog.OPEN, "Choose file", self.window.theme)
+        file_dialog.set_on_cancel(self.window.close_dialog)
+        file_dialog.set_on_done(
+            lambda path: self.on_file_selected(node_name, param_name, path))
+        self.window.show_dialog(file_dialog)
 
-        self.log_layout.add_child(collapsable_log)
+    def on_file_selected(self, node_name, param_name, file_path):
+        """Handle file selection"""
+        print(f"File selected for {param_name}: {file_path}")
+        self.on_parameter_changed(node_name, param_name, file_path)
 
-        self.viewpoint_traversal_layout = gui.Vert(
-            0.5 * em, gui.Margins(0.5 * em))
-        self.init_viewpoint_traversal_layout()
+        # Update the widget display
+        if param_name in self.parameter_widgets:
+            widget = self.parameter_widgets[param_name]
+            if hasattr(widget, 'text_value'):
+                widget.text_value = file_path
 
-        self.window.add_child(self.main_layout)
-        self.window.add_child(self.log_layout)
+        self.window.close_dialog()  # Close the dialog after selection
+
+    def on_sample_point_cloud(self):
+        """Handle sample point cloud button click"""
+        self.ros_thread.sample_point_cloud()
+
+    def set_parameter(self, node_name, parameter_name, new_value):
+        self.ros_thread.set_parameter(node_name, parameter_name, new_value)
+
+    def set_widget_value(self, widget, value):
+        """Set the value of a widget based on its type"""
+        try:
+            if hasattr(widget, 'checked'):
+                # Checkbox widget
+                widget.checked = bool(value)
+            elif hasattr(widget, 'int_value'):
+                # Integer NumberEdit widget
+                widget.int_value = int(value)
+            elif hasattr(widget, 'double_value'):
+                # Double NumberEdit widget
+                # Round to 3 decimal places for consistency
+                value = round(float(value), 3)
+                widget.double_value = float(value)
+            elif hasattr(widget, 'text_value'):
+                # TextEdit widget
+                widget.text_value = str(value)
+                if value == '':
+                    widget.text_value = 'None'
+            else:
+                print(f"Warning: Unknown widget type for value: {value}")
+        except Exception as e:
+            print(f"Error setting widget value to {value}: {e}")
+
+    def update_all_widgets_from_dict(self):
+        """Update all widget values from the current parameter dictionary"""
+
+        parameters_dict = self.ros_thread.parameters_dict
+        parameters_updated = False
+
+        for node_name, node_parameter_widgets in self.parameter_widgets.items():
+            for param_name, widget in node_parameter_widgets.items():
+                if param_name in parameters_dict[node_name]:
+                    update_flag = parameters_dict[node_name][param_name]['update_flag']
+                    if update_flag:
+                        parameters_updated = True
+                        # Update the widget value from the parameters dictionary
+                        if 'value' in parameters_dict[node_name][param_name]:
+                            param_value = parameters_dict[node_name][param_name]['value']
+                            self.set_widget_value(widget, param_value)
+
+                            # if param_name is 'model.mesh.file' load the mesh
+                            if 'model.mesh.file' in param_name:
+                                self.import_mesh(param_value)
+                            elif 'model.mesh.units' in param_name:
+                                # If units change, we need to rescale the mesh
+                                mesh_file = self.ros_thread.parameters_dict[
+                                    node_name]['model.mesh.file']['value']
+                                if mesh_file:
+                                    self.import_mesh(mesh_file)
+                            elif 'model.point_cloud.file' in param_name:
+                                self.import_point_cloud(param_value)
+                            elif 'model.point_cloud.units' in param_name:
+                                # If units change, we need to rescale the point cloud
+                                pcd_file = self.ros_thread.parameters_dict[
+                                    node_name]['model.point_cloud.file']['value']
+                                if pcd_file:
+                                    self.import_point_cloud(pcd_file)
+                            elif 'regions.region_growth.curvature.file' in param_name:
+                                self.import_curvature(param_value)
+                            elif 'regions.file' in param_name:
+                                self.import_regions(param_value)
+                            elif 'regions.selected_region' in param_name:
+                                self.select_region(param_value)
+                            elif 'regions.selected_cluster' in param_name:
+                                self.select_cluster(param_value)
+                            elif 'model.camera.fov.height' in param_name:
+                                self.camera_fov_height = param_value
+                                self.camera_updated = True
+                            elif 'model.camera.fov.width' in param_name:
+                                self.camera_fov_width = param_value
+                                self.camera_updated = True
+
+                            parameters_dict[node_name][param_name]['update_flag'] = False
+                            # print(f"Updated \'{param_name}\' to \'{param_value}\'")
+
+        if parameters_updated:
+            print("------------------------------------")
+
+        self.ros_thread.parameters_dict = parameters_dict
 
     def init_viewpoint_traversal_layout(self):
         """Initialize the region tabs"""
@@ -966,7 +1082,7 @@ class GUIClient():
 
         def _on_go_button_clicked():
             path = self.traversal_order[self.region_number]
-            self.ros_thread.image_selected_region(path)
+            self.ros_thread.image_region()
 
         go_button.set_on_clicked(_on_go_button_clicked)
 
@@ -982,315 +1098,6 @@ class GUIClient():
 
         self.window.add_child(self.viewpoint_traversal_layout)
 
-    def create_tab_panel(self, tab_name, tab_data, em):
-        """Create a scrollable panel for a tab - ONLY scrolling here"""
-        # Create scrollable area directly - no intermediate containers
-        scroll_area = gui.ScrollableVert(
-            0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 1.25 * em, 0.25 * em))
-        scroll_area.background_color = Materials.panel_color
-
-        # Create the content recursively
-        content = self.create_nested_content(tab_name, tab_data, em)
-        content.background_color = Materials.panel_color
-        scroll_area.add_child(content)
-
-        return scroll_area
-
-    # Alternative approach: Use ScrollableVert directly as tab content
-    def create_tab_panel_simple(self, tab_name, tab_data, em):
-        """Simplified version using ScrollableVert directly"""
-        # Create scrollable area that will be the tab content
-        scroll_area = gui.ScrollableVert(
-            0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 1.25 * em, 0.25 * em))
-        scroll_area.background_color = Materials.panel_color
-
-        # Create the content recursively
-        content = self.create_nested_content(tab_name, tab_data, em)
-        content.background_color = Materials.panel_color
-        scroll_area.add_child(content)
-
-        return scroll_area
-
-    # If you want more control, you can also structure it this way:
-    def init_gui_advanced(self):
-        """Advanced layout with explicit control over fixed and scrollable areas"""
-        theme = self.window.theme
-        em = theme.font_size
-
-        # Create main vertical layout
-        self.main_layout = gui.Vert(0, gui.Margins(0.5 * em))
-        self.main_layout.background_color = Materials.panel_color
-
-        # Create fixed header area for tabs
-        header_area = gui.Vert(0, gui.Margins(0))
-        header_area.background_color = Materials.panel_color
-
-        # Create tab widget in header (fixed)
-        self.tab_widget = gui.TabControl()
-        self.tab_widget.background_color = Materials.panel_color
-
-        # Create tabs
-        for tab_name, tab_data in self.parameters_dict.items():
-            # Each tab panel will handle its own scrolling
-            tab_panel = self.create_scrollable_tab_content(
-                tab_name, tab_data, em)
-            self.tab_widget.add_tab(tab_name.title(), tab_panel)
-
-        # Add tabs to header
-        header_area.add_child(self.tab_widget)
-
-        # Add header to main layout (this makes tabs fixed)
-        self.main_layout.add_child(header_area)
-
-        # Set the layout
-        self.window.add_child(self.main_layout)
-
-    def create_scrollable_tab_content(self, tab_name, tab_data, em):
-        """Create tab content with internal scrolling"""
-        # Create a container for the entire tab
-        tab_container = gui.Vert(0, gui.Margins(0))
-
-        # Create scrollable content area
-        scrollable_content = gui.ScrollableVert(
-            0.5 * em,
-            gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em)
-        )
-        scrollable_content.background_color = Materials.panel_color
-
-        # Create the actual content
-        content = self.create_nested_content(tab_name, tab_data, em)
-        scrollable_content.add_child(content)
-
-        # Add scrollable content to tab container
-        tab_container.add_child(scrollable_content)
-
-        return tab_container
-
-    # Updated create_nested_content with better spacing
-    def create_nested_content(self, parent_name, data, em, level=0):
-        """Recursively create nested content for parameters"""
-        container = gui.Vert(
-            0.25 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        container.background_color = Materials.panel_color
-
-        # If this is a leaf parameter (has 'name', 'type', 'value')
-        if isinstance(data, dict) and 'name' in data and 'type' in data and 'value' in data:
-            widget_grid = self.create_parameter_widget(data, em)
-            container.add_child(widget_grid)
-        else:
-            # This is a nested structure, process each sub-item
-            for key, value in data.items():
-                if isinstance(value, dict):
-                    if 'name' in value and 'type' in value and 'value' in value:
-                        # This is a parameter
-                        widget_grid = self.create_parameter_widget(value, em)
-                        container.add_child(widget_grid)
-                    else:
-                        # This is a nested group, create a collapsable section
-                        section = self.create_collapsable_section(
-                            key, value, em, level)
-                        container.add_child(section)
-
-        return container
-
-    # Optional: Add a fixed footer or status bar
-    def init_gui_with_footer(self):
-        """GUI with fixed header (tabs) and optional fixed footer"""
-        theme = self.window.theme
-        em = theme.font_size
-
-        # Main layout
-        self.main_layout = gui.Vert(0, gui.Margins(0.5 * em))
-        self.main_layout.background_color = Materials.panel_color
-
-        # Fixed header with tabs
-        self.tab_widget = gui.TabControl()
-        self.tab_widget.background_color = Materials.panel_color
-
-        for tab_name, tab_data in self.parameters_dict.items():
-            tab_panel = self.create_scrollable_tab_content(
-                tab_name, tab_data, em)
-            self.tab_widget.add_tab(tab_name.title(), tab_panel)
-
-        # Add tabs to main layout (fixed at top)
-        self.main_layout.add_child(self.tab_widget)
-
-        # Optional: Add fixed footer/status bar
-        if hasattr(self, 'show_status_bar') and self.show_status_bar:
-            footer = gui.Horiz(0.25 * em, gui.Margins(0.5 * em))
-            footer.background_color = Materials.panel_color
-
-            status_label = gui.Label("Ready")
-            status_label.text_color = Materials.text_color
-            footer.add_child(status_label)
-
-            # Add some stretch space
-            footer.add_stretch()
-
-            # Add status info
-            info_label = gui.Label("Parameters loaded")
-            info_label.text_color = Materials.text_color
-            footer.add_child(info_label)
-
-            # Add footer to main layout (fixed at bottom)
-            self.main_layout.add_child(footer)
-
-        self.window.add_child(self.main_layout)
-
-    # Quick fix version - just replace your create_tab_panel method with this:
-    def create_tab_panel_fixed(self, tab_name, tab_data, em):
-        """Fixed version - use ScrollableVert instead of regular Vert"""
-        # Use ScrollableVert instead of regular Vert
-        scroll_area = gui.ScrollableVert(
-            0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 1.25 * em, 0.25 * em))
-        scroll_area.background_color = Materials.panel_color
-
-        # Create the content recursively (same as before)
-        content = self.create_nested_content(tab_name, tab_data, em)
-        content.background_color = Materials.panel_color
-        scroll_area.add_child(content)
-
-        return scroll_area
-
-    def on_parameter_changed(self, param_name, new_value):
-        """Handle parameter value changes"""
-        print(f"Parameter {param_name} changed to: {new_value}")
-        # Update the internal dictionary
-        self.update_parameter_value(param_name, new_value)
-        # Set Parameter via ROS thread
-        self.set_parameter(param_name, new_value)
-
-    def update_parameter_value(self, param_name, new_value):
-        """Update parameter value in the nested dictionary"""
-        keys = param_name.split('.')
-        current = self.parameters_dict
-
-        # Navigate to the parent of the target parameter
-        for key in keys[:-1]:
-            if key in current:
-                current = current[key]
-            else:
-                return  # Path not found
-
-        # Update the value if the parameter exists
-        final_key = keys[-1]
-        if final_key in current and isinstance(current[final_key], dict):
-            current[final_key]['value'] = new_value
-
-    def on_browse_file(self, param_name):
-        """Handle file browse button clicks"""
-        file_dialog = gui.FileDialog(
-            gui.FileDialog.OPEN, "Choose file", self.window.theme)
-        file_dialog.set_on_cancel(self.window.close_dialog)
-        file_dialog.set_on_done(
-            lambda path: self.on_file_selected(param_name, path))
-        self.window.show_dialog(file_dialog)
-
-    def on_file_selected(self, param_name, file_path):
-        """Handle file selection"""
-        print(f"File selected for {param_name}: {file_path}")
-        self.on_parameter_changed(param_name, file_path)
-
-        # Update the widget display
-        if param_name in self.parameter_widgets:
-            widget = self.parameter_widgets[param_name]
-            if hasattr(widget, 'text_value'):
-                widget.text_value = file_path
-
-        self.window.close_dialog()  # Close the dialog after selection
-
-    def on_sample_point_cloud(self):
-        """Handle sample point cloud button click"""
-        self.ros_thread.sample_point_cloud()
-
-    def set_parameter(self, parameter_name, new_value):
-        self.ros_thread.set_parameter(parameter_name, new_value)
-
-    def update_all_widgets_from_dict(self):
-        """Update all widget values from the current parameter dictionary"""
-
-        parameters_dict = self.ros_thread.parameters_dict
-        parameters_updated = False
-
-        for param_name, widget in self.parameter_widgets.items():
-            if param_name in parameters_dict:
-                update_flag = parameters_dict[param_name]['update_flag']
-                if update_flag:
-                    parameters_updated = True
-                    widget = self.parameter_widgets[param_name]
-                    # Update the widget value from the parameters dictionary
-                    if 'value' in parameters_dict[param_name]:
-                        param_value = parameters_dict[param_name]['value']
-                        self.set_widget_value(widget, param_value)
-
-                        # if param_name is 'model.mesh.file' load the mesh
-                        if 'model.mesh.file' in param_name:
-                            self.import_mesh(param_value)
-                        elif 'model.mesh.units' in param_name:
-                            # If units change, we need to rescale the mesh
-                            mesh_file = self.ros_thread.parameters_dict['model.mesh.file']['value']
-                            if mesh_file:
-                                self.import_mesh(mesh_file)
-                        elif 'model.point_cloud.file' in param_name:
-                            self.import_point_cloud(param_value)
-                        elif 'model.point_cloud.units' in param_name:
-                            # If units change, we need to rescale the point cloud
-                            pcd_file = self.ros_thread.parameters_dict['model.point_cloud.file']['value']
-                            if pcd_file:
-                                self.import_point_cloud(pcd_file)
-                        elif 'regions.region_growth.curvature.file' in param_name:
-                            self.import_curvature(param_value)
-                        elif 'regions.file' in param_name:
-                            self.import_regions(param_value)
-                        elif 'regions.selected_region' in param_name:
-                            self.select_region(param_value)
-                        elif 'regions.selected_cluster' in param_name:
-                            self.select_cluster(param_value)
-                        elif 'model.camera.fov.height' in param_name:
-                            self.camera_fov_height = param_value
-                            self.camera_updated = True
-                        elif 'model.camera.fov.width' in param_name:
-                            self.camera_fov_width = param_value
-                            self.camera_updated = True
-
-                        parameters_dict[param_name]['update_flag'] = False
-                        # print(f"Updated \'{param_name}\' to \'{param_value}\'")
-
-        if parameters_updated:
-            print("------------------------------------")
-
-        self.ros_thread.parameters_dict = parameters_dict
-
-        # def update_recursive(data_dict, prefix=""):
-        #     """Recursively find and update parameters"""
-        #     parameters_updated = False
-
-        #     for key, value in data_dict.items():
-        #         if isinstance(value, dict):
-        #             if 'name' in value and 'type' in value and 'value' in value:
-        #                 # This is a parameter - update its widget
-        #                 param_name = value['name']
-        #                 param_value = value['value']
-        #                 # Check if the parameter has an update flag
-        #                 # If it does, only update if the flag is True
-        #                 param_update_flag = value['update_flag']
-        #                 parameters_updated = parameters_updated or param_update_flag
-
-        #                     # Turn update flag off after updating
-        #                     value['update_flag'] = False
-        #             else:
-        #                 # This is a nested structure - recurse
-        #                 new_prefix = f"{prefix}.{key}" if prefix else key
-        #                 parameters_updated = parameters_updated or update_recursive(
-        #                     value, new_prefix)
-
-        #     return parameters_updated
-
-        # # Start the recursive update
-        # parameters_updated = update_recursive(self.parameters_dict)
-
-        # self.ros_thread.collapse_dict_keys(self.parameters_dict)
-
     def import_mesh(self, file_path):
         print(f"Importing mesh from {file_path}")
         # Remove point cloud if it exists
@@ -1301,7 +1108,8 @@ class GUIClient():
                 print(f"Warning: Mesh file {file_path} is empty or invalid.")
             else:
 
-                mesh_units = self.ros_thread.parameters_dict['model.mesh.units']['value']
+                mesh_units = self.ros_thread.parameters_dict[
+                    'viewpoint_generation']['model.mesh.units']['value']
                 if mesh_units == 'mm':
                     mesh.scale(1.0, center=(0, 0, 0))
                 elif mesh_units == 'cm':
@@ -1367,7 +1175,8 @@ class GUIClient():
                     f"Warning: Point cloud file {file_path} is empty or invalid.")
             else:
 
-                pcd_units = self.ros_thread.parameters_dict['model.point_cloud.units']['value']
+                pcd_units = self.ros_thread.parameters_dict[
+                    "viewpoint_generation"]['model.point_cloud.units']['value']
                 if pcd_units == 'mm':
                     point_cloud.scale(1.0, center=(0, 0, 0))
                 elif pcd_units == 'cm':
@@ -1735,30 +1544,6 @@ class GUIClient():
         print("Clearing paths...")
         for region_name in self.region_names:
             self.scene_widget.scene.remove_geometry(f"{region_name}_path")
-
-    def set_widget_value(self, widget, value):
-        """Set the value of a widget based on its type"""
-        try:
-            if hasattr(widget, 'checked'):
-                # Checkbox widget
-                widget.checked = bool(value)
-            elif hasattr(widget, 'int_value'):
-                # Integer NumberEdit widget
-                widget.int_value = int(value)
-            elif hasattr(widget, 'double_value'):
-                # Double NumberEdit widget
-                # Round to 3 decimal places for consistency
-                value = round(float(value), 3)
-                widget.double_value = float(value)
-            elif hasattr(widget, 'text_value'):
-                # TextEdit widget
-                widget.text_value = str(value)
-                if value == '':
-                    widget.text_value = 'None'
-            else:
-                print(f"Warning: Unknown widget type for value: {value}")
-        except Exception as e:
-            print(f"Error setting widget value to {value}: {e}")
 
     def cast_ray_from_center(self):
         """Cast a ray from the center of the current view"""

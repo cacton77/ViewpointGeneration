@@ -93,15 +93,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Viewpoint Projection Service
         self.create_service(Trigger, node_name + '/viewpoint_projection',
                             self.viewpoint_projection_callback, callback_group=services_cb_group)
-        # Move to Viewpoint Service
-        self.create_service(
-            Trigger, node_name + '/move_to_viewpoint', self.move_to_viewpoint_callback, callback_group=services_cb_group)
-        self.move_to_viewpoint_done_pub = self.create_publisher(
-            Bool, node_name + '/move_to_viewpoint/done', 10)
-        # Image Region Service
-        image_region_cb_group = MutuallyExclusiveCallbackGroup()
-        self.create_service(Trigger, node_name + '/image_region',
-                            self.image_region_callback, callback_group=image_region_cb_group)
         # Optimize Traversal Service
         self.create_service(Trigger, node_name +
                             '/optimize_traversal', self.optimize_traversal, callback_group=services_cb_group)

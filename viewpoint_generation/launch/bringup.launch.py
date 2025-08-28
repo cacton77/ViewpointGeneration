@@ -4,6 +4,7 @@ from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
@@ -36,7 +37,7 @@ def generate_launch_description():
                               description="Configuration file for admittance control."),
     ]
 
-    simulation_launch = IncludeLaunchDescription(
+    control_moveit_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
                 FindPackageShare("inspection_cell_moveit_config"),
@@ -58,17 +59,11 @@ def generate_launch_description():
         }.items()
     )
 
-    viewpoint_generation_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            PathJoinSubstitution([
-                FindPackageShare("viewpoint_generation"),
-                "launch",
-                "viewpoint_generation.launch.py"
-            ])
-        ]),
-        launch_arguments={
-            "object": LaunchConfiguration("object")
-        }.items()
+    task_planning_node = Node(
+        package="viewpoint_generation",
+        executable="task_planning_node",
+        name="inspection_task_planning",
+        output="screen",
     )
 
     viewpoint_traversal_launch = IncludeLaunchDescription(
@@ -101,8 +96,22 @@ def generate_launch_description():
         }.items()
     )
 
+    viewpoint_generation_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare("viewpoint_generation"),
+                "launch",
+                "viewpoint_generation.launch.py"
+            ])
+        ]),
+        launch_arguments={
+            "object": LaunchConfiguration("object")
+        }.items()
+    )
+
     return LaunchDescription(declared_arguments + [
-        simulation_launch,
+        task_planning_node,
+        control_moveit_launch,
         viewpoint_generation_launch,
         viewpoint_traversal_launch,
         admittance_control_launch

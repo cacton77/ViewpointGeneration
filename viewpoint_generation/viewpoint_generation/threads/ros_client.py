@@ -9,7 +9,6 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.parameter import Parameter
-from std_srvs.srv import Trigger
 from rcl_interfaces.msg import ParameterDescriptor, ParameterType
 from rcl_interfaces.srv import GetParameters, SetParameters, ListParameters
 from rcl_interfaces.msg import ParameterValue
@@ -20,7 +19,7 @@ from ament_index_python.packages import get_package_prefix
 from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped
 
-from std_srvs.srv import SetBool
+from std_srvs.srv import Trigger, SetBool
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 from controller_manager_msgs.srv import SwitchController
 from moveit_msgs.srv import ServoCommandType
@@ -31,6 +30,11 @@ class ROSThread(Node):
     node_name = 'gui'
     viewpoint_generation_node_name = 'viewpoint_generation'
     traversal_node_name = 'viewpoint_traversal'
+    task_planning_node_name = 'inspection_task_planning'
+
+    target_nodes = [viewpoint_generation_node_name,
+                    traversal_node_name,
+                    task_planning_node_name]
 
     robot_moving = False
     path = []  # Move to task planning node eventually
@@ -89,36 +93,60 @@ class ROSThread(Node):
         self.t = threading.Thread(target=self.update, args=())
         self.t.daemon = True  # daemon threads run in background
 
-        # Dictionary to store parameter information
-        self.parameters_dict = {}
-        self.parameters_dict_collapsed = {}
-
-        # Target node name (change this to your target node)
-        # Replace with actual node name
-        self.viewpoint_generation_node_name = 'viewpoint_generation'
-
+        # Connect to parameters of target nodes
         # Create service clients
-        self.list_params_client = self.create_client(
-            ListParameters,
-            f'{self.viewpoint_generation_node_name}/list_parameters'
-        )
-
-        self.get_params_client = self.create_client(
-            GetParameters,
-            f'{self.viewpoint_generation_node_name}/get_parameters'
-        )
-
+        self.list_params_clients = {}
+        self.get_params_clients = {}
+        self.set_params_clients = {}
         set_params_cb_group = MutuallyExclusiveCallbackGroup()
-        self.set_params_client = self.create_client(
-            SetParameters,
-            f'{self.viewpoint_generation_node_name}/set_parameters',
-            callback_group=set_params_cb_group
-        )
+        target_nodes_copy = self.target_nodes.copy()
+        failed_targets = []
+        for target_node in target_nodes_copy:
+            list_params_client = self.create_client(
+                ListParameters,
+                f'{target_node}/list_parameters'
+            )
+            get_params_client = self.create_client(
+                GetParameters,
+                f'{target_node}/get_parameters'
+            )
+            set_params_client = self.create_client(
+                SetParameters,
+                f'{target_node}/set_parameters',
+                callback_group=set_params_cb_group
+            )
+            if not list_params_client.wait_for_service(timeout_sec=2.0):
+                self.get_logger().warning(
+                    f'Failed to connect to {target_node}/list_parameters service')
+                failed_targets.append(target_node)
+                self.target_nodes.remove(target_node)
+            elif not get_params_client.wait_for_service(timeout_sec=2.0):
+                self.get_logger().warning(
+                    f'Failed to connect to {target_node}/get_parameters service')
+                failed_targets.append(target_node)
+                self.target_nodes.remove(target_node)
+            elif not set_params_client.wait_for_service(timeout_sec=2.0):
+                self.get_logger().warning(
+                    f'Failed to connect to {target_node}/set_parameters service')
+                failed_targets.append(target_node)
+                self.target_nodes.remove(target_node)
+            else:
+                self.list_params_clients[target_node] = list_params_client
+                self.get_params_clients[target_node] = get_params_client
+                self.set_params_clients[target_node] = set_params_client
 
         self.get_logger().info(
-            f'Parameter Manager Node started for target: {self.viewpoint_generation_node_name}')
+            f'Parameter Manager Node started for targets: {self.target_nodes}')
+        self.get_logger().warning(
+            f'Failed to connect to the following targets: {failed_targets}')
 
-        # Create clients for viewpoint generation services
+        # Dictionary to store parameter information
+
+        self.parameters_dict = {}
+        for target_node in self.target_nodes:
+            self.parameters_dict[target_node] = {}
+
+        # ------------- Create clients for viewpoint generation services -------------
         services_cb_group = MutuallyExclusiveCallbackGroup()
         self.sampling_client = self.create_client(Trigger,
                                                   f'{self.viewpoint_generation_node_name}/sample_point_cloud',
@@ -151,15 +179,10 @@ class ROSThread(Node):
                                                             callback_group=services_cb_group
                                                             )
 
-        # Will move these to a task planning node eventually
-        self.init_task_planning()
-
-        timer_cb_group = ReentrantCallbackGroup()
-        self.create_timer(0.1, self.process_path,
-                          callback_group=timer_cb_group)
+        # ----------- Create clients for task planning services -----------
 
         # ROSOUT log subscription
-        rosout_sub = self.create_subscription(
+        self.create_subscription(
             Log,
             '/rosout',
             self.rosout_callback,
@@ -201,23 +224,6 @@ class ROSThread(Node):
         """Wait for all required services to be available"""
         self.get_logger().info('Waiting for parameter services...')
 
-        # Essential services for viewpoint generation
-
-        # Wait for list parameters service
-        while not self.list_params_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().info(
-                f'Waiting for {self.viewpoint_generation_node_name}/list_parameters service...')
-
-        # Wait for get parameters service
-        while not self.get_params_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().info(
-                f'Waiting for {self.viewpoint_generation_node_name}/get_parameters service...')
-
-        # Wait for set parameters service
-        while not self.set_params_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().info(
-                f'Waiting for {self.viewpoint_generation_node_name}/set_parameters service...')
-
         # Wait for viewpoint generation services
         while not self.sampling_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
@@ -234,22 +240,6 @@ class ROSThread(Node):
         while not self.viewpoint_projection_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
                 f'Waiting for {self.viewpoint_generation_node_name}/viewpoint_projection service...')
-
-        # Optional services for system integration
-
-        self.get_logger().info(
-            f'Waiting for {self.viewpoint_generation_node_name}/move_to_viewpoint service...')
-        if not self.move_to_viewpoint_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warning(
-                f'{self.viewpoint_generation_node_name}/move_to_viewpoint service not available, viewpoint traversal will not work')
-
-        # TODO: Move to task planning node eventually
-        if not self.controller_manager_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warning(
-                'Controller manager service not available, cannot switch controllers')
-        else:
-            self.get_logger().info(
-                'Connected to controller manager service, can switch controllers')
 
     def save_parameters_to_file(self, file_path):
         """Save all current and connected inspection node parameters to a file"""
@@ -330,6 +320,10 @@ class ROSThread(Node):
             return list(param_value.string_array_value)
         else:
             return None
+
+    # ============================================================================
+    # VIEWPOINT GENERATION AND TRAVERSAL OPTIMIZATION
+    # ============================================================================
 
     def sample_point_cloud(self):
         """Trigger the sampling service"""
@@ -433,11 +427,13 @@ class ROSThread(Node):
             return False
 
     def select_region(self, region_index):
-        self.set_parameter('regions.selected_region', region_index)
+        self.set_parameter(self.viewpoint_generation_node_name,
+                           'regions.selected_region', region_index)
 
     def select_cluster(self, cluster_index):
         """Select a cluster based on cluster index"""
-        self.set_parameter('regions.selected_cluster', cluster_index)
+        self.set_parameter(self.viewpoint_generation_node_name,
+                           'regions.selected_cluster', cluster_index)
 
     def optimize_traversal(self):
         """Optimize the viewpoint traversal path"""
@@ -459,7 +455,28 @@ class ROSThread(Node):
             self.get_logger().error('Failed to trigger optimize traversal')
             return False
 
-    def expand_dict_keys(self):
+    # ============================================================================
+    # TASK PLANNING
+    # ============================================================================
+
+    def move_to_viewpoint(self):
+        pass
+
+    def image_region(self):
+        pass
+
+    # ============================================================================
+    # PARAMETER MANAGEMENT
+    # ============================================================================
+
+    def expand_params_dict(self):
+        expanded = {}
+        for target_node, flat_params in self.parameters_dict.items():
+            expanded[target_node] = self.expand_dict_keys(flat_params)
+
+        return expanded
+
+    def expand_dict_keys(self, flat_dict):
         """
         Expand a flat dictionary with period-delimited keys into a nested dictionary structure.
 
@@ -471,7 +488,7 @@ class ROSThread(Node):
         """
         expanded = {}
 
-        for key, value in self.parameters_dict.items():
+        for key, value in flat_dict.items():
             # Split the key by periods
             key_parts = key.split('.')
 
@@ -526,14 +543,17 @@ class ROSThread(Node):
         """Get all parameters from the target node"""
         try:
             # First, list all parameter names
-            list_request = ListParameters.Request()
-            list_future = self.list_params_client.call_async(list_request)
-            list_future.add_done_callback(
-                self.get_all_parameters_future_callback)
+            for node_name, list_client in self.list_params_clients.items():
+                self.get_logger().info(
+                    f'Getting parameters for {node_name}...')
+                list_request = ListParameters.Request()
+                list_future = list_client.call_async(list_request)
+                list_future.add_done_callback(
+                    lambda future, node_name=node_name: self.get_all_parameters_future_callback(future, node_name))
         except Exception as e:
             self.get_logger().error(f'Error getting parameters: {str(e)}')
 
-    def get_all_parameters_future_callback(self, list_future):
+    def get_all_parameters_future_callback(self, list_future, node_name):
         """Callback for the list parameters future"""
 
         if list_future.result() is not None:
@@ -555,17 +575,17 @@ class ROSThread(Node):
                 # Get parameter values
                 get_request = GetParameters.Request()
                 get_request.names = param_names
-                get_future = self.get_params_client.call_async(get_request)
+                get_future = self.get_params_clients[node_name].call_async(
+                    get_request)
                 get_future.add_done_callback(
-                    lambda future: self.get_all_parameter_values_future_callback(future, param_names))
+                    lambda future, node_name=node_name, param_names=param_names: self.get_all_parameter_values_future_callback(future, node_name, param_names))
             else:
                 self.get_logger().info('No parameters found in target node')
         else:
             self.get_logger().error('Failed to list parameters')
 
-    def get_all_parameter_values_future_callback(self, get_future, param_names):
+    def get_all_parameter_values_future_callback(self, get_future, node_name, param_names):
         """Callback for the get parameters future"""
-
         if get_future.result() is not None:
             get_response = get_future.result()
 
@@ -595,8 +615,8 @@ class ROSThread(Node):
                     param_value = os.path.join(
                         package_prefix, 'share', package_name, relative_path)
 
-                if name in self.parameters_dict:
-                    update_flag = self.parameters_dict[name]['value'] != param_value
+                if name in self.parameters_dict[node_name]:
+                    update_flag = self.parameters_dict[node_name][name]['value'] != param_value
                     # self.get_logger().info(
                     # f'Parameter {name} updated: {update_flag} (old: \'{self.parameters_dict[name]["value"]}\', new: \'{param_value}\')')
                 else:
@@ -608,8 +628,7 @@ class ROSThread(Node):
                     'value': param_value,
                     'update_flag': update_flag
                 }
-                self.parameters_dict[name] = param_info
-
+                self.parameters_dict[node_name][name] = param_info
         else:
             self.get_logger().error('Failed to get parameter values')
 
@@ -656,16 +675,18 @@ class ROSThread(Node):
         """Print all stored parameters"""
         self.get_logger().info('Retrieved Parameters:')
         self.get_logger().info('-' * 50)
-        for name, info in self.parameters_dict.items():
-            self.get_logger().info(f"Name: {info['name']}")
-            self.get_logger().info(f"Type: {info['type']}")
-            self.get_logger().info(f"Value: {info['value']}")
-            self.get_logger().info(f"Update: {info['update_flag']}")
+        for node_name, node_dict in self.parameters_dict.items():
+            self.get_logger().info(f"Node: {node_name}")
+            for name, info in node_dict.items():
+                self.get_logger().info(f"Name: {info['name']}")
+                self.get_logger().info(f"Type: {info['type']}")
+                self.get_logger().info(f"Value: {info['value']}")
+                self.get_logger().info(f"Update: {info['update_flag']}")
             self.get_logger().info('-' * 30)
 
-    def set_parameter(self, param_name, new_value):
+    def set_parameter(self, node_name, param_name, new_value):
         """Set a parameter on the target node"""
-        if param_name not in self.parameters_dict:
+        if param_name not in self.parameters_dict[node_name]:
             self.get_logger().error(f'Parameter {param_name} not found')
             return False
 
@@ -673,7 +694,7 @@ class ROSThread(Node):
             self.get_logger().info(
                 f'Setting parameter {param_name} to {new_value}')
 
-            param_info = self.parameters_dict[param_name]
+            param_info = self.parameters_dict[node_name][param_name]
 
             # Create the message objects (NOT rclpy.parameter.Parameter)
             param_msg = ParameterMsg()
@@ -706,41 +727,34 @@ class ROSThread(Node):
             # Use param_msg, not Parameter object
             set_request.parameters = [param_msg]
 
-            set_future = self.set_params_client.call_async(set_request)
+            set_future = self.set_params_clients[node_name].call_async(
+                set_request)
             # Add done callback lambda with parameter name and new value
             set_future.add_done_callback(
-                lambda f, param_name=param_name, new_value=new_value: self.set_parameter_future_callback(f, param_name, new_value))
+                lambda f, node_name=node_name, param_name=param_name, new_value=new_value: self.set_parameter_future_callback(f, node_name, param_name, new_value))
 
         except Exception as e:
             self.get_logger().error(f'Error setting parameter: {str(e)}')
             return False
 
-    def set_parameter_future_callback(self, future, param_name, new_value):
+    def set_parameter_future_callback(self, future, node_name, param_name, new_value):
         """Callback for the set parameter future"""
 
         if future.result() is not None:
             results = future.result().results
             if results and results[0].successful:
                 self.get_logger().info(
-                    f'Successfully set parameter {param_name} to \'{new_value}\'')
+                    f'Successfully set parameter {node_name}/{param_name} to \'{new_value}\'')
                 self.get_all_parameters()
                 return True
             else:
                 reason = results[0].reason if results else 'Unknown error'
                 self.get_logger().error(
-                    f'Failed to set parameter {param_name}: {reason}')
+                    f'Failed to set parameter {node_name}/{param_name}: {reason}')
                 return True
         else:
             self.get_logger().error('Service call failed')
             return False
-
-    def get_parameter_info(self, param_name):
-        """Get information about a specific parameter"""
-        return self.parameters_dict.get(param_name, None)
-
-    def list_parameter_names(self):
-        """Get list of all parameter names"""
-        return list(self.parameters_dict.keys())
 
     def start(self):
         self.stopped = False
@@ -750,275 +764,3 @@ class ROSThread(Node):
         executor = MultiThreadedExecutor()
         executor.add_node(self)
         executor.spin()
-
-    # Task Planning Node Methods
-
-    def init_task_planning(self, initial_state='idle'):
-
-        self.state = initial_state
-
-        # Example of state transitions
-        self.transitions = {
-            'idle': {
-                'start_servo_control': 'servo_control',
-                'start_trajectory_control': 'trajectory_control',
-            },
-            'servo_control': {
-                'pause_servo_control': 'idle',
-                'start_trajectory_control': 'trajectory_control',
-            },
-            'trajectory_control': {
-                'execute_trajectory': 'executing_trajectory',
-                'start_servo_control': 'servo_control'
-            },
-            'executing_trajectory': {
-                'trajectory_done': 'trajectory_control',
-            },
-            'active': {
-                'pause': 'paused',
-                'stop': 'stopped'
-            },
-            'paused': {
-                'resume': 'active',
-                'stop': 'stopped'
-            },
-            'stopped': {
-                'reset': 'idle'
-            }
-        }
-
-        self.declare_parameters(
-            namespace='task_planning',
-            parameters=[
-                ('servo_controllers', ['ur5e_forward_position_controller',
-                                       'turntable_forward_position_controller']),
-                ('trajectory_controllers', ['inspection_cell_controller']),
-                ('servo_node_name', 'servo_node'),
-                ('controller_manager_name', '/controller_manager'),
-            ]
-        )
-
-        self.servo_controllers = self.get_parameter(
-            'task_planning.servo_controllers').get_parameter_value().string_array_value
-        self.trajectory_controllers = self.get_parameter(
-            'task_planning.trajectory_controllers').get_parameter_value().string_array_value
-        self.servo_node_name = self.get_parameter(
-            'task_planning.servo_node_name').get_parameter_value().string_value
-        self.controller_manager_name = self.get_parameter(
-            'task_planning.controller_manager_name').get_parameter_value().string_value
-
-        # Switch controller client
-        self.controller_manager_client = self.create_client(
-            SwitchController,
-            f'{self.controller_manager_name}/switch_controller')
-        self.create_subscription(
-            Bool, self.viewpoint_generation_node_name + '/move_to_viewpoint/done', self.move_to_viewpoint_done_callback, qos_profile=10)
-
-        # Start servo client
-        self.servo_command_type_client = self.create_client(
-            ServoCommandType,
-            f'{self.servo_node_name}/switch_command_type'
-        )
-        # Pause servo client
-        self.pause_servo_client = self.create_client(
-            SetBool,
-            f'{self.servo_node_name}/pause_servo'
-        )
-
-        success = self.wait_for_services()
-        if not success:
-            self.get_logger().error('Failed to wait for services')
-            return
-
-        # Activate servo control by default
-        self.set_servo_command_type()
-        self.start_servo_control()
-
-    def trigger(self, event):
-        if event in self.transitions.get(self.state, {}):
-            next_state = self.transitions[self.state][event]
-            self.get_logger().info(
-                f'State changed from: {self.state} to {next_state} by event {event}')
-            self.state = next_state
-            return True
-        else:
-            self.get_logger().warning(
-                f'Invalid event "{event}" for current state "{self.state}"')
-            return False
-
-    def wait_for_services(self):
-        if not self.controller_manager_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error(
-                'Controller manager service not available, cannot switch controllers')
-            return False
-        if not self.pause_servo_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error(
-                'Start servo service not available, cannot start servo')
-            return False
-        if not self.pause_servo_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error(
-                'Pause servo service not available, cannot pause servo')
-            return False
-        self.get_logger().info('All required services are available')
-        return True
-
-    def start_servo_control(self):
-        self.activate_forward_position_controller()
-
-    def stop_servo_control(self):
-        self.pause_servo(pause=True)
-        self.activate_joint_trajectory_controller()
-
-    def activate_forward_position_controller(self):
-        req = SwitchController.Request()
-        req.start_controllers = self.servo_controllers
-        req.stop_controllers = self.trajectory_controllers
-        self.get_logger().info('Activating forward position controller...')
-        future = self.controller_manager_client.call_async(req)
-        future.add_done_callback(
-            self.activate_forward_position_controller_callback)
-
-    def activate_forward_position_controller_callback(self, future):
-        try:
-            resp = future.result()
-            self.get_logger().info('Activate forward position controller response: %s' % resp.ok)
-            self.trigger('start_servo_control')
-
-        except Exception as e:
-            self.get_logger().info(
-                'Service call failed %r' % (e,))
-            self.trigger('idle')
-
-        if resp.ok:
-            self.pause_servo(pause=False)
-
-    def set_servo_command_type(self, command_type='TWIST'):
-        req = ServoCommandType.Request()
-
-        if command_type == 'JOINT_JOG':
-            req.command_type = ServoCommandType.Request.JOINT_JOG
-        elif command_type == 'TWIST':
-            req.command_type = ServoCommandType.Request.TWIST
-
-        self.get_logger().info(
-            f'Setting servo command type to {command_type}...')
-        future = self.servo_command_type_client.call_async(req)
-        future.add_done_callback(self.set_servo_command_type_callback)
-
-    def set_servo_command_type_callback(self, future):
-        try:
-            resp = future.result()
-            self.get_logger().info('Set servo command type response: %s' % resp.success)
-        except Exception as e:
-            self.get_logger().info(
-                'Service call failed %r' % (e,))
-
-    def pause_servo(self, pause=True):
-        # Call /servo_node/pause_servo service
-
-        req = SetBool.Request()
-        req.data = pause
-
-        if pause:
-            self.get_logger().info('Pausing servo...')
-        else:
-            self.get_logger().info('Resuming servo...')
-
-        future = self.pause_servo_client.call_async(req)
-        future.add_done_callback(self.pause_servo_callback)
-
-    def pause_servo_callback(self, future):
-        try:
-            resp = future.result()
-            self.get_logger().info('Pause servo response: %s' % resp.success)
-        except Exception as e:
-            self.get_logger().info(
-                'Service call failed %r' % (e,))
-
-        # self.servo_state = ON
-        # self.state = IDLE
-
-    def activate_joint_trajectory_controller(self):
-        # self.state = STOPPING_SERVO
-
-        req = SwitchController.Request()
-        req.start_controllers = self.trajectory_controllers
-        req.stop_controllers = self.servo_controllers
-        self.get_logger().info('Activating joint trajectory controller...')
-
-        future = self.controller_manager_client.call_async(req)
-        future.add_done_callback(
-            self.activate_joint_trajectory_controller_callback)
-
-    def activate_joint_trajectory_controller_callback(self, future):
-        try:
-            resp = future.result()
-            self.get_logger().info('Activate joint trajectory controller response: %s' % resp.ok)
-        except Exception as e:
-            self.get_logger().info(
-                'Service call failed %r' % (e,))
-            self.trigger('idle')
-
-        if resp.ok:
-            self.trigger('start_trajectory_control')
-
-    def move_to_viewpoint(self):
-        """Move the robot to the selected viewpoint"""
-        self.stop_servo_control()
-        while not self.state == 'trajectory_control':
-            self.get_logger().info('Waiting for trajectory control to be activated...')
-            time.sleep(0.1)
-
-        self.trigger('execute_trajectory')
-
-        request = Trigger.Request()
-        future = self.move_to_viewpoint_client.call_async(request)
-        future.add_done_callback(self.move_to_viewpoint_future_callback)
-
-    def move_to_viewpoint_future_callback(self, future):
-        """Callback for the move to viewpoint service future"""
-        if future.result() is not None:
-            if future.result().success:
-                self.get_logger().info('Moved to viewpoint triggered successfully')
-            else:
-                self.get_logger().error(
-                    f'Failed to move to viewpoint: {future.result().message}')
-        else:
-            self.get_logger().error('Failed to call move_to_viewpoint service')
-
-    def move_to_viewpoint_done_callback(self, msg):
-        """Callback for the move to viewpoint done topic"""
-
-        self.trigger('trajectory_done')
-        self.start_servo_control()
-
-        if msg.data:
-            self.get_logger().info('Move to viewpoint completed successfully')
-        else:
-            self.get_logger().error('Move to viewpoint failed')
-
-    def image_selected_region(self, path):
-        """Move to all viewpoints in region"""
-        self.path = copy.deepcopy(path)
-        self.trigger('start_trajectory_control')
-
-    def process_path(self):
-        if not self.path:
-            return
-        elif self.state == 'executing_trajectory':
-            return
-        elif self.state != 'trajectory_control':
-            self.get_logger().info(
-                'Waiting for trajectory control to be activated before processing path...')
-            self.stop_servo_control()
-            return
-        else:
-            viewpoint_index = self.path.pop(0)
-            self.select_cluster(viewpoint_index)
-            # self.move_to_viewpoint()
-            self.trigger('execute_trajectory')
-            self.move_to_viewpoint_client.call_async(Trigger.Request())
-            if not self.path:
-                self.get_logger().info('All viewpoints in region processed')
-                self.select_cluster(0)
-                self.start_servo_control()

@@ -10,6 +10,7 @@ class Materials:
     panel_color = gui.Color(25/255, 25/255, 25/255, 0.8)
     panel_color = gui.Color(175/255, 175/255, 175/255, 0.8)
     panel_color = gui.Color(0.5, 0.5, 0.5, 0.8)
+    panel_color = gui.Color(36/255, 36/255, 36/255, 0.9)
     button_background_color = gui.Color(0.4, 0.4, 0.4, 1.0)
     go_button_background_color = gui.Color(0.2, 0.8, 0.2, 1.0)
     text_color = gui.Color(1., 1., 1., 1.0)

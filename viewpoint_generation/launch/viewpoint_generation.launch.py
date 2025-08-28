@@ -1,7 +1,8 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, RegisterEventHandler
+from launch.event_handlers import OnProcessStart
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
@@ -32,15 +33,22 @@ def generate_launch_description():
         emulate_tty=True
     )
 
-    gui_client_node = Node(
+    gui_node = Node(
         package='viewpoint_generation',
-        executable='gui_client_node',
+        executable='gui_node',
         name='gui',
         parameters=[config],
         output='screen',)
 
-    ld.add_action(object_arg)  # Don't forget to add the argument!
-    ld.add_action(gui_client_node)
+    register_event_handler = RegisterEventHandler(
+        OnProcessStart(
+            target_action=viewpoint_generation_node,
+            on_start=[gui_node]
+        )
+    )
+
+    ld.add_action(object_arg)
     ld.add_action(viewpoint_generation_node)
+    ld.add_action(register_event_handler)
 
     return ld
