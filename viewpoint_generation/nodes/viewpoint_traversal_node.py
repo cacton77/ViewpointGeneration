@@ -36,7 +36,7 @@ class ViewpointTraversalNode(Node):
             namespace='',
             parameters=[
                 ('planning_group', 'disc_to_ur5e'),
-                ('planner', 'chomp'),
+                ('planner', 'ompl'),
                 ('multiplanning', False),
                 ('workspace.min_x', -1.0),
                 ('workspace.max_x', 1.0),
@@ -113,7 +113,7 @@ class ViewpointTraversalNode(Node):
     def init_workspace(self):
         with self.planning_scene_monitor.read_write() as scene:
             collision_object = CollisionObject()
-            collision_object.header.frame_id = "ur_base_link"
+            collision_object.header.frame_id = "planning_volume"
             collision_object.id = "workspace"
 
             box_pose = Pose()

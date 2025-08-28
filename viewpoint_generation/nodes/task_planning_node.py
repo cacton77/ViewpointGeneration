@@ -5,6 +5,7 @@ import copy
 import json
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rcl_interfaces.msg import SetParametersResult
 
 from std_srvs.srv import Trigger, SetBool
 from controller_manager_msgs.srv import SwitchController
@@ -66,15 +67,15 @@ class TaskPlanningNode(Node):
         )
 
         self.servo_controllers = self.get_parameter(
-            'task_planning.servo_controllers').get_parameter_value().string_array_value
+            'servo_controllers').get_parameter_value().string_array_value
         self.trajectory_controllers = self.get_parameter(
-            'task_planning.trajectory_controllers').get_parameter_value().string_array_value
+            'trajectory_controllers').get_parameter_value().string_array_value
         self.servo_node_name = self.get_parameter(
-            'task_planning.servo_node_name').get_parameter_value().string_value
+            'servo_node_name').get_parameter_value().string_value
         self.controller_manager_name = self.get_parameter(
-            'task_planning.controller_manager_name').get_parameter_value().string_value
+            'controller_manager_name').get_parameter_value().string_value
         self.viewpoints = self.load_viewpoints(self.get_parameter(
-            'task_planning.viewpoints_file').get_parameter_value().string_value)
+            'viewpoints_file').get_parameter_value().string_value)
 
         services_cb_group = MutuallyExclusiveCallbackGroup()
 
@@ -104,6 +105,11 @@ class TaskPlanningNode(Node):
         self.start_servo_control()
 
     def load_viewpoints(self, filepath):
+        viewpoints = []
+        if filepath == '':
+            self.get_logger().warning('Viewpoints file cleared, no viewpoints loaded')
+            return viewpoints
+
         with open(filepath, 'r') as f:
             regions_dict = json.load(f)
 
@@ -303,6 +309,22 @@ class TaskPlanningNode(Node):
                 self.get_logger().info('All viewpoints in region processed')
                 self.select_cluster(0)
                 self.start_servo_control()
+
+    def parameter_callback(self, params):
+        """ Callback for parameter changes.
+        :param params: List of parameters that have changed.
+        :return: SetParametersResult indicating success or failure.
+        """
+        for param in params:
+            if param.name == 'viewpoints_file' and param.type_ == param.Type.STRING:
+                success = self.load_viewpoints(param.value)
+                self.get_logger().info(
+                    f'Viewpoints file changed to: {param.value}')
+
+        result = SetParametersResult()
+        result.successful = success
+
+        return result
 
 
 def main():
