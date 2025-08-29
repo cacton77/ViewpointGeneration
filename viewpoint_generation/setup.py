@@ -28,7 +28,7 @@ setup(
             'gui_node = nodes.gui_node:main',
             'viewpoint_traversal_node = nodes.viewpoint_traversal_node:main',
             'position_constraint_publisher = nodes.position_constraint_publisher:main',
-            'task_planning_node = nodes.task_planning_node:main'
+            'inspection_task_planning_node = nodes.inspection_task_planning_node:main'
         ],
     },
 )

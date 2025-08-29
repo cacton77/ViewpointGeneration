@@ -16,6 +16,10 @@ gui:
     show_viewpoints: false
     use_sim_time: false
 
+inspection_task_planning:
+  ros__parameters:
+    viewpoints_file: /workspaces/isaac_ros-dev/src/ViewpointGenerationData/cylinder_point_cloud/cylinder_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-19_15-43-40_viewpoints_optimized2025-08-19_15-49-25.json
+
 viewpoint_generation:
   ros__parameters:
     model.camera.dof: 0.02
@@ -43,8 +47,6 @@ viewpoint_generation:
     regions.region_growth.min_cluster_size: 100
     regions.region_growth.normal_angle_threshold: 60.0
     regions.region_growth.seed_threshold: 0.1
-    regions.selected_cluster: 0
-    regions.selected_region: 0
     settings.cuda_enabled: false
     use_sim_time: false
     viewpoints.projection.nothing: ''

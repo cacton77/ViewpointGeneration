@@ -882,7 +882,6 @@ class GUIClient():
 
     def on_parameter_changed(self, node_name, param_name, new_value):
         """Handle parameter value changes"""
-        print(f"Parameter {param_name} changed to: {new_value}")
         # Update the internal dictionary
         self.update_parameter_value(node_name, param_name, new_value)
         # Set Parameter via ROS thread
@@ -996,10 +995,10 @@ class GUIClient():
                                 self.import_curvature(param_value)
                             elif 'regions.file' in param_name:
                                 self.import_regions(param_value)
-                            elif 'regions.selected_region' in param_name:
+                            elif 'selected_region' in param_name:
                                 self.select_region(param_value)
-                            elif 'regions.selected_cluster' in param_name:
-                                self.select_cluster(param_value)
+                            elif 'selected_viewpoint' in param_name:
+                                self.select_viewpoint(param_value)
                             elif 'model.camera.fov.height' in param_name:
                                 self.camera_fov_height = param_value
                                 self.camera_updated = True
@@ -1012,6 +1011,7 @@ class GUIClient():
 
         if parameters_updated:
             print("------------------------------------")
+            self.window.post_redraw()
 
         self.ros_thread.parameters_dict = parameters_dict
 
@@ -1062,8 +1062,9 @@ class GUIClient():
 
         def _on_viewpoint_slider_changed(value):
             """Handle viewpoint slider change"""
-            cluster_index = self.traversal_order[
-                int(self.region_tabs.selected_tab_index)][int(value)]
+            # cluster_index = self.traversal_order[
+            # int(self.region_tabs.selected_tab_index)][int(value)]
+            cluster_index = int(value)
             self.ros_thread.select_cluster(cluster_index)
 
             return gui.Widget.EventCallbackResult.HANDLED
@@ -1081,7 +1082,6 @@ class GUIClient():
         go_button.background_color = Materials.go_button_background_color
 
         def _on_go_button_clicked():
-            path = self.traversal_order[self.region_number]
             self.ros_thread.image_region()
 
         go_button.set_on_clicked(_on_go_button_clicked)
@@ -1265,8 +1265,6 @@ class GUIClient():
         show_clusters = False
         show_viewpoints = False
 
-        self.region_names = []
-        self.cluster_names = []
         region_order = regions_dict['order']
         self.traversal_order = []
 
@@ -1300,8 +1298,9 @@ class GUIClient():
 
                 geometries_dict[region_name]['clusters'] = {}
 
+                i = 0
                 for cluster_id in cluster_order:
-                    cluster_name = f"{region_name}_cluster_{cluster_id}"
+                    cluster_name = f"{region_name}_cluster_{i}"
 
                     cluster_dict = region_dict['clusters'][str(cluster_id)]
                     cluster_point_indices = cluster_dict['points']
@@ -1368,6 +1367,8 @@ class GUIClient():
                             'mesh': viewpoint_mesh
                         }
 
+                    i += 1
+
             # Region View Surface
             if show_viewpoints:
                 region_view_cloud.points = o3d.utility.Vector3dVector(
@@ -1405,6 +1406,9 @@ class GUIClient():
         self.clear_region_view_manifolds()
         self.clear_paths()
 
+        self.region_names = []
+        self.cluster_names = []
+
         # Add Noise Points from region growth
         self.add_geometry(
             "noise_points", noise_point_cloud, Materials.point_cloud_material)
@@ -1441,6 +1445,10 @@ class GUIClient():
             self.show_noise_points(False)
             self.show_fov_clusters(True)
             if show_viewpoints:
+                # Set viewpoints_file parameter in task_planning node
+                self.set_parameter(
+                    'inspection_task_planning', 'viewpoints_file', file_path)
+
                 self.show_viewpoints(True)
                 self.show_region_view_manifolds(True)
                 # Set camera view to fit the mesh
@@ -1477,6 +1485,14 @@ class GUIClient():
         elif region_number < 0 or region_number >= len(self.region_names):
             return
 
+        # Restore last viewpoint mesh to regular material
+        last_cluster_name = f"region_{self.region_number}_cluster_{self.cluster_number}"
+        self.scene_widget.scene.modify_geometry_material(
+            last_cluster_name, Materials.cluster_material)
+        last_viewpoint_name = f"{last_cluster_name}_viewpoint"
+        self.scene_widget.scene.modify_geometry_material(
+            last_viewpoint_name, Materials.viewpoint_material)
+
         # Get last view mesh from the scene and restore to regular material
         region_name = self.region_names[self.region_number]
         self.scene_widget.scene.modify_geometry_material(
@@ -1489,7 +1505,7 @@ class GUIClient():
         self.scene_widget.scene.modify_geometry_material(
             f"{region_name}_view_mesh", Materials.selected_region_view_material)
 
-    def select_cluster(self, cluster_number):
+    def select_viewpoint(self, cluster_number):
         if not self.region_names:
             return
         elif cluster_number < 0 or cluster_number >= len(self.traversal_order[self.region_number]):
@@ -1516,8 +1532,7 @@ class GUIClient():
             viewpoint_name, Materials.selected_viewpoint_material)
 
         # Update slider
-        self.viewpoint_slider.int_value = self.traversal_order[self.region_number].index(
-            int(self.cluster_number))
+        self.viewpoint_slider.int_value = self.cluster_number
 
     def clear_regions(self):
         print("Clearing regions...")

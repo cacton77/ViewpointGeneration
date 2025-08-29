@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
+from math import pi
 import rclpy
 import time
 import copy
 import json
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+
 from rcl_interfaces.msg import SetParametersResult
+from geometry_msgs.msg import PoseStamped
 
 from std_srvs.srv import Trigger, SetBool
 from controller_manager_msgs.srv import SwitchController
 from moveit_msgs.srv import ServoCommandType
+from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 
 
-class TaskPlanningNode(Node):
+class InspectionTaskPlanningNode(Node):
+
+    block_next_param_callback = False
 
     node_name = 'inspection_task_planning'
     viewpoint_generation_node_name = 'viewpoint_generation_node'
     viewpoint_traversal_node_name = 'viewpoint_traversal_node'
+
+    selected_viewpoint = None
 
     def __init__(self):
         super().__init__(self.node_name)
@@ -55,16 +63,20 @@ class TaskPlanningNode(Node):
         }
 
         self.declare_parameters(
-            namespace='task_planning',
+            namespace='',
             parameters=[
                 ('servo_controllers', ['ur5e_forward_position_controller',
                                        'turntable_forward_position_controller']),
                 ('trajectory_controllers', ['inspection_cell_controller']),
                 ('servo_node_name', 'servo_node'),
                 ('controller_manager_name', '/controller_manager'),
-                ('viewpoints_file', '/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-19_14-14-00_viewpoints_optimized2025-08-19_16-17-34.json')
+                ('viewpoints_file', '/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-19_14-14-00_viewpoints_optimized2025-08-19_16-17-34.json'),
+                ('selected_region', 0),
+                ('selected_viewpoint', 0),
             ]
         )
+
+        self.add_on_set_parameters_callback(self.parameter_callback)
 
         self.servo_controllers = self.get_parameter(
             'servo_controllers').get_parameter_value().string_array_value
@@ -74,8 +86,12 @@ class TaskPlanningNode(Node):
             'servo_node_name').get_parameter_value().string_value
         self.controller_manager_name = self.get_parameter(
             'controller_manager_name').get_parameter_value().string_value
-        self.viewpoints = self.load_viewpoints(self.get_parameter(
+
+        self.load_viewpoints(self.get_parameter(
             'viewpoints_file').get_parameter_value().string_value)
+
+        self.select_viewpoint(self.get_parameter('selected_region').get_parameter_value().integer_value,
+                              self.get_parameter('selected_viewpoint').get_parameter_value().integer_value)
 
         services_cb_group = MutuallyExclusiveCallbackGroup()
 
@@ -100,26 +116,143 @@ class TaskPlanningNode(Node):
             self.get_logger().error('Failed to wait for services')
             return
 
+        # Selected viewpoint publisher timer
+        # Viewpoint publisher for RViz2 Visualization
+        self.viewpoint_publisher = self.create_publisher(
+            PoseStamped, f'{self.node_name}/selected_viewpoint', 10)
+
+        self.create_timer(
+            0.1, self.publish_selected_viewpoint)
+
+        self.move_to_pose_stamped_client = self.create_client(
+            MoveToPoseStamped, f'{self.viewpoint_traversal_node_name}/move_to_pose_stamped', callback_group=services_cb_group)
+
         # Activate servo control by default
         self.set_servo_command_type()
         self.start_servo_control()
 
     def load_viewpoints(self, filepath):
-        viewpoints = []
+        self.viewpoints = []
         if filepath == '':
             self.get_logger().warning('Viewpoints file cleared, no viewpoints loaded')
-            return viewpoints
+            return False
 
         with open(filepath, 'r') as f:
             regions_dict = json.load(f)
 
         region_order = regions_dict['order']
 
-        for region_id in region_order:
-            region_dict = regions_dict['regions'][str(region_id)]
-            cluster_order = region_dict['order']
-            for cluster_id in cluster_order:
-                cluster_dict = region_dict['clusters'][str(cluster_id)]
+        try:
+            for region_id in region_order:
+                region_dict = regions_dict['regions'][str(region_id)]
+                cluster_order = region_dict['order']
+                region_viewpoints = []
+                for cluster_id in cluster_order:
+                    cluster_dict = region_dict['clusters'][str(cluster_id)]
+                    if not 'viewpoint' in cluster_dict:
+                        self.get_logger().warning(
+                            f'No viewpoint found in cluster {cluster_id}')
+                        continue
+
+                    position = cluster_dict['viewpoint']['position']
+                    orientation = cluster_dict['viewpoint']['orientation']
+
+                    viewpoint = PoseStamped()
+                    viewpoint.header.frame_id = 'object_frame'
+                    viewpoint.pose.position.x = position[0]
+                    viewpoint.pose.position.y = position[1]
+                    viewpoint.pose.position.z = position[2]
+                    viewpoint.pose.orientation.x = orientation[0]
+                    viewpoint.pose.orientation.y = orientation[1]
+                    viewpoint.pose.orientation.z = orientation[2]
+                    viewpoint.pose.orientation.w = orientation[3]
+
+                    region_viewpoints.append(viewpoint)
+
+                self.viewpoints.append(region_viewpoints)
+        except Exception as e:
+            self.get_logger().error(
+                f'Failed to load viewpoints from {filepath}: {e}')
+            self.viewpoints = []
+            return False
+
+        self.get_logger().info(
+            f'Loaded {len(self.viewpoints)} regions of viewpoints from {filepath}')
+        return True
+
+    def select_viewpoint(self, region_index, viewpoint_index):
+        """
+        Helper function to select a viewpoint based on region and cluster indices.
+        :param region_index: The index of the region to select.
+        :param cluster_index: The index of the cluster to select.
+        :return: None
+        """
+        if self.viewpoints is None:
+            self.get_logger().error('No viewpoints loaded')
+            viewpoint = None
+        if self.viewpoints is None or len(self.viewpoints) == 0:
+            self.get_logger().error('No viewpoints loaded')
+            viewpoint = None
+
+        if region_index < 0 or region_index >= len(self.viewpoints):
+            self.get_logger().error(f'Invalid region index: {region_index}')
+            viewpoint = None
+        elif viewpoint_index < 0 or viewpoint_index >= len(self.viewpoints[region_index]):
+            self.get_logger().error(
+                f'Invalid viewpoint index: {viewpoint_index}')
+            viewpoint = None
+        else:
+            viewpoint = self.viewpoints[region_index][viewpoint_index]
+
+        if viewpoint is None:
+            # Reset the selected region and viewpoint parameters
+            selected_region_param = rclpy.parameter.Parameter(
+                'selected_region',
+                rclpy.Parameter.Type.INTEGER,
+                0
+            )
+            selected_viewpoint_param = rclpy.parameter.Parameter(
+                'selected_viewpoint',
+                rclpy.Parameter.Type.INTEGER,
+                0
+            )
+            self.block_next_param_callback = True
+            self.set_parameters([selected_region_param])
+            self.block_next_param_callback = True
+            self.set_parameters([selected_viewpoint_param])
+
+            self.selected_viewpoint = None
+
+            return False
+        else:
+            selected_region_param = rclpy.parameter.Parameter(
+                'selected_region',
+                rclpy.Parameter.Type.INTEGER,
+                region_index
+            )
+            selected_viewpoint_param = rclpy.parameter.Parameter(
+                'selected_viewpoint',
+                rclpy.Parameter.Type.INTEGER,
+                viewpoint_index
+            )
+            self.block_next_param_callback = True
+            self.set_parameters([selected_region_param])
+            self.block_next_param_callback = True
+            self.set_parameters([selected_viewpoint_param])
+
+            self.selected_viewpoint = viewpoint
+            self.get_logger().info(
+                f'Selected viewpoint {viewpoint_index} in region {region_index}')
+
+            return True
+
+    def publish_selected_viewpoint(self):
+        """
+        Publish the currently selected viewpoint to the viewpoint topic.
+        :return: None
+        """
+        if self.selected_viewpoint is not None:
+            self.viewpoint_publisher.publish(self.selected_viewpoint)
 
     def trigger(self, event):
         if event in self.transitions.get(self.state, {}):
@@ -315,11 +448,28 @@ class TaskPlanningNode(Node):
         :param params: List of parameters that have changed.
         :return: SetParametersResult indicating success or failure.
         """
+        # If we are blocking the next parameter callback, return success
+        if self.block_next_param_callback:
+            self.block_next_param_callback = False
+            return SetParametersResult(successful=True)
+
         for param in params:
+            # Viewpoints file parameter
             if param.name == 'viewpoints_file' and param.type_ == param.Type.STRING:
                 success = self.load_viewpoints(param.value)
                 self.get_logger().info(
                     f'Viewpoints file changed to: {param.value}')
+            # Viewpoint selection parameters
+            elif param.name == 'selected_region':
+                region_index = param.value
+                viewpoint_index = self.get_parameter(
+                    'selected_viewpoint').get_parameter_value().integer_value
+                success = self.select_viewpoint(region_index, viewpoint_index)
+            elif param.name == 'selected_viewpoint':
+                viewpoint_index = param.value
+                region_index = self.get_parameter(
+                    'selected_region').get_parameter_value().integer_value
+                success = self.select_viewpoint(region_index, viewpoint_index)
 
         result = SetParametersResult()
         result.successful = success
@@ -329,7 +479,7 @@ class TaskPlanningNode(Node):
 
 def main():
     rclpy.init()
-    node = TaskPlanningNode()
+    node = InspectionTaskPlanningNode()
     rclpy.spin(node)
 
 

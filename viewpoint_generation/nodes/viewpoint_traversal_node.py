@@ -1,6 +1,7 @@
 import time
 import rclpy
 import json
+import re
 import datetime
 from pprint import pprint
 from scipy.spatial.distance import euclidean
@@ -151,8 +152,11 @@ class ViewpointTraversalNode(Node):
         viewpoint_dict_optimized = self.simple_tsp(viewpoint_dict)
 
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        new_viewpoint_dict_path = request.viewpoint_dict_path.replace(
-            '.json', f'_optimized{timestamp}.json')
+        new_viewpoint_dict_path = re.sub(
+            r'_optimized.*?\.json$',
+            f'_optimized{timestamp}.json',
+            request.viewpoint_dict_path
+        )
 
         with open(new_viewpoint_dict_path, 'w') as f:
             json.dump(viewpoint_dict_optimized, f, indent=4)

@@ -427,13 +427,13 @@ class ROSThread(Node):
             return False
 
     def select_region(self, region_index):
-        self.set_parameter(self.viewpoint_generation_node_name,
-                           'regions.selected_region', region_index)
+        self.set_parameter(self.task_planning_node_name,
+                           'selected_region', region_index)
 
     def select_cluster(self, cluster_index):
         """Select a cluster based on cluster index"""
-        self.set_parameter(self.viewpoint_generation_node_name,
-                           'regions.selected_cluster', cluster_index)
+        self.set_parameter(self.task_planning_node_name,
+                           'selected_viewpoint', cluster_index)
 
     def optimize_traversal(self):
         """Optimize the viewpoint traversal path"""
@@ -544,8 +544,6 @@ class ROSThread(Node):
         try:
             # First, list all parameter names
             for node_name, list_client in self.list_params_clients.items():
-                self.get_logger().info(
-                    f'Getting parameters for {node_name}...')
                 list_request = ListParameters.Request()
                 list_future = list_client.call_async(list_request)
                 list_future.add_done_callback(
@@ -686,8 +684,12 @@ class ROSThread(Node):
 
     def set_parameter(self, node_name, param_name, new_value):
         """Set a parameter on the target node"""
+        print(self.target_nodes)
+        if node_name not in self.target_nodes:
+            self.get_logger().warning(f'Node {node_name} not connected')
+            return False
         if param_name not in self.parameters_dict[node_name]:
-            self.get_logger().error(f'Parameter {param_name} not found')
+            self.get_logger().warning(f'Parameter {param_name} not found')
             return False
 
         try:

@@ -1,10 +1,12 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, RegisterEventHandler
+from launch.event_handlers import OnProcessStart
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterFile
 
 
 def generate_launch_description():
@@ -61,11 +63,20 @@ def generate_launch_description():
 
     task_planning_node = Node(
         package="viewpoint_generation",
-        executable="task_planning_node",
+        executable="inspection_task_planning_node",
         name="inspection_task_planning",
         output="screen",
+        parameters=[
+            ParameterFile(
+                PathJoinSubstitution([
+                    FindPackageShare("viewpoint_generation"),
+                    "config",
+                    LaunchConfiguration("object")
+                ]),
+                allow_substs=True
+            )
+        ]
     )
-
     viewpoint_traversal_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
@@ -109,10 +120,18 @@ def generate_launch_description():
         }.items()
     )
 
+    register_event_handler = RegisterEventHandler(
+        OnProcessStart(
+            target_action=task_planning_node,
+            on_start=[viewpoint_generation_launch]
+        )
+    )
+
     return LaunchDescription(declared_arguments + [
         task_planning_node,
         control_moveit_launch,
-        viewpoint_generation_launch,
+        # viewpoint_generation_launch,
+        register_event_handler,
         viewpoint_traversal_launch,
         admittance_control_launch
     ])
