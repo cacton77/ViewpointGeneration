@@ -244,14 +244,14 @@ class ViewpointGeneration():
     def set_sampling_number_of_points(self, N_points):
         if N_points <= 0:
             return False, 'Number of points must be greater than 0.'
+        elif self.mesh is None:
+            return False, 'No triangle mesh loaded. Cannot set sampling number of points.'
 
-        # Update ppsqmm based on the new number of points
-        if self.mesh is not None:
-            area = self.mesh.get_surface_area()
-            ppsqmm = N_points / (area * 1e6)
-            self.ppsqmm = ppsqmm
-            msg = f'Points per square millimeter set to {self.ppsqmm}.'
-            return True, ppsqmm
+        area = self.mesh.get_surface_area()
+        ppsqmm = N_points / (area * 1e6)
+        self.ppsqmm = ppsqmm
+        msg = f'Points per square millimeter set to {self.ppsqmm}.'
+        return True, ppsqmm
 
     def sample_point_cloud(self):
         # Perform poisson disk sampling on the triangle mesh
