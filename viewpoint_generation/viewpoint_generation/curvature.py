@@ -1,6 +1,5 @@
 import time
 import numpy as np
-import cupy as cp
 import open3d as o3d
 
 
