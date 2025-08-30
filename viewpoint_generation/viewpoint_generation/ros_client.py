@@ -6,6 +6,7 @@ import time
 import yaml
 import threading
 from rclpy.node import Node
+from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.parameter import Parameter
@@ -21,6 +22,7 @@ from geometry_msgs.msg import PoseStamped
 
 from std_srvs.srv import Trigger, SetBool
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped
+from viewpoint_generation_interfaces.action import InspectRegion
 from controller_manager_msgs.srv import SwitchController
 from moveit_msgs.srv import ServoCommandType
 
@@ -35,6 +37,10 @@ class ROSThread(Node):
     target_nodes = [viewpoint_generation_node_name,
                     traversal_node_name,
                     task_planning_node_name]
+
+    flags = {
+        'inspect_region_active': False
+    }
 
     robot_moving = False
     path = []  # Move to task planning node eventually
@@ -174,6 +180,8 @@ class ROSThread(Node):
                                                            f'{self.viewpoint_generation_node_name}/move_to_viewpoint',
                                                            callback_group=services_cb_group
                                                            )
+        self.inspect_region_action_client = ActionClient(
+            self, InspectRegion, self.task_planning_node_name + '/inspect_region')
         self.optimize_traversal_client = self.create_client(Trigger,
                                                             f'{self.viewpoint_generation_node_name}/optimize_traversal',
                                                             callback_group=services_cb_group
@@ -460,10 +468,49 @@ class ROSThread(Node):
     # ============================================================================
 
     def move_to_viewpoint(self):
-        pass
+        future = self.move_to_viewpoint_client.call_async(Trigger.Request())
+        future.add_done_callback(self.move_to_viewpoint_future_callback)
 
-    def image_region(self):
-        pass
+    def move_to_viewpoint_future_callback(self, future):
+        if future.result() is not None:
+            self.get_logger().info('Move to viewpoint triggered successfully')
+            self.get_all_parameters()
+            return True
+        else:
+            self.get_logger().error('Failed to trigger move to viewpoint')
+            return False
+
+    def inspect_region(self):
+        self.flags['inspect_region_active'] = True
+
+        future = self.inspect_region_action_client.send_goal_async(
+            InspectRegion.Goal(),
+            feedback_callback=self.inspect_region_feedback_callback)
+        future.add_done_callback(self.inspect_region_goal_response_callback)
+
+    def inspect_region_goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error('Inspect region goal rejected')
+            return
+
+        self.get_logger().info('Inspect region goal accepted')
+
+        self._get_result_future = goal_handle.get_result_async()
+        self._get_result_future.add_done_callback(
+            self.inspect_region_get_result_callback)
+
+    def inspect_region_get_result_callback(self, future):
+        if future.result() is not None:
+            self.get_logger().info('Inspect region completed successfully')
+            self.get_all_parameters()
+        else:
+            self.get_logger().error('Failed to trigger inspect region')
+
+    def inspect_region_feedback_callback(self, feedback_msg):
+        feedback = feedback_msg.feedback
+        self.get_logger().info(f'Inspect region feedback: {feedback.message}')
+        self.get_all_parameters()
 
     # ============================================================================
     # PARAMETER MANAGEMENT
@@ -684,7 +731,6 @@ class ROSThread(Node):
 
     def set_parameter(self, node_name, param_name, new_value):
         """Set a parameter on the target node"""
-        print(self.target_nodes)
         if node_name not in self.target_nodes:
             self.get_logger().warning(f'Node {node_name} not connected')
             return False

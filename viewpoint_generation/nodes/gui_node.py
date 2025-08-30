@@ -11,7 +11,7 @@ import open3d.visualization.gui as gui
 from pprint import pprint
 from matplotlib import colormaps
 
-from viewpoint_generation.threads.ros_client import ROSThread
+from viewpoint_generation.ros_client import ROSThread
 from viewpoint_generation.assets.materials import Materials
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -699,7 +699,7 @@ class GUIClient():
         # Create the content recursively
         content = self.create_nested_content(
             node_name, node_name, tab_data, em)
-        content.background_color = Materials.panel_color
+        content.background_color = Materials.content_color
         scroll_area.add_child(content)
 
         return scroll_area
@@ -753,7 +753,6 @@ class GUIClient():
         """Recursively create nested content for parameters"""
         container = gui.Vert(
             0.25 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        container.background_color = Materials.panel_color
 
         # If this is a leaf parameter (has 'name', 'type', 'value')
         if isinstance(data, dict) and 'name' in data and 'type' in data and 'value' in data:
@@ -1082,7 +1081,7 @@ class GUIClient():
         go_button.background_color = Materials.go_button_background_color
 
         def _on_go_button_clicked():
-            self.ros_thread.image_region()
+            self.ros_thread.inspect_region()
 
         go_button.set_on_clicked(_on_go_button_clicked)
 

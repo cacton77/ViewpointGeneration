@@ -1,5 +1,8 @@
-string dummy
+# Request
 ---
-string dummy
+# Result
+bool success
+string message
 ---
-string dummy
+# Feedback
+string message

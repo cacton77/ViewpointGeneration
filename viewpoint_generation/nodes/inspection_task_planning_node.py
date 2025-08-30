@@ -5,6 +5,7 @@ import time
 import copy
 import json
 from rclpy.node import Node
+from rclpy.action import ActionServer
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 
 from rcl_interfaces.msg import SetParametersResult
@@ -14,6 +15,7 @@ from std_srvs.srv import Trigger, SetBool
 from controller_manager_msgs.srv import SwitchController
 from moveit_msgs.srv import ServoCommandType
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped
+from viewpoint_generation_interfaces.action import InspectRegion
 
 
 class InspectionTaskPlanningNode(Node):
@@ -93,6 +95,8 @@ class InspectionTaskPlanningNode(Node):
         self.select_viewpoint(self.get_parameter('selected_region').get_parameter_value().integer_value,
                               self.get_parameter('selected_viewpoint').get_parameter_value().integer_value)
 
+        action_callback_group = MutuallyExclusiveCallbackGroup()
+        timer_callback_group = ReentrantCallbackGroup()
         services_cb_group = MutuallyExclusiveCallbackGroup()
 
         # Switch controller client
@@ -119,13 +123,29 @@ class InspectionTaskPlanningNode(Node):
         # Selected viewpoint publisher timer
         # Viewpoint publisher for RViz2 Visualization
         self.viewpoint_publisher = self.create_publisher(
-            PoseStamped, f'{self.node_name}/selected_viewpoint', 10)
+            PoseStamped,
+            f'{self.node_name}/selected_viewpoint',
+            10
+        )
 
         self.create_timer(
-            0.1, self.publish_selected_viewpoint)
+            0.1,
+            self.publish_selected_viewpoint,
+            callback_group=timer_callback_group
+        )
 
+        self.create_service(
+            Trigger, f'{self.node_name}/move_to_viewpoint', self.trigger_move_to_viewpoint_callback)
         self.move_to_pose_stamped_client = self.create_client(
             MoveToPoseStamped, f'{self.viewpoint_traversal_node_name}/move_to_pose_stamped', callback_group=services_cb_group)
+
+        self.inspect_region_action_server = ActionServer(
+            self,
+            InspectRegion,
+            f'{self.node_name}/inspect_region',
+            self.execute_inspect_region_callback,
+            callback_group=action_callback_group
+        )
 
         # Activate servo control by default
         self.set_servo_command_type()
@@ -382,6 +402,10 @@ class InspectionTaskPlanningNode(Node):
         if resp.ok:
             self.trigger('start_trajectory_control')
 
+    def trigger_move_to_viewpoint_callback(self, request, response):
+        self.move_to_viewpoint()
+        return response
+
     def move_to_viewpoint(self):
         """Move the robot to the selected viewpoint"""
         self.stop_servo_control()
@@ -421,6 +445,24 @@ class InspectionTaskPlanningNode(Node):
         """Move to all viewpoints in region"""
         self.path = copy.deepcopy(path)
         self.trigger('start_trajectory_control')
+
+    def execute_inspect_region_callback(self, goal_handle):
+        self.get_logger().info('Executing inspect region...')
+        feedback_msg = InspectRegion.Feedback()
+
+        selected_region = self.get_parameter(
+            'selected_region').get_parameter_value().integer_value
+        for i in range(len(self.viewpoints[selected_region])):
+            self.select_viewpoint(selected_region, i)
+            feedback_msg.message = f'Inspecting viewpoint {i} in region {selected_region}'
+            goal_handle.publish_feedback(feedback_msg)
+            time.sleep(1)
+
+        goal_handle.succeed()
+
+        result = InspectRegion.Result()
+        result.success = True
+        return result
 
     def process_path(self):
         if not self.path:
