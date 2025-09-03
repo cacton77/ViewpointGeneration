@@ -218,17 +218,11 @@ class ViewpointTraversalNode(Node):
         self.planning_component.set_goal_state(
             pose_stamped_msg=request.pose_goal, pose_link="eoat_camera_link")
 
-        print("DEBUG: Goal state set to the requested pose")
-
         # Log the request
         self.get_logger().info(f"Received request: {request}")
 
-        # Log the request
-        self.get_logger().info(f"Received request: {request}")
-        print("DEBUG: Request pose:", request.pose_goal)
         # Set the robot state to the current state
         robot_state.set_to_default_values()
-        print("DEBUG: Robot state set to default values")
         # Plan and execute
         multi_pipeline_plan_request_params = MultiPipelinePlanRequestParameters(
             self.robot, ["ompl_rrtc"]

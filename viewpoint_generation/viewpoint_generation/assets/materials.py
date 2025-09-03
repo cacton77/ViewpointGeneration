@@ -20,7 +20,7 @@ class Materials:
     text_edit_background_color = gui.Color(0.5, 0.5, 0.5, 1.0)
 
     mesh_material = rendering.MaterialRecord()
-    mesh_material.shader = "defaultUnlit"
+    mesh_material.shader = "defaultLit"
     mesh_material.base_color = [1.0, 1.0, 1.0, 1.0]
 
     bounding_box_material = rendering.MaterialRecord()

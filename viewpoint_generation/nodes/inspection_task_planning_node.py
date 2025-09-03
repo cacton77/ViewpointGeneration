@@ -4,9 +4,13 @@ import rclpy
 import time
 import copy
 import json
+from enum import Enum
+from typing import Dict, Callable, Any
+from dataclasses import dataclass
 from rclpy.node import Node
 from rclpy.action import ActionServer
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 
 from rcl_interfaces.msg import SetParametersResult
 from geometry_msgs.msg import PoseStamped
@@ -18,13 +22,36 @@ from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 from viewpoint_generation_interfaces.action import InspectRegion
 
 
+class State(Enum):
+    INITIALIZING = 0
+    ACTIVATING_SERVO_CONTROL = 1
+    IDLE = 2
+    DEACTIVATING_SERVO_CONTROL = 3
+    TRAJECTORY_CONTROL = 4
+    SHUTDOWN = 5
+
+
+@dataclass
+class FLAGS:
+    move_to_viewpoint = False
+    move_to_viewpoint_request_sent = False
+    activate_servo_control_request_sent = False
+    servo_control_active = False
+    deactivate_servo_control_request_sent = False
+    activate_trajectory_control_request_sent = False
+    trajectory_control_active = False
+    deactivate_trajectory_control_request_sent = False
+    verbose = True
+    error = False
+
+
 class InspectionTaskPlanningNode(Node):
 
     block_next_param_callback = False
 
     node_name = 'inspection_task_planning'
-    viewpoint_generation_node_name = 'viewpoint_generation_node'
-    viewpoint_traversal_node_name = 'viewpoint_traversal_node'
+    viewpoint_generation_node_name = 'viewpoint_generation'
+    viewpoint_traversal_node_name = 'viewpoint_traversal'
 
     selected_viewpoint = None
 
@@ -32,36 +59,25 @@ class InspectionTaskPlanningNode(Node):
         super().__init__(self.node_name)
         self.get_logger().info('Task Planning Node Initialized')
 
-        self.state = 'idle'
+        self.flags = FLAGS()
+        self.current_state = State.INITIALIZING
 
-        # Example of state transitions
-        self.transitions = {
-            'idle': {
-                'start_servo_control': 'servo_control',
-                'start_trajectory_control': 'trajectory_control',
-            },
-            'servo_control': {
-                'pause_servo_control': 'idle',
-                'start_trajectory_control': 'trajectory_control',
-            },
-            'trajectory_control': {
-                'execute_trajectory': 'executing_trajectory',
-                'start_servo_control': 'servo_control'
-            },
-            'executing_trajectory': {
-                'trajectory_done': 'trajectory_control',
-            },
-            'active': {
-                'pause': 'paused',
-                'stop': 'stopped'
-            },
-            'paused': {
-                'resume': 'active',
-                'stop': 'stopped'
-            },
-            'stopped': {
-                'reset': 'idle'
-            }
+        self.state_functions: Dict[State, Callable] = {
+            State.INITIALIZING: self._handle_initializing,
+            State.ACTIVATING_SERVO_CONTROL: self._handle_activating_servo_control,
+            State.IDLE: self._handle_idle,
+            State.DEACTIVATING_SERVO_CONTROL: self._handle_deactivating_servo_control,
+            State.TRAJECTORY_CONTROL: self._handle_trajectory_control,
+            State.SHUTDOWN: self._handle_shutdown,
+        }
+
+        self.valid_transitions = {
+            State.INITIALIZING: [State.ACTIVATING_SERVO_CONTROL],
+            State.ACTIVATING_SERVO_CONTROL: [State.IDLE, State.SHUTDOWN],
+            State.IDLE: [State.DEACTIVATING_SERVO_CONTROL],
+            State.DEACTIVATING_SERVO_CONTROL: [State.TRAJECTORY_CONTROL],
+            State.TRAJECTORY_CONTROL: [State.ACTIVATING_SERVO_CONTROL],
+            State.SHUTDOWN: []
         }
 
         self.declare_parameters(
@@ -95,9 +111,9 @@ class InspectionTaskPlanningNode(Node):
         self.select_viewpoint(self.get_parameter('selected_region').get_parameter_value().integer_value,
                               self.get_parameter('selected_viewpoint').get_parameter_value().integer_value)
 
-        action_callback_group = MutuallyExclusiveCallbackGroup()
+        action_callback_group = ReentrantCallbackGroup()
         timer_callback_group = ReentrantCallbackGroup()
-        services_cb_group = MutuallyExclusiveCallbackGroup()
+        services_cb_group = ReentrantCallbackGroup()
 
         # Switch controller client
         self.controller_manager_client = self.create_client(
@@ -147,9 +163,16 @@ class InspectionTaskPlanningNode(Node):
             callback_group=action_callback_group
         )
 
-        # Activate servo control by default
-        self.set_servo_command_type()
-        self.start_servo_control()
+        # Update timer
+        self.create_timer(
+            0.1,
+            self.update,
+            callback_group=timer_callback_group
+        )
+
+    # ============================================================================
+    # INITIALIZATION AND PARAMETER HANDLING
+    # ============================================================================
 
     def load_viewpoints(self, filepath):
         self.viewpoints = []
@@ -199,6 +222,27 @@ class InspectionTaskPlanningNode(Node):
         self.get_logger().info(
             f'Loaded {len(self.viewpoints)} regions of viewpoints from {filepath}')
         return True
+
+    def set_servo_command_type(self, command_type='TWIST'):
+        req = ServoCommandType.Request()
+
+        if command_type == 'JOINT_JOG':
+            req.command_type = ServoCommandType.Request.JOINT_JOG
+        elif command_type == 'TWIST':
+            req.command_type = ServoCommandType.Request.TWIST
+
+        self.get_logger().info(
+            f'Setting servo command type to {command_type}...')
+        future = self.servo_command_type_client.call_async(req)
+        future.add_done_callback(self.set_servo_command_type_callback)
+
+    def set_servo_command_type_callback(self, future):
+        try:
+            resp = future.result()
+            self.get_logger().info('Set servo command type response: %s' % resp.success)
+        except Exception as e:
+            self.get_logger().info(
+                'Service call failed %r' % (e,))
 
     def select_viewpoint(self, region_index, viewpoint_index):
         """
@@ -274,18 +318,6 @@ class InspectionTaskPlanningNode(Node):
         if self.selected_viewpoint is not None:
             self.viewpoint_publisher.publish(self.selected_viewpoint)
 
-    def trigger(self, event):
-        if event in self.transitions.get(self.state, {}):
-            next_state = self.transitions[self.state][event]
-            self.get_logger().info(
-                f'State changed from: {self.state} to {next_state} by event {event}')
-            self.state = next_state
-            return True
-        else:
-            self.get_logger().warning(
-                f'Invalid event "{event}" for current state "{self.state}"')
-            return False
-
     def wait_for_services(self):
         if not self.controller_manager_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().error(
@@ -302,18 +334,148 @@ class InspectionTaskPlanningNode(Node):
         self.get_logger().info('All required services are available')
         return True
 
+    # ============================================================================
+    # STATE HANDLERS
+    # ============================================================================
+
+    def _handle_initializing(self):
+        self.get_logger().info('Handling INITIALIZING state')
+        self.transition_to(State.ACTIVATING_SERVO_CONTROL)
+
+    # ACTIVATING SERVO CONTROL
+    def _handle_activating_servo_control(self):
+        if self.flags.verbose:
+            self.get_logger().info('Handling ACTIVATING_SERVO_CONTROL state')
+
+        if self.flags.servo_control_active:
+            self.transition_to(State.IDLE)
+        elif not self.flags.activate_servo_control_request_sent:
+            self.start_servo_control()
+            self.flags.activate_servo_control_request_sent = True
+
+    # IDLE
+    def _handle_idle(self):
+        if self.flags.verbose:
+            self.get_logger().info('Handling IDLE state')
+
+        if self.flags.move_to_viewpoint:
+            self.transition_to(State.DEACTIVATING_SERVO_CONTROL)
+
+    # DEACTIVATING SERVO CONTROL
+    def _handle_deactivating_servo_control(self):
+        if self.flags.verbose:
+            self.get_logger().info('Handling DEACTIVATING_SERVO_CONTROL state')
+
+        if self.flags.trajectory_control_active:
+            self.transition_to(State.TRAJECTORY_CONTROL)
+        elif not self.flags.deactivate_servo_control_request_sent:
+            self.stop_servo_control()
+            self.flags.deactivate_servo_control_request_sent = True
+
+    # TRAJECTORY CONTROL
+
+    def _handle_trajectory_control(self):
+        if self.flags.verbose:
+            self.get_logger().info('Handling TRAJECTORY_CONTROL state')
+
+        if self.flags.move_to_viewpoint and not self.flags.move_to_viewpoint_request_sent:
+            self.move_to_viewpoint()
+            self.flags.move_to_viewpoint_request_sent = True
+        elif not self.flags.move_to_viewpoint:
+            self.transition_to(State.ACTIVATING_SERVO_CONTROL)
+
+    # SHUTDOWN
+    def _handle_shutdown(self):
+        if self.flags.verbose:
+            self.get_logger().info('Handling SHUTDOWN state')
+
+        self.stop_servo_control()
+        self.get_logger().info('Shutting down node...')
+        rclpy.shutdown()
+
+    def transition_to(self, new_state: State) -> bool:
+        """Attempt to transition to a new state"""
+        if new_state in self.valid_transitions[self.current_state]:
+            old_state = self.current_state
+            self.current_state = new_state
+            if self.flags.verbose:
+                self.get_logger().info(
+                    f"State transition: {old_state.value} -> {new_state.value}")
+            return True
+        else:
+            if self.flags.verbose:
+                self.get_logger().warning(
+                    f"Invalid transition: {self.current_state.value} -> {new_state.value}")
+            return False
+
+    def update(self):
+        if self.current_state in self.state_functions:
+            self.state_functions[self.current_state]()
+
+    # ============================================================================
+    # MOVE TO VIEWPOINT
+    # ============================================================================
+
+    def trigger_move_to_viewpoint_callback(self, request, response):
+        self.flags.move_to_viewpoint = True
+        return response
+
+    def move_to_viewpoint(self):
+        """Move the robot to the selected viewpoint"""
+        request = MoveToPoseStamped.Request()
+
+        if self.selected_viewpoint is None:
+            self.get_logger().warning('No viewpoint selected, cannot move to viewpoint')
+
+            self.flags.move_to_viewpoint = False
+            self.flags.move_to_viewpoint_request_sent = False
+
+            return False
+
+        self.get_logger().info('Moving to selected viewpoint...')
+
+        request.pose_goal = copy.deepcopy(self.selected_viewpoint)
+
+        future = self.move_to_pose_stamped_client.call_async(request)
+        future.add_done_callback(self.move_to_pose_stamped_future_callback)
+
+        return True
+
+    def move_to_pose_stamped_future_callback(self, future):
+        """Callback for the move to pose stamped service future"""
+        if future.result() is not None:
+            if future.result().success:
+                self.get_logger().info('Moved to pose stamped successfully')
+            else:
+                self.get_logger().error(
+                    f'Failed to move to pose stamped: {future.result().message}')
+
+            self.flags.move_to_viewpoint = False
+            self.flags.move_to_viewpoint_request_sent = False
+
+        else:
+            self.get_logger().error('Failed to call move_to_pose_stamped service')
+
+    # ============================================================================
+    # CONTROLLER SWITCHING
+    # ============================================================================
+
     def start_servo_control(self):
+        self.get_logger().info('Starting servo control...')
+        self.pause_servo(pause=False)
         self.activate_forward_position_controller()
 
     def stop_servo_control(self):
+        self.get_logger().info('Stopping servo control...')
         self.pause_servo(pause=True)
         self.activate_joint_trajectory_controller()
 
     def activate_forward_position_controller(self):
-        req = SwitchController.Request()
-        req.start_controllers = self.servo_controllers
-        req.stop_controllers = self.trajectory_controllers
         self.get_logger().info('Activating forward position controller...')
+
+        req = SwitchController.Request()
+        req.activate_controllers = self.servo_controllers
+        req.deactivate_controllers = self.trajectory_controllers
         future = self.controller_manager_client.call_async(req)
         future.add_done_callback(
             self.activate_forward_position_controller_callback)
@@ -322,36 +484,56 @@ class InspectionTaskPlanningNode(Node):
         try:
             resp = future.result()
             self.get_logger().info('Activate forward position controller response: %s' % resp.ok)
-            self.trigger('start_servo_control')
+
+            if resp.ok:
+                self.flags.servo_control_active = True
+                self.flags.trajectory_control_active = False
+                self.flags.activate_servo_control_request_sent = False
+            else:
+                self.flags.servo_control_active = False
+                self.flags.trajectory_control_active = False
+                self.flags.activate_servo_control_request_sent = False
+                self.flags.error = True
 
         except Exception as e:
             self.get_logger().info(
                 'Service call failed %r' % (e,))
-            self.trigger('idle')
 
-        if resp.ok:
-            self.pause_servo(pause=False)
+            self.flags.servo_control_active = False
+            self.flags.error = True
 
-    def set_servo_command_type(self, command_type='TWIST'):
-        req = ServoCommandType.Request()
+    def activate_joint_trajectory_controller(self):
+        self.get_logger().info('Activating joint trajectory controller...')
 
-        if command_type == 'JOINT_JOG':
-            req.command_type = ServoCommandType.Request.JOINT_JOG
-        elif command_type == 'TWIST':
-            req.command_type = ServoCommandType.Request.TWIST
+        req = SwitchController.Request()
+        req.activate_controllers = self.trajectory_controllers
+        req.deactivate_controllers = self.servo_controllers
 
-        self.get_logger().info(
-            f'Setting servo command type to {command_type}...')
-        future = self.servo_command_type_client.call_async(req)
-        future.add_done_callback(self.set_servo_command_type_callback)
+        future = self.controller_manager_client.call_async(req)
+        future.add_done_callback(
+            self.activate_joint_trajectory_controller_callback)
 
-    def set_servo_command_type_callback(self, future):
+    def activate_joint_trajectory_controller_callback(self, future):
         try:
             resp = future.result()
-            self.get_logger().info('Set servo command type response: %s' % resp.success)
+            self.get_logger().info('Activate joint trajectory controller response: %s' % resp.ok)
+
+            if resp.ok:
+                self.flags.servo_control_active = False
+                self.flags.trajectory_control_active = True
+                self.flags.deactivate_servo_control_request_sent = False
+            else:
+                self.flags.servo_control_active = False
+                self.flags.trajectory_control_active = False
+                self.flags.deactivate_servo_control_request_sent = False
+                self.flags.error = True
+
         except Exception as e:
             self.get_logger().info(
                 'Service call failed %r' % (e,))
+
+            self.flags.trajectory_control_active = False
+            self.flags.error = True
 
     def pause_servo(self, pause=True):
         # Call /servo_node/pause_servo service
@@ -375,76 +557,9 @@ class InspectionTaskPlanningNode(Node):
             self.get_logger().info(
                 'Service call failed %r' % (e,))
 
-        # self.servo_state = ON
-        # self.state = IDLE
-
-    def activate_joint_trajectory_controller(self):
-        # self.state = STOPPING_SERVO
-
-        req = SwitchController.Request()
-        req.start_controllers = self.trajectory_controllers
-        req.stop_controllers = self.servo_controllers
-        self.get_logger().info('Activating joint trajectory controller...')
-
-        future = self.controller_manager_client.call_async(req)
-        future.add_done_callback(
-            self.activate_joint_trajectory_controller_callback)
-
-    def activate_joint_trajectory_controller_callback(self, future):
-        try:
-            resp = future.result()
-            self.get_logger().info('Activate joint trajectory controller response: %s' % resp.ok)
-        except Exception as e:
-            self.get_logger().info(
-                'Service call failed %r' % (e,))
-            self.trigger('idle')
-
-        if resp.ok:
-            self.trigger('start_trajectory_control')
-
-    def trigger_move_to_viewpoint_callback(self, request, response):
-        self.move_to_viewpoint()
-        return response
-
-    def move_to_viewpoint(self):
-        """Move the robot to the selected viewpoint"""
-        self.stop_servo_control()
-        while not self.state == 'trajectory_control':
-            self.get_logger().info('Waiting for trajectory control to be activated...')
-            time.sleep(0.1)
-
-        self.trigger('execute_trajectory')
-
-        request = Trigger.Request()
-        future = self.move_to_viewpoint_client.call_async(request)
-        future.add_done_callback(self.move_to_viewpoint_future_callback)
-
-    def move_to_viewpoint_future_callback(self, future):
-        """Callback for the move to viewpoint service future"""
-        if future.result() is not None:
-            if future.result().success:
-                self.get_logger().info('Moved to viewpoint triggered successfully')
-            else:
-                self.get_logger().error(
-                    f'Failed to move to viewpoint: {future.result().message}')
-        else:
-            self.get_logger().error('Failed to call move_to_viewpoint service')
-
-    def move_to_viewpoint_done_callback(self, msg):
-        """Callback for the move to viewpoint done topic"""
-
-        self.trigger('trajectory_done')
-        self.start_servo_control()
-
-        if msg.data:
-            self.get_logger().info('Move to viewpoint completed successfully')
-        else:
-            self.get_logger().error('Move to viewpoint failed')
-
-    def image_selected_region(self, path):
-        """Move to all viewpoints in region"""
-        self.path = copy.deepcopy(path)
-        self.trigger('start_trajectory_control')
+    # ============================================================================
+    # INSPECT REGION ACTION
+    # ============================================================================
 
     def execute_inspect_region_callback(self, goal_handle):
         self.get_logger().info('Executing inspect region...')
@@ -452,38 +567,17 @@ class InspectionTaskPlanningNode(Node):
 
         selected_region = self.get_parameter(
             'selected_region').get_parameter_value().integer_value
-        for i in range(len(self.viewpoints[selected_region])):
+        for i in range(len(self.viewpoints[selected_region])-1):
             self.select_viewpoint(selected_region, i)
-            feedback_msg.message = f'Inspecting viewpoint {i} in region {selected_region}'
-            goal_handle.publish_feedback(feedback_msg)
-            time.sleep(1)
+            self.flags.move_to_viewpoint = True
+            while self.flags.move_to_viewpoint:
+                time.sleep(5)
 
         goal_handle.succeed()
 
         result = InspectRegion.Result()
         result.success = True
         return result
-
-    def process_path(self):
-        if not self.path:
-            return
-        elif self.state == 'executing_trajectory':
-            return
-        elif self.state != 'trajectory_control':
-            self.get_logger().info(
-                'Waiting for trajectory control to be activated before processing path...')
-            self.stop_servo_control()
-            return
-        else:
-            viewpoint_index = self.path.pop(0)
-            self.select_cluster(viewpoint_index)
-            # self.move_to_viewpoint()
-            self.trigger('execute_trajectory')
-            self.move_to_viewpoint_client.call_async(Trigger.Request())
-            if not self.path:
-                self.get_logger().info('All viewpoints in region processed')
-                self.select_cluster(0)
-                self.start_servo_control()
 
     def parameter_callback(self, params):
         """ Callback for parameter changes.
@@ -521,8 +615,19 @@ class InspectionTaskPlanningNode(Node):
 
 def main():
     rclpy.init()
+
+    executor = MultiThreadedExecutor(num_threads=4)
+
     node = InspectionTaskPlanningNode()
-    rclpy.spin(node)
+    executor.add_node(node)
+
+    try:
+        executor.spin()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

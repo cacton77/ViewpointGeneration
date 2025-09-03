@@ -16,6 +16,7 @@ from viewpoint_generation.assets.materials import Materials
 
 sys.stdout.reconfigure(line_buffering=True)
 isMacOS = sys.platform == 'darwin'
+# o3d.visualization.webrtc_server.enable_webrtc()
 
 
 class GUIClient():

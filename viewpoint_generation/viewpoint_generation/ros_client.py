@@ -177,7 +177,7 @@ class ROSThread(Node):
 
         # Create passthrough client for viewpoint traversal service
         self.move_to_viewpoint_client = self.create_client(Trigger,
-                                                           f'{self.viewpoint_generation_node_name}/move_to_viewpoint',
+                                                           f'{self.task_planning_node_name}/move_to_viewpoint',
                                                            callback_group=services_cb_group
                                                            )
         self.inspect_region_action_client = ActionClient(
