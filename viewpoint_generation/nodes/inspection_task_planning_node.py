@@ -12,6 +12,7 @@ from rclpy.action import ActionServer
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
+from std_msgs.msg import Bool
 from rcl_interfaces.msg import SetParametersResult
 from geometry_msgs.msg import PoseStamped
 
@@ -42,6 +43,7 @@ class FLAGS:
     trajectory_control_active = False
     deactivate_trajectory_control_request_sent = False
     verbose = True
+    turntable_moving = False
     error = False
 
 
@@ -111,6 +113,8 @@ class InspectionTaskPlanningNode(Node):
         self.select_viewpoint(self.get_parameter('selected_region').get_parameter_value().integer_value,
                               self.get_parameter('selected_viewpoint').get_parameter_value().integer_value)
 
+        # Callback groups
+        subscriber_callback_group = ReentrantCallbackGroup()
         action_callback_group = ReentrantCallbackGroup()
         timer_callback_group = ReentrantCallbackGroup()
         services_cb_group = ReentrantCallbackGroup()
@@ -149,6 +153,10 @@ class InspectionTaskPlanningNode(Node):
             self.publish_selected_viewpoint,
             callback_group=timer_callback_group
         )
+
+        # Turntable status monitor TODO: Implement PID control for turntable to improve response
+        self.create_subscription(
+            Bool, '/turntable/status', self.turntable_status_callback, 10)  # , callback_group=subscriber_callback_group)
 
         self.create_service(
             Trigger, f'{self.node_name}/move_to_viewpoint', self.trigger_move_to_viewpoint_callback)
@@ -318,6 +326,10 @@ class InspectionTaskPlanningNode(Node):
         if self.selected_viewpoint is not None:
             self.viewpoint_publisher.publish(self.selected_viewpoint)
 
+    def turntable_status_callback(self, msg):
+        self.get_logger().info(f'Turntable moving: {msg.data}')
+        self.flags.turntable_moving = msg.data
+
     def wait_for_services(self):
         if not self.controller_manager_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().error(
@@ -381,7 +393,7 @@ class InspectionTaskPlanningNode(Node):
         if self.flags.move_to_viewpoint and not self.flags.move_to_viewpoint_request_sent:
             self.move_to_viewpoint()
             self.flags.move_to_viewpoint_request_sent = True
-        elif not self.flags.move_to_viewpoint:
+        elif not self.flags.move_to_viewpoint and not self.flags.turntable_moving:
             self.transition_to(State.ACTIVATING_SERVO_CONTROL)
 
     # SHUTDOWN
@@ -571,7 +583,7 @@ class InspectionTaskPlanningNode(Node):
             self.select_viewpoint(selected_region, i)
             self.flags.move_to_viewpoint = True
             while self.flags.move_to_viewpoint:
-                time.sleep(5)
+                time.sleep(0.1)
 
         goal_handle.succeed()
 
