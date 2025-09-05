@@ -1,0 +1,9 @@
+# config/camera_params.yaml
+http_image_publisher:
+  ros__parameters:
+    stream_url: "http://192.168.1.242:5000/live_view_feed"
+    topic_name: "camera/image_raw"
+    frame_id: "camera_frame"
+    publish_rate: 30.0
+    connection_timeout: 5.0
+    retry_delay: 1.0

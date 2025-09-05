@@ -1,0 +1,34 @@
+{
+    "python.autoComplete.extraPaths": [
+        "/home/col/Inspection/base_ws/install/inspection_srvs/local/lib/python3.10/dist-packages",
+        "/home/col/Inspection/base_ws/install/inspection_msgs/local/lib/python3.10/dist-packages",
+        "/home/col/Inspection/base_ws/install/gphoto2_srvs/local/lib/python3.10/dist-packages",
+        "/home/col/Inspection/dev_ws/install/sdformat_tools/lib/python3.10/site-packages",
+        "/home/col/Inspection/dev_ws/install/rpi_ws281x_ros/lib/python3.10/site-packages",
+        "/home/col/Inspection/dev_ws/install/inspection_viewpoints/lib/python3.10/site-packages",
+        "/home/col/Inspection/dev_ws/install/inspection_teleop/lib/python3.10/site-packages",
+        "/home/col/Inspection/dev_ws/install/inspection_srvs/local/lib/python3.10/dist-packages",
+        "/home/col/Inspection/dev_ws/install/inspection_msgs/local/lib/python3.10/dist-packages",
+        "/home/col/Inspection/dev_ws/install/inspection_monitor/lib/python3.10/site-packages",
+        "/home/col/Inspection/dev_ws/install/inspection_gui/lib/python3.10/site-packages",
+        "/home/col/Inspection/dev_ws/install/gphoto2_monitor/local/lib/python3.10/dist-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/col/Inspection/base_ws/install/inspection_srvs/local/lib/python3.10/dist-packages",
+        "/home/col/Inspection/base_ws/install/inspection_msgs/local/lib/python3.10/dist-packages",
+        "/home/col/Inspection/base_ws/install/gphoto2_srvs/local/lib/python3.10/dist-packages",
+        "/home/col/Inspection/dev_ws/install/sdformat_tools/lib/python3.10/site-packages",
+        "/home/col/Inspection/dev_ws/install/rpi_ws281x_ros/lib/python3.10/site-packages",
+        "/home/col/Inspection/dev_ws/install/inspection_viewpoints/lib/python3.10/site-packages",
+        "/home/col/Inspection/dev_ws/install/inspection_teleop/lib/python3.10/site-packages",
+        "/home/col/Inspection/dev_ws/install/inspection_srvs/local/lib/python3.10/dist-packages",
+        "/home/col/Inspection/dev_ws/install/inspection_msgs/local/lib/python3.10/dist-packages",
+        "/home/col/Inspection/dev_ws/install/inspection_monitor/lib/python3.10/site-packages",
+        "/home/col/Inspection/dev_ws/install/inspection_gui/lib/python3.10/site-packages",
+        "/home/col/Inspection/dev_ws/install/gphoto2_monitor/local/lib/python3.10/dist-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ]
+}
