@@ -11,10 +11,11 @@ def generate_launch_description():
             executable='http_image_publisher',
             name='camera_publisher',
             parameters=[{
-                'stream_url': 'http://192.168.1.242:5000/video_feed',
+                'stream_url': 'http://192.168.0.92:5000/video_feed',
                 'base_topic': 'camera',
-                'publish_rate': 15.0
-            }]
+                'publish_rate': 30.0
+            }],
+            # arguments=['--ros-args', '--log-level', 'DEBUG']
         ),
 
         # Compressed republisher
