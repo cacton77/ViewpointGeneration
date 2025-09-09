@@ -39,6 +39,16 @@ def generate_launch_description():
                               description="Configuration file for admittance control."),
     ]
 
+    camera_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare("http_image_publisher"),
+                "launch",
+                "http_image_publisher.launch.py"
+            ])
+        ]),
+    )
+
     control_moveit_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
@@ -75,7 +85,7 @@ def generate_launch_description():
                 ]),
                 allow_substs=True
             )
-        ]
+        ],
     )
     viewpoint_traversal_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -128,6 +138,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription(declared_arguments + [
+        camera_launch,
         task_planning_node,
         control_moveit_launch,
         # viewpoint_generation_launch,

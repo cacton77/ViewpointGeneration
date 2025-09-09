@@ -11,6 +11,7 @@ from rclpy.node import Node
 from rclpy.action import ActionServer
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from std_msgs.msg import Bool
 from rcl_interfaces.msg import SetParametersResult
@@ -42,7 +43,7 @@ class FLAGS:
     activate_trajectory_control_request_sent = False
     trajectory_control_active = False
     deactivate_trajectory_control_request_sent = False
-    verbose = True
+    verbose = False
     turntable_moving = False
     error = False
 
@@ -117,6 +118,7 @@ class InspectionTaskPlanningNode(Node):
         subscriber_callback_group = ReentrantCallbackGroup()
         action_callback_group = ReentrantCallbackGroup()
         timer_callback_group = ReentrantCallbackGroup()
+        viewpoint_callback_group = ReentrantCallbackGroup()
         services_cb_group = ReentrantCallbackGroup()
 
         # Switch controller client
@@ -151,15 +153,19 @@ class InspectionTaskPlanningNode(Node):
         self.create_timer(
             0.1,
             self.publish_selected_viewpoint,
-            callback_group=timer_callback_group
+            callback_group=viewpoint_callback_group
         )
 
         # Turntable status monitor TODO: Implement PID control for turntable to improve response
+        # Create QoS profile with best effort reliability
+        qos_profile = QoSProfile(depth=10)
+        qos_profile.reliability = ReliabilityPolicy.BEST_EFFORT
+
         self.create_subscription(
-            Bool, '/turntable/status', self.turntable_status_callback, 10)  # , callback_group=subscriber_callback_group)
+            Bool, '/turntable/status', self.turntable_status_callback, qos_profile, callback_group=subscriber_callback_group)
 
         self.create_service(
-            Trigger, f'{self.node_name}/move_to_viewpoint', self.trigger_move_to_viewpoint_callback)
+            Trigger, f'{self.node_name}/move_to_viewpoint', self.trigger_move_to_viewpoint_callback, callback_group=services_cb_group)
         self.move_to_pose_stamped_client = self.create_client(
             MoveToPoseStamped, f'{self.viewpoint_traversal_node_name}/move_to_pose_stamped', callback_group=services_cb_group)
 
@@ -178,9 +184,27 @@ class InspectionTaskPlanningNode(Node):
             callback_group=timer_callback_group
         )
 
+        self.set_servo_command_type(command_type='TWIST')
+
     # ============================================================================
     # INITIALIZATION AND PARAMETER HANDLING
     # ============================================================================
+
+    def wait_for_services(self):
+        if not self.controller_manager_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error(
+                'Controller manager service not available, cannot switch controllers')
+            return False
+        if not self.pause_servo_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error(
+                'Start servo service not available, cannot start servo')
+            return False
+        if not self.pause_servo_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error(
+                'Pause servo service not available, cannot pause servo')
+            return False
+        self.get_logger().info('All required services are available')
+        return True
 
     def load_viewpoints(self, filepath):
         self.viewpoints = []
@@ -327,31 +351,17 @@ class InspectionTaskPlanningNode(Node):
             self.viewpoint_publisher.publish(self.selected_viewpoint)
 
     def turntable_status_callback(self, msg):
-        self.get_logger().info(f'Turntable moving: {msg.data}')
         self.flags.turntable_moving = msg.data
-
-    def wait_for_services(self):
-        if not self.controller_manager_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error(
-                'Controller manager service not available, cannot switch controllers')
-            return False
-        if not self.pause_servo_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error(
-                'Start servo service not available, cannot start servo')
-            return False
-        if not self.pause_servo_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error(
-                'Pause servo service not available, cannot pause servo')
-            return False
-        self.get_logger().info('All required services are available')
-        return True
 
     # ============================================================================
     # STATE HANDLERS
     # ============================================================================
 
+    # INITIALIZING
     def _handle_initializing(self):
-        self.get_logger().info('Handling INITIALIZING state')
+        if self.flags.verbose:
+            self.get_logger().info('Handling INITIALIZING state')
+
         self.transition_to(State.ACTIVATING_SERVO_CONTROL)
 
     # ACTIVATING SERVO CONTROL
@@ -583,6 +593,12 @@ class InspectionTaskPlanningNode(Node):
             self.select_viewpoint(selected_region, i)
             self.flags.move_to_viewpoint = True
             while self.flags.move_to_viewpoint:
+                self.get_logger().info(
+                    f'Moving to viewpoint {i} in region {selected_region}...')
+                time.sleep(0.1)
+            while self.flags.turntable_moving:
+                self.get_logger().info(
+                    f'Waiting for turntable to stop moving...')
                 time.sleep(0.1)
 
         goal_handle.succeed()
@@ -629,6 +645,7 @@ def main():
     rclpy.init()
 
     executor = MultiThreadedExecutor(num_threads=4)
+    # executor = rclpy.executors.SingleThreadedExecutor()
 
     node = InspectionTaskPlanningNode()
     executor.add_node(node)
