@@ -154,6 +154,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
             package_path = get_package_prefix(package_name)
             mesh_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
+            
+        mesh_file = os.path.expandvars(mesh_file)
 
         success, message = self.viewpoint_generation.set_mesh_file(
             mesh_file, mesh_units)
@@ -269,6 +271,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
             package_path = get_package_prefix(package_name)
             point_cloud_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
+            
+        point_cloud_file = os.path.expandvars(point_cloud_file)
 
         success, message = self.viewpoint_generation.set_point_cloud_file(
             point_cloud_file, point_cloud_units)
@@ -321,6 +325,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
             package_path = get_package_prefix(package_name)
             curvature_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
+            
+        curvature_file = os.path.expandvars(curvature_file)
 
         success, message = self.viewpoint_generation.set_curvature_file(
             curvature_file)
@@ -367,6 +373,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
             package_path = get_package_prefix(package_name)
             regions_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
+            
+        regions_file = os.path.expandvars(regions_file)
 
         success, message = self.viewpoint_generation.set_regions_file(
             regions_file)

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 from math import pi
 import rclpy
 import time
@@ -91,7 +92,7 @@ class InspectionTaskPlanningNode(Node):
                 ('trajectory_controllers', ['inspection_cell_controller']),
                 ('servo_node_name', 'servo_node'),
                 ('controller_manager_name', '/controller_manager'),
-                ('viewpoints_file', '/workspaces/isaac_ros-dev/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-19_14-14-00_viewpoints_optimized2025-08-19_16-17-34.json'),
+                ('viewpoints_file', '$INSPECTION_WS/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-19_14-14-00_viewpoints_optimized2025-08-19_16-17-34.json'),
                 ('selected_region', 0),
                 ('selected_viewpoint', 0),
             ]
@@ -211,6 +212,9 @@ class InspectionTaskPlanningNode(Node):
         if filepath == '':
             self.get_logger().warning('Viewpoints file cleared, no viewpoints loaded')
             return False
+        
+        # Expand environment variables in filepath
+        filepath = os.path.expandvars(filepath)
 
         with open(filepath, 'r') as f:
             regions_dict = json.load(f)

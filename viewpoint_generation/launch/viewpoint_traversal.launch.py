@@ -5,7 +5,6 @@ from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import PathJoinSubstitution, LaunchConfiguration, Command
 from moveit_configs_utils import MoveItConfigsBuilder
 from moveit_configs_utils.launches import generate_move_group_launch, generate_moveit_rviz_launch
-from ur_moveit_config.launch_common import load_yaml
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.actions import TimerAction
