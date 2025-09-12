@@ -126,7 +126,8 @@ def generate_launch_description():
             ])
         ]),
         launch_arguments={
-            "object": LaunchConfiguration("object")
+            "object": LaunchConfiguration("object"),
+            "headless_mode": LaunchConfiguration("headless_mode"),
         }.items()
     )
 

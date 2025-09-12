@@ -5,6 +5,7 @@ import math
 import random
 import datetime
 import numpy as np
+import matplotlib.pyplot as plt
 import open3d as o3d
 import open3d.visualization.gui as gui
 import open3d.visualization.rendering as rendering
@@ -177,6 +178,18 @@ class ViewpointGeneration():
             self.mesh_units = units
             self.mesh = mesh
 
+        if self.visualize:
+            self.viewer.create_window(
+                window_name='Triangle Mesh', width=800, height=600)
+            self.viewer.add_geometry(self.mesh)
+            opt = self.viewer.get_render_option()
+            opt.background_color = np.asarray(self.background_color)
+            opt.line_width = 1.0
+            opt.point_size = 5.0
+            self.viewer.run()
+            self.viewer.destroy_window()
+            self.viewer.clear_geometries()
+
         return True, f'Triangle mesh file set to \'{mesh_file}\' with units \'{units}\'.'
 
     def set_point_cloud_file(self, point_cloud_file, point_cloud_units):
@@ -223,6 +236,18 @@ class ViewpointGeneration():
         self.point_cloud = point_cloud
         self.point_cloud_units = point_cloud_units
 
+        if self.visualize:
+            self.viewer.create_window(
+                window_name='Point Cloud', width=800, height=600)
+            self.viewer.add_geometry(self.point_cloud)
+            opt = self.viewer.get_render_option()
+            opt.background_color = np.asarray(self.background_color)
+            opt.line_width = 1.0
+            opt.point_size = 5.0
+            self.viewer.run()
+            self.viewer.destroy_window()
+            self.viewer.clear_geometries()
+
         return True, f'Point cloud file set to \'{point_cloud_file}\' with units \'{point_cloud_units}\'.'
 
     def set_ppsqmm(self, ppsqmm):
@@ -235,6 +260,8 @@ class ViewpointGeneration():
         # Recalculate the number of points to sample based on the new ppsqmm
         if self.mesh is not None:
             N_points = int(self.mesh.get_surface_area() * (self.ppsqmm * 1e6))
+            if N_points > 100000:
+                N_points = 100000
             msg = f'Number of points to sample: {N_points}'
             return True, N_points
         else:
@@ -289,9 +316,9 @@ class ViewpointGeneration():
             # Save the point cloud to a file
             o3d.io.write_point_cloud(point_cloud_file, point_cloud)
 
-        message = point_cloud_file
+        self.set_point_cloud_file(point_cloud_file, 'm')
 
-        return True, message
+        return True, point_cloud_file
 
     def set_knn_neighbors(self, k):
         if k <= 0:
@@ -386,8 +413,9 @@ class ViewpointGeneration():
 
         # Check if the point cloud is loaded and has normals
         if self.point_cloud is None:
-            print('No point cloud loaded.')
-            return False, 'No point cloud loaded.'
+            success, msg = self.sample_point_cloud()
+            if not success:
+                return False, msg
         if not self.point_cloud.has_normals():
             print('Estimating normals for the point cloud.')
             self.point_cloud.estimate_normals(
@@ -443,6 +471,21 @@ class ViewpointGeneration():
         self.curvatures_file = curvatures_file
         self.curvaturess = curvatures
 
+        if self.visualize:
+            self.viewer.create_window(
+                window_name='Point Cloud Curvatures', width=800, height=600)
+            curvature_colors = colormaps['jet'](
+                (curvatures - np.min(curvatures)) / (np.max(curvatures) - np.min(curvatures)))[:, :3]
+            point_cloud.colors = o3d.utility.Vector3dVector(curvature_colors)
+            self.viewer.add_geometry(point_cloud)
+            opt = self.viewer.get_render_option()
+            opt.background_color = np.asarray(self.background_color)
+            opt.line_width = 1.0
+            opt.point_size = 5.0
+            self.viewer.run()
+            self.viewer.destroy_window()
+            self.viewer.clear_geometries()
+
         return True, curvatures_file
 
     def set_curvature_file(self, curvature_file):
@@ -490,7 +533,10 @@ class ViewpointGeneration():
 
     def region_growth(self):
         if self.curvatures_file is None:
-            return False, 'No curvature file loaded. Please run curvature estimation first.'
+            success, msg = self.estimate_curvature()
+            if not success:
+                return False, msg
+            # return False, 'No curvature file loaded. Please run curvature estimation first.'
 
         regions_dict = {'regions': {}}
 
@@ -504,6 +550,27 @@ class ViewpointGeneration():
 
         self.regions_file = self.save_regions_dict(regions_dict)
         self.regions_dict = regions_dict
+
+        if self.visualize:
+            self.viewer.create_window(
+                window_name='Point Cloud Regions', width=800, height=600)
+            colors = plt.get_cmap('tab20')(
+                np.linspace(0, 1, len(regions_dict['regions'])))
+            point_colors = np.zeros((len(self.point_cloud.points), 3))
+            for region_id, region in regions_dict['regions'].items():
+                color = colors[int(region_id) % len(colors)][:3]
+                point_colors[region['points']] = color
+            if 'noise_points' in regions_dict:
+                point_colors[regions_dict['noise_points']] = (0.5, 0.5, 0.5)
+            self.point_cloud.colors = o3d.utility.Vector3dVector(point_colors)
+            self.viewer.add_geometry(self.point_cloud)
+            opt = self.viewer.get_render_option()
+            opt.background_color = np.asarray(self.background_color)
+            opt.line_width = 1.0
+            opt.point_size = 5.0
+            self.viewer.run()
+            self.viewer.destroy_window()
+            self.viewer.clear_geometries()
 
         return True, self.regions_file
 
@@ -537,7 +604,9 @@ class ViewpointGeneration():
             bool: True if FOV clustering was successful, False otherwise.
         """
         if self.regions_file is None:
-            return False, 'No region file loaded. Please run region growth first.'
+            success, msg = self.region_growth()
+            if not success:
+                return False, msg
 
         # Iterate through regions in the region dictionary
         for region_id, region in self.regions_dict['regions'].items():
@@ -555,6 +624,33 @@ class ViewpointGeneration():
                 self.regions_dict['regions'][region_id]['clusters'].keys())
 
         self.regions_file = self.save_regions_dict(self.regions_dict)
+
+        if self.visualize:
+            self.viewer.create_window(
+                window_name='FOV Clusters', width=800, height=600)
+            colors = plt.get_cmap('tab20')(
+                np.linspace(0, 1, 20))
+            point_colors = np.zeros((len(self.point_cloud.points), 3))
+            for region_id, region in self.regions_dict['regions'].items():
+                for cluster_id, cluster in region['clusters'].items():
+                    color = colors[int(cluster_id) % len(colors)][:3]
+                    region_points = self.point_cloud.select_by_index(
+                        region['points'])
+                    cluster_points = region_points.select_by_index(
+                        cluster['points'])
+                    point_colors[np.asarray(cluster_points.indices)] = color
+            if 'noise_points' in self.regions_dict:
+                point_colors[self.regions_dict['noise_points']] = (
+                    0.5, 0.5, 0.5)
+            self.point_cloud.colors = o3d.utility.Vector3dVector(point_colors)
+            self.viewer.add_geometry(self.point_cloud)
+            opt = self.viewer.get_render_option()
+            opt.background_color = np.asarray(self.background_color)
+            opt.line_width = 1.0
+            opt.point_size = 5.0
+            self.viewer.run()
+            self.viewer.destroy_window()
+            self.viewer.clear_geometries()
 
         return True, self.regions_file
 

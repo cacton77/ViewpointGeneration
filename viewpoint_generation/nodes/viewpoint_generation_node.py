@@ -31,6 +31,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.declare_parameters(
             namespace='',
             parameters=[
+                ('visualize', False),
                 ('model.mesh.file', ''),
                 ('model.mesh.units', 'm'),
                 ('model.point_cloud.file', ''),
@@ -96,6 +97,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Viewpoint Generation Helpers
         self.viewpoint_generation = ViewpointGeneration()
 
+        self.viewpoint_generation.visualize = self.get_parameter(
+            'visualize').get_parameter_value().bool_value
+
         self.set_mesh_file(self.get_parameter('model.mesh.file').get_parameter_value().string_value,
                            self.get_parameter('model.mesh.units').get_parameter_value().string_value)
         self.set_point_cloud_file(self.get_parameter('model.point_cloud.file').get_parameter_value().string_value,
@@ -154,7 +158,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             package_path = get_package_prefix(package_name)
             mesh_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
-            
+
         mesh_file = os.path.expandvars(mesh_file)
 
         success, message = self.viewpoint_generation.set_mesh_file(
@@ -271,7 +275,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             package_path = get_package_prefix(package_name)
             point_cloud_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
-            
+
         point_cloud_file = os.path.expandvars(point_cloud_file)
 
         success, message = self.viewpoint_generation.set_point_cloud_file(
@@ -325,7 +329,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             package_path = get_package_prefix(package_name)
             curvature_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
-            
+
         curvature_file = os.path.expandvars(curvature_file)
 
         success, message = self.viewpoint_generation.set_curvature_file(
@@ -373,7 +377,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             package_path = get_package_prefix(package_name)
             regions_file = os.path.join(
                 package_path, 'share', package_name, relative_path)
-            
+
         regions_file = os.path.expandvars(regions_file)
 
         success, message = self.viewpoint_generation.set_regions_file(
@@ -510,8 +514,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
             # Set the point cloud of the partitioner
             pcd_file = message
-            success, message = self.viewpoint_generation.set_point_cloud_file(
-                pcd_file, 'm')
 
             # Update the point cloud units to meters
             point_cloud_units_param = rclpy.parameter.Parameter(
@@ -701,7 +703,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             self.set_parameters([region_file_param])
         else:
-            self.get_logger().error("Region growth failed.")
+            self.get_logger().error(f"Region growth failed: {message}")
 
         response.success = success
         response.message = message
@@ -831,7 +833,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Iterate through the parameters and set the corresponding values
         # based on the parameter name
         for param in params:
-            if param.name == 'model.mesh.file':
+            if param.name == 'visualize':
+                self.viewpoint_generation.visualize = param.value
+            elif param.name == 'model.mesh.file':
                 success = self.set_mesh_file(param.value,
                                              self.get_parameter(
                                                  'model.mesh.units').get_parameter_value().string_value)
