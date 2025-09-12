@@ -18,6 +18,8 @@ from rcl_interfaces.msg import SetParametersResult
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped, OptimizeViewpointTraversal
 from geometry_msgs.msg import PoseStamped, Pose
 import pprint
+import copy
+import numpy as np
 
 from std_srvs.srv import Trigger
 from moveit_msgs.msg import CollisionObject
@@ -44,7 +46,8 @@ class ViewpointTraversalNode(Node):
                 ('workspace.min_y', -1.0),
                 ('workspace.max_y', 1.0),
                 ('workspace.min_z', -1.0),
-                ('workspace.max_z', 1.0)
+                ('workspace.max_z', 1.0),
+                ('use_2opt', True)
             ]
         )
 
@@ -54,6 +57,8 @@ class ViewpointTraversalNode(Node):
             'planner').get_parameter_value().string_value
         self.multiplanning = self.get_parameter(
             'multiplanning').get_parameter_value().bool_value
+        self.use_2opt = self.get_parameter(
+            'use_2opt').get_parameter_value().bool_value
 
         self.workspace = {
             'min_x': self.get_parameter('workspace.min_x').get_parameter_value().double_value,
@@ -63,6 +68,7 @@ class ViewpointTraversalNode(Node):
             'min_z': self.get_parameter('workspace.min_z').get_parameter_value().double_value,
             'max_z': self.get_parameter('workspace.max_z').get_parameter_value().double_value
         }
+
 
         self.robot = MoveItPy(node_name='moveit_py')
 
@@ -108,6 +114,8 @@ class ViewpointTraversalNode(Node):
                             self.optimize_traversal,
                             callback_group=services_cb_group
                             )
+        
+        self.add_on_set_parameters_callback(self.parameter_callback)
 
         # self.init_workspace()
 
@@ -143,13 +151,36 @@ class ViewpointTraversalNode(Node):
         self.get_logger().info("Workspace initialized successfully")
         self.get_logger().info(f"Workspace boundaries: {self.workspace}")
 
+
+    # Create a Distance Matrix from viewpoint co-ordinates using Euclidean distance.
+    def dist_matrix(self, viewpoints):
+        n = len(viewpoints) #Extract position from .json under viewpoint
+        dist_matrix = cp.zeros((n,n))
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    dist_matrix[i, j] = euclidean(viewpoints[i], viewpoints[j])
+
+        return dist_matrix                        
+
+    # Calculate the distance of the tour
+    def dist_calc(self, dist_matrix, viewpoint):
+        dist = 0
+        tour = viewpoint[0] if isinstance(viewpoint, list) and len(viewpoint) > 1 else viewpoint
+        for k in range(len(tour) - 1):
+            m = k + 1
+            dist += dist_matrix[tour[k], tour[m]]
+        
+        return dist
+
     def optimize_traversal(self, request, response):
         self.get_logger().info(
             f'Optimizing traversal for file {request.viewpoint_dict_path}')
         with open(request.viewpoint_dict_path, 'r') as f:
             viewpoint_dict = json.load(f)
 
-        viewpoint_dict_optimized = self.simple_tsp(viewpoint_dict)
+
+        viewpoint_dict_optimized = self.tsp(viewpoint_dict)
 
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         new_viewpoint_dict_path = re.sub(
@@ -165,8 +196,9 @@ class ViewpointTraversalNode(Node):
         response.message = "Traversal optimization completed successfully"
         response.new_viewpoint_dict_path = new_viewpoint_dict_path
         return response
+        
 
-    def simple_tsp(self, viewpoint_dict):
+    def tsp(self, viewpoint_dict):
 
         regions_dict = viewpoint_dict['regions']
         for region_name, region in regions_dict.items():
@@ -174,16 +206,88 @@ class ViewpointTraversalNode(Node):
 
             viewpoints = []
 
+            if len(viewpoint_dict['regions'][region_name]['order']) < 3:
+                self.get_logger().info(f"Not enough viewpoints for region '{region_name}', skipping optimization.")
+                continue
+
             for cluster_name, cluster in clusters_dict.items():
                 viewpoints.append(cluster['viewpoint']['position'])
-
-            path, total_distance = self.nearest_neighbors_tsp(viewpoints)
-            self.get_logger().info(
-                f"Optimized path for region '{region_name}' with total distance {total_distance}")
+            
+            if self.use_2opt:
+                self.get_logger().info(f"Using 2-opt optimization for region '{region_name}'")
+                dist_matrix = self.dist_matrix(viewpoints)
+                initial_path, initial_dist = self.nearest_neighbors_tsp(viewpoints)
+                self.get_logger().info(f"Initial nearest neighbor distance: {initial_dist:.4f}")
+                optimized_path, optimized_dist = self.local_search_2_opt(dist_matrix, [initial_path, initial_dist], recursive_seeding=-1, verbose=True)           
+                self.get_logger().info(f"Optimized path for region '{region_name}' with total distance {optimized_dist}")
+                improved = ((initial_dist - optimized_dist) / initial_dist) * 100
+                self.get_logger().info(f"Improvement: {improved:.2f}%")
+                path = optimized_path[:-1] if optimized_path[-1] == optimized_path[0] else optimized_path
+            else:    
+                path, total_distance = self.nearest_neighbors_tsp(viewpoints)
+                self.get_logger().info(
+                    f"Optimized path for region '{region_name}' with total distance {total_distance}")
 
             viewpoint_dict['regions'][region_name]['order'] = path
 
         return viewpoint_dict
+    
+    def local_search_2_opt(self, dist_matrix, viewpoint, recursive_seeding=-1, verbose=True):
+        if recursive_seeding < 0:
+            count = -2
+        else:
+            count = 0
+            
+        # Initialize vp_list with proper format [tour, distance]
+        if isinstance(viewpoint, list) and len(viewpoint) == 2:
+            vp_list = copy.deepcopy(viewpoint)
+        else:
+            dist = self.dist_calc(dist_matrix, viewpoint)
+            vp_list = [viewpoint.copy(), dist]
+            
+        dist = vp_list[1] * 2 
+        iteration = 0
+        
+        while count < recursive_seeding:
+            if verbose:
+                self.get_logger().info(f'2-opt Iteration {iteration}: Distance = {round(vp_list[1], 4)}')
+                
+            best_route = copy.deepcopy(vp_list)
+            seed = copy.deepcopy(vp_list)
+            
+            # Try all possible 2-opt swaps
+            for i in range(len(vp_list[0]) - 2):
+                for j in range(i + 1, len(vp_list[0]) - 1):
+                    # Reverse the segment between i and j (2-opt swap)
+                    best_route[0][i:j+1] = list(reversed(best_route[0][i:j+1]))
+                    
+                    # Ensure the tour is closed (last point = first point)
+                    if len(best_route[0]) > 0:
+                        best_route[0][-1] = best_route[0][0]
+                    
+                    # Calculate new distance
+                    best_route[1] = self.dist_calc(dist_matrix, best_route)
+                    
+                    # Keep improvement if found
+                    if vp_list[1] > best_route[1]:
+                        vp_list = copy.deepcopy(best_route)
+                        
+                    # Reset to original state for next iteration
+                    best_route = copy.deepcopy(seed)
+            
+            count += 1
+            iteration += 1
+            
+            # Check for improvement and reset counter if found
+            if dist > vp_list[1] and recursive_seeding < 0:
+                dist = vp_list[1]
+                count = -2
+                recursive_seeding = -1
+            elif vp_list[1] >= dist and recursive_seeding < 0:
+                count = -1
+                recursive_seeding = -2
+                
+        return vp_list[0], vp_list[1]
 
     def nearest_neighbors_tsp(self, points):
 
@@ -306,6 +410,8 @@ class ViewpointTraversalNode(Node):
                 self.workspace['max_y'] = param.value
             elif param.name == 'workspace.max_z':
                 self.workspace['max_z'] = param.value
+            elif param.name == 'use_2opt':
+                self.use_2opt = param.value
 
         self.init_workspace()
 
