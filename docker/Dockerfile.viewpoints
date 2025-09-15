@@ -36,25 +36,6 @@ RUN apt-get update && apt-get install -y \
 
 RUN rosdep init || true && rosdep update
 
-# RUN apt-get update && apt-get install -y --no-install-recommends \
-#     ros-humble-moveit-msgs \
-#     ros-humble-moveit-resources
-
-# Update Open Robotics GPG key
-# RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg \
-#     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null \
-#     && apt-get update
-
-# RUN sudo apt-get update -y && mkdir -p /workspaces/moveit2_ws/src \
-#     && chown -R admin /workspaces/moveit2_ws \
-#     && cd /workspaces/moveit2_ws/src \
-#     && git clone https://github.com/moveit/moveit2.git \
-#     && for repo in moveit2/moveit2.repos $(f="moveit2/moveit2.repos"; test -r $f && echo $f); do vcs import < "$repo"; done \
-#     && rosdep install -r --from-paths . --ignore-src -y 
-# && cd /root/moveit2_ws \
-# && colcon build --event-handlers desktop_notification- status- --cmake-args -DCMAKE_BUILD_TYPE=Release --parallel-workers 1 \
-# && echo "source /root/moveit2_ws/install/setup.bash" >> /root/.bashrc
-
 # Install UR
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-ur
@@ -67,3 +48,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-ros2controlcli \
     ros-${ROS_DISTRO}-rqt-controller-manager
+
+# Install CycloneDDS
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-rmw-cyclonedds-cpp
+
+RUN echo "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp" | sudo tee --append /etc/bash.bashrc
