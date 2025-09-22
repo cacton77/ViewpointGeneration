@@ -205,6 +205,25 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.bbox_marker = Marker()
             # TODO: translate dimensions into marker variables
             self.bbox_marker.header.frame_id = 'object_frame'
+            self.bbox_marker.header.stamp = stamp
+            self.bbox_marker.ns = 'bbox'
+            self.bbox_marker.id = 0
+            self.bbox_marker.type = Marker.CUBE
+            self.bbox_marker.action = Marker.ADD
+            self.bbox_marker.pose.position.x = dimensions[0]
+            self.bbox_marker.pose.position.y = dimensions[1]
+            self.bbox_marker.pose.position.z = dimensions[2]
+            self.bbox_marker.pose.orientation.w = 1.0
+            self.bbox_marker.scale.x = dimensions[3]
+            self.bbox_marker.scale.y = dimensions[4]
+            self.bbox_marker.scale.z = dimensions[5]
+         # semi-transparent cyan
+            self.bbox_marker.color.r = 0.0
+            self.bbox_marker.color.g = 1.0
+            self.bbox_marker.color.b = 1.0
+            self.bbox_marker.color.a = 0.25
+            self.bbox_marker.lifetime = Duration(seconds=0.2).to_msg()  # short lifetime; republish each frame
+            #self.bbox_marker.header.frame_id = 'object_frame'
 
             # Create a mesh from the file
             self.mesh = Mesh()
