@@ -4,6 +4,7 @@ import rclpy
 import rclpy.node
 import numpy as np
 import open3d as o3d
+from rclpy.duration import Duration
 from rclpy.action import ActionServer
 from viewpoint_generation.viewpoint_generation import ViewpointGeneration
 from rcl_interfaces.msg import SetParametersResult
@@ -205,7 +206,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.bbox_marker = Marker()
             # TODO: translate dimensions into marker variables
             self.bbox_marker.header.frame_id = 'object_frame'
-            self.bbox_marker.header.stamp = stamp
+            self.bbox_marker.header.stamp = self.get_clock().now().to_msg()
             self.bbox_marker.ns = 'bbox'
             self.bbox_marker.id = 0
             self.bbox_marker.type = Marker.CUBE
@@ -222,9 +223,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.bbox_marker.color.g = 1.0
             self.bbox_marker.color.b = 1.0
             self.bbox_marker.color.a = 0.25
-            self.bbox_marker.lifetime = Duration(seconds=0.2).to_msg()  # short lifetime; republish each frame
-            #self.bbox_marker.header.frame_id = 'object_frame'
-
+            # short lifetime; republish each frame
+            self.bbox_marker.lifetime = Duration(seconds=0.2).to_msg()
+            # self.bbox
             # Create a mesh from the file
             self.mesh = Mesh()
             self.mesh.triangles = []
@@ -243,6 +244,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 mesh_triangle.vertex_indices = triangle.astype(
                     np.uint32).tolist()
                 self.mesh.triangles.append(mesh_triangle)
+
+            return True
 
     def update_planning_scene(self):
         if not self.mesh:
@@ -285,8 +288,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         self.planning_scene_diff_publisher.publish(planning_scene)
         self.get_logger().info(f'Planning scene updated!')
-
-        return True
 
     def set_point_cloud_file(self, point_cloud_file, point_cloud_units):
         """
