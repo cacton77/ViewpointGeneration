@@ -259,6 +259,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.planning_scene_diff_publisher.publish(planning_scene)
             self.get_logger().info(f'Planning scene updated!')
 
+            # TODO: Publish bounding box as marker
+
+
             return True
 
     def set_point_cloud_file(self, point_cloud_file, point_cloud_units):
