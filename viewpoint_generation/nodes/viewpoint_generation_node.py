@@ -15,6 +15,7 @@ from std_srvs.srv import Trigger
 
 from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped, Pose, PointStamped, Point
+from visualization_msgs.msg import Marker
 from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject
 from viewpoint_generation_interfaces.srv import OptimizeViewpointTraversal
@@ -24,6 +25,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
     block_next_param_callback = False
     initialized = False
+    mesh = None
+    bbox_marker = None
 
     def __init__(self):
         node_name = 'viewpoint_generation'
@@ -63,10 +66,15 @@ class ViewpointGenerationNode(rclpy.node.Node):
             ]
         )
 
+        # Bounding Box Marker Publisher
+        self.bbox_marker_publisher = self.create_publisher(
+            Marker, f'{node_name}/bounding_box_marker', 10)
         # Create planning scene publisher
         self.planning_scene_diff_publisher = self.create_publisher(
             PlanningScene, '/planning_scene', 10)
         self.get_logger().info('Planning scene publisher created.')
+        # Update planning scene timer
+        self.create_timer(1.0, self.update_planning_scene)
 
         # Sample PCD Service
         services_cb_group = MutuallyExclusiveCallbackGroup()
@@ -134,13 +142,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         self.add_on_set_parameters_callback(self.parameter_callback)
 
-        # Action Server
-        # self._action_server = ActionServer(
-        #     self,
-        #     ViewpointGeneration,
-        #     'viewpoint_generation',
-        #     self.execute_callback)
-
         self.block_next_param_callback = False
         self.initialized = True
 
@@ -200,17 +201,15 @@ class ViewpointGenerationNode(rclpy.node.Node):
             # Pose will be changed during registration
             dimensions = self.viewpoint_generation.get_mesh_dimensions()
 
-            box = SolidPrimitive()
-            box.type = SolidPrimitive.BOX
-            # Set dimensions of the box geometry
-            box.dimensions = [dimensions[0], dimensions[1], dimensions[2]]
-            box_pose = Pose()
-            box_pose.position.z = dimensions[2] / 2.0
+            # Create a Marker message for the bounding box
+            self.bbox_marker = Marker()
+            # TODO: translate dimensions into marker variables
+            self.bbox_marker.header.frame_id = 'object_frame'
 
             # Create a mesh from the file
-            mesh = Mesh()
-            mesh.triangles = []
-            mesh.vertices = []
+            self.mesh = Mesh()
+            self.mesh.triangles = []
+            self.mesh.vertices = []
             vertices, triangles = self.viewpoint_generation.get_mesh_vertices_and_triangles()
 
             for vertex in vertices:
@@ -218,51 +217,57 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 point.x = vertex[0]
                 point.y = vertex[1]
                 point.z = vertex[2]
-                mesh.vertices.append(point)
+                self.mesh.vertices.append(point)
 
             for triangle in triangles:
                 mesh_triangle = MeshTriangle()
                 mesh_triangle.vertex_indices = triangle.astype(
                     np.uint32).tolist()
-                mesh.triangles.append(mesh_triangle)
+                self.mesh.triangles.append(mesh_triangle)
 
-            # Pose of object relative to 'object_frame'
-            # Will be changed by Yusen's point cloud registration
-            pose = Pose()
+    def update_planning_scene(self):
+        if not self.mesh:
+            self.get_logger().error(
+                'No mesh loaded. Cannot update planning scene.')
+            return False
 
-            # Remove object
-            remove_object = CollisionObject()
-            remove_object.header.frame_id = 'object_frame'
-            remove_object.id = 'object'
-            remove_object.operation = CollisionObject.REMOVE
+        # Publish bounding box as marker
+        self.bbox_marker_publisher.publish(self.bbox_marker)
 
-            # Update planning scene with the new mesh
-            attached_object = AttachedCollisionObject()
-            attached_object.link_name = 'object_frame'
-            attached_object.object.header.frame_id = 'object_frame'
-            attached_object.object.pose = pose
-            attached_object.object.id = 'object'
-            attached_object.object.meshes = [mesh]
-            attached_object.object.mesh_poses = [Pose()]
-            attached_object.object.operation = CollisionObject.ADD
-            attached_object.touch_links = [
-                'turntable_disc_link', 'turntable_base_link', 'planning_volume']
+        # Pose of object relative to 'object_frame'
+        # Will be changed by Yusen's point cloud registration
+        pose = Pose()
 
-            planning_scene = PlanningScene()
-            planning_scene.world.collision_objects.clear()
-            planning_scene.world.collision_objects.append(remove_object)
-            planning_scene.robot_state.attached_collision_objects.append(
-                attached_object)
-            planning_scene.robot_state.is_diff = True
-            planning_scene.is_diff = True
+        # Remove object
+        remove_object = CollisionObject()
+        remove_object.header.frame_id = 'object_frame'
+        remove_object.id = 'object'
+        remove_object.operation = CollisionObject.REMOVE
 
-            self.planning_scene_diff_publisher.publish(planning_scene)
-            self.get_logger().info(f'Planning scene updated!')
+        # Update planning scene with the new mesh
+        attached_object = AttachedCollisionObject()
+        attached_object.link_name = 'object_frame'
+        attached_object.object.header.frame_id = 'object_frame'
+        attached_object.object.pose = pose
+        attached_object.object.id = 'object'
+        attached_object.object.meshes = [self.mesh]
+        attached_object.object.mesh_poses = [Pose()]
+        attached_object.object.operation = CollisionObject.ADD
+        attached_object.touch_links = [
+            'turntable_disc_link', 'turntable_base_link', 'planning_volume']
 
-            # TODO: Publish bounding box as marker
+        planning_scene = PlanningScene()
+        planning_scene.world.collision_objects.clear()
+        planning_scene.world.collision_objects.append(remove_object)
+        planning_scene.robot_state.attached_collision_objects.append(
+            attached_object)
+        planning_scene.robot_state.is_diff = True
+        planning_scene.is_diff = True
 
+        self.planning_scene_diff_publisher.publish(planning_scene)
+        self.get_logger().info(f'Planning scene updated!')
 
-            return True
+        return True
 
     def set_point_cloud_file(self, point_cloud_file, point_cloud_units):
         """
