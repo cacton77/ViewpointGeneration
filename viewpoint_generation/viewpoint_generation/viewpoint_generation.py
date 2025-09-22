@@ -112,11 +112,15 @@ class ViewpointGeneration():
             return None, None, None
 
         bbox = self.mesh.get_axis_aligned_bounding_box()
-        width = bbox.max_bound[0] - bbox.min_bound[0]
-        depth = bbox.max_bound[1] - bbox.min_bound[1]
-        height = bbox.max_bound[2] - bbox.min_bound[2]
+        cx = 0.5 * (bbox.max_bound[0] + bbox.min_bound[0])
+        cy = 0.5 * (bbox.max_bound[1] + bbox.min_bound[1])
+        cz = 0.5 * (bbox.max_bound[2] + bbox.min_bound[2])
+        
+        sx = max(1e-6,bbox.max_bound[0] - bbox.min_bound[0])
+        sy = max(1e-6,bbox.max_bound[1] - bbox.min_bound[1])
+        sz = max(1e-6,bbox.max_bound[2] - bbox.min_bound[2])
 
-        return width, depth, height
+        return cx,cy,cz,sx,sy,sz
 
     def get_mesh_vertices_and_triangles(self):
         """
