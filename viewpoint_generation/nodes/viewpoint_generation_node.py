@@ -198,9 +198,30 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 self.set_point_cloud_file(
                     point_cloud_file='', point_cloud_units='')
 
-            # Object pose relative to 'object_frame'
-            # Pose will be changed during registration
-            dimensions = self.viewpoint_generation.get_mesh_dimensions()
+            min_x, min_y, min_z, max_x, max_y, max_z = self.viewpoint_generation.get_mesh_bounds()
+
+            if min_z < 0.0:
+                self.get_logger().warn(
+                    f'Minimum Z value of the mesh is below 0. This may cause issues with registration and planning.'
+                )
+                min_z = 0.0
+
+            # Add padding to the bounding box. Keep min_z at 0.
+            padding = 0.02
+            min_x = min_x - padding
+            min_y = min_y - padding
+            min_z = max(0.0, min_z - padding)
+            max_x = max_x + padding
+            max_y = max_y + padding
+            max_z = max_z + padding
+
+            cx = 0.5 * (max_x + min_x)
+            cy = 0.5 * (max_y + min_y)
+            cz = 0.5 * (max_z + min_z)
+
+            sx = max(1e-6, max_x - min_x)
+            sy = max(1e-6, max_y - min_y)
+            sz = max(1e-6, max_z - min_z)
 
             # Create a Marker message for the bounding box
             self.bbox_marker = Marker()
@@ -211,20 +232,21 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.bbox_marker.id = 0
             self.bbox_marker.type = Marker.CUBE
             self.bbox_marker.action = Marker.ADD
-            self.bbox_marker.pose.position.x = dimensions[0]
-            self.bbox_marker.pose.position.y = dimensions[1]
-            self.bbox_marker.pose.position.z = dimensions[2]
+            self.bbox_marker.pose.position.x = cx
+            self.bbox_marker.pose.position.y = cy
+            self.bbox_marker.pose.position.z = cz
             self.bbox_marker.pose.orientation.w = 1.0
-            self.bbox_marker.scale.x = dimensions[3]*2
-            self.bbox_marker.scale.y = dimensions[4]*2
-            self.bbox_marker.scale.z = dimensions[5]*2
+            self.bbox_marker.scale.x = sx
+            self.bbox_marker.scale.y = sy
+            self.bbox_marker.scale.z = sz
          # semi-transparent cyan
             self.bbox_marker.color.r = 0.0
             self.bbox_marker.color.g = 1.0
             self.bbox_marker.color.b = 1.0
             self.bbox_marker.color.a = 0.25
-            self.bbox_marker.lifetime = Duration(seconds=1.0).to_msg()  # short lifetime; republish each frame
-            #self.bbox_marker.header.frame_id = 'object_frame'
+            # short lifetime; republish each frame
+            self.bbox_marker.lifetime = Duration(seconds=1.0).to_msg()
+            # self.bbox_marker.header.frame_id = 'object_frame'
 
             # Create a mesh from the file
             self.mesh = Mesh()

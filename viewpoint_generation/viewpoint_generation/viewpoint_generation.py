@@ -102,25 +102,35 @@ class ViewpointGeneration():
 
         return True
 
-    def get_mesh_dimensions(self):
+    def get_mesh_bounds(self):
         """
-        Get the dimensions of the mesh.
+        Get the mininum and maximum bounds of the mesh.
         Returns:
-            tuple: (width, height, depth) of the mesh in meters.
+            tuple: (min_x, min_y, min_z, max_x, max_y, max_z) of the mesh in meters.
         """
         if self.mesh is None:
-            return None, None, None
+            return None, None, None, None, None, None
 
         bbox = self.mesh.get_axis_aligned_bounding_box()
+
+        min_x = bbox.min_bound[0]
+        min_y = bbox.min_bound[1]
+        min_z = bbox.min_bound[2]
+        max_x = bbox.max_bound[0]
+        max_y = bbox.max_bound[1]
+        max_z = bbox.max_bound[2]
+
+        return min_x, min_y, min_z, max_x, max_y, max_z
+
         cx = 0.5 * (bbox.max_bound[0] + bbox.min_bound[0])
         cy = 0.5 * (bbox.max_bound[1] + bbox.min_bound[1])
         cz = 0.5 * (bbox.max_bound[2] + bbox.min_bound[2])
-        
-        sx = max(1e-6,bbox.max_bound[0] - bbox.min_bound[0])
-        sy = max(1e-6,bbox.max_bound[1] - bbox.min_bound[1])
-        sz = max(1e-6,bbox.max_bound[2] - bbox.min_bound[2])
 
-        return cx,cy,cz,sx,sy,sz
+        sx = max(1e-6, bbox.max_bound[0] - bbox.min_bound[0])
+        sy = max(1e-6, bbox.max_bound[1] - bbox.min_bound[1])
+        sz = max(1e-6, bbox.max_bound[2] - bbox.min_bound[2])
+
+        return cx, cy, cz, sx, sy, sz
 
     def get_mesh_vertices_and_triangles(self):
         """
