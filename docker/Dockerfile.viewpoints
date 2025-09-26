@@ -57,4 +57,4 @@ RUN echo "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp" | sudo tee --append /etc
 
 # Set INSPECTION_WS environment variable
 RUN echo "export INSPECTION_WS=/workspaces/isaac_ros-dev/" | sudo tee --append /etc/bash.bashrc
-RUN echo "source \$INSPECTION_WS/install/setup.bash" | sudo tee --append /etc/bash.bashrc
+RUN echo "source /workspaces/isaac_ros-dev/install/setup.bash" | sudo tee --append /etc/bash.bashrc

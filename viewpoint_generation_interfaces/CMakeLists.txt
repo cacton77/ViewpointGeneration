@@ -33,6 +33,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/InspectRegion.action"
   "srv/MoveToPoseStamped.srv"
   "srv/OptimizeViewpointTraversal.srv"
+  "msg/FocusValue.msg"
   DEPENDENCIES geometry_msgs
 )
 

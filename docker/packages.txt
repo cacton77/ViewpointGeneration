@@ -1,0 +1,47 @@
+# System build dependencies
+build-essential
+cmake
+git
+python3-colcon-common-extensions
+python3-colcon-mixin
+python3-colcon-override-check
+python3-flake8
+python3-rosdep
+python3-setuptools
+python3-vcstool
+python3-pip
+wget
+neovim
+
+# Graphics and GUI dependencies
+freeglut3-dev
+libgl1-mesa-dev
+libglu1-mesa-dev
+libxrandr-dev
+libxinerama-dev
+libxcursor-dev
+libxi-dev
+
+
+# ROS Humble packages
+ros-humble-osqp-vendor
+ros-humble-stomp
+ros-humble-topic-tools
+ros-humble-rmf-utils
+ros-humble-object-recognition-msgs
+ros-humble-octomap-msgs
+ros-humble-eigen-stl-containers
+ros-humble-generate-parameter-library
+ros-humble-geometric-shapes
+ros-humble-ruckig
+ros-humble-srdfdom
+ros-humble-ros2-control*
+ros-humble-control*
+ros-humble-ompl
+ros-humble-warehouse-ros
+ros-humble-graph-msgs
+ros-humble-py-binding-tools
+ros-humble-warehouse-ros-sqlite
+ros-humble-ros-testing
+ros-humble-launch-param-builder
+ros-humble-hpp-fcl
