@@ -1,0 +1,12 @@
+std_msgs/Header header
+sensor_msgs/CompressedImage image
+sensor_msgs/CompressedImage focus_image
+float64 roi_x
+float64 roi_y
+int32 roi_width
+int32 roi_height
+string focus_metric
+float64 focus_value
+geometry_msgs/PoseStamped end_effector_pose
+geometry_msgs/TwistStamped velocity_command
+bool is_focused

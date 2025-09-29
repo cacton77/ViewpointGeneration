@@ -26,6 +26,7 @@ if(BUILD_TESTING)
 endif()
 
 find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -34,7 +35,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/MoveToPoseStamped.srv"
   "srv/OptimizeViewpointTraversal.srv"
   "msg/FocusValue.msg"
-  DEPENDENCIES geometry_msgs
+  "msg/AutofocusData.msg"
+  DEPENDENCIES geometry_msgs sensor_msgs
 )
 
 ament_package()

@@ -47,6 +47,13 @@ def generate_launch_description():
                 "http_image_publisher.launch.py"
             ])
         ]),
+        launch_arguments={
+            "stream_url": "http://192.168.0.92:5000/video_feed",
+            "base_topic": "camera",
+            "frame_id": "eoat_camera_link",
+            "publish_rate": "30.0",
+            "connection_timeout": "5.0"
+        }.items()
     )
 
     d405_camera_node = Node(
