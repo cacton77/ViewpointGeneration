@@ -39,7 +39,7 @@ def generate_launch_description():
                               description="Configuration file for admittance control."),
     ]
 
-    camera_launch = IncludeLaunchDescription(
+    macro_camera_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
                 FindPackageShare("http_image_publisher"),
@@ -47,6 +47,14 @@ def generate_launch_description():
                 "http_image_publisher.launch.py"
             ])
         ]),
+    )
+
+    d405_camera_node = Node(
+        package="realsense2_camera",
+        executable="realsense2_camera_node",
+        name="d405_camera",
+        output="screen",
+        condition=UnlessCondition(LaunchConfiguration("headless_mode")),
     )
 
     control_moveit_launch = IncludeLaunchDescription(
@@ -103,6 +111,13 @@ def generate_launch_description():
         }.items(),
     )
 
+    joy_node = Node(
+        package="joy",
+        executable="joy_node",
+        name="joy_node",
+        output="screen"
+    )
+
     admittance_control_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
@@ -139,11 +154,13 @@ def generate_launch_description():
     )
 
     return LaunchDescription(declared_arguments + [
-        camera_launch,
+        macro_camera_launch,
+        d405_camera_node,
         task_planning_node,
         control_moveit_launch,
         # viewpoint_generation_launch,
         register_event_handler,
         viewpoint_traversal_launch,
-        admittance_control_launch
+        admittance_control_launch,
+        joy_node
     ])

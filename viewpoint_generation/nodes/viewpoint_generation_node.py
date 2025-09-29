@@ -282,12 +282,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Will be changed by Yusen's point cloud registration
         pose = Pose()
 
-        # Remove object
-        remove_object = CollisionObject()
-        remove_object.header.frame_id = 'object_frame'
-        remove_object.id = 'object'
-        remove_object.operation = CollisionObject.REMOVE
-
         # Update planning scene with the new mesh
         attached_object = AttachedCollisionObject()
         attached_object.link_name = 'object_frame'
@@ -302,14 +296,12 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         planning_scene = PlanningScene()
         planning_scene.world.collision_objects.clear()
-        planning_scene.world.collision_objects.append(remove_object)
         planning_scene.robot_state.attached_collision_objects.append(
             attached_object)
         planning_scene.robot_state.is_diff = True
         planning_scene.is_diff = True
 
         self.planning_scene_diff_publisher.publish(planning_scene)
-        self.get_logger().info(f'Planning scene updated!')
 
     def set_point_cloud_file(self, point_cloud_file, point_cloud_units):
         """
