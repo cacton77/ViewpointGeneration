@@ -33,10 +33,12 @@ class ROSThread(Node):
     viewpoint_generation_node_name = 'viewpoint_generation'
     traversal_node_name = 'viewpoint_traversal'
     task_planning_node_name = 'inspection_task_planning'
+    autofocus_node_name = 'autofocus'
 
     target_nodes = [viewpoint_generation_node_name,
                     traversal_node_name,
-                    task_planning_node_name]
+                    task_planning_node_name,
+                    autofocus_node_name]
 
     flags = {
         'inspect_region_active': False
@@ -180,6 +182,7 @@ class ROSThread(Node):
                                                            f'{self.task_planning_node_name}/move_to_viewpoint',
                                                            callback_group=services_cb_group
                                                            )
+
         self.inspect_region_action_client = ActionClient(
             self, InspectRegion, self.task_planning_node_name + '/inspect_region')
         self.optimize_traversal_client = self.create_client(Trigger,
@@ -197,6 +200,7 @@ class ROSThread(Node):
             10
         )
         self.log = []
+
 
         # Wait for services to be available
         self.wait_for_services()

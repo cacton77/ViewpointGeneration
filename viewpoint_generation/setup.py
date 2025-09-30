@@ -14,6 +14,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*')),
         (os.path.join('share', package_name, 'config'), glob('config/*')),
+        (os.path.join('share', package_name, 'nodes'), glob('nodes/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -25,7 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             'viewpoint_generation_node = nodes.viewpoint_generation_node:main',
-            'gui_node = nodes.gui_node:main',
+            'gui_node = nodes.gui:main',
             'viewpoint_traversal_node = nodes.viewpoint_traversal_node:main',
             'position_constraint_publisher = nodes.position_constraint_publisher:main',
             'inspection_task_planning_node = nodes.inspection_task_planning_node:main'

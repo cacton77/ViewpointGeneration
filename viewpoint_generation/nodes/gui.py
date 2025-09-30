@@ -11,7 +11,7 @@ import open3d.visualization.gui as gui
 from pprint import pprint
 from matplotlib import colormaps
 
-from viewpoint_generation.ros_client import ROSThread
+from viewpoint_generation.gui_node import ROSThread
 from viewpoint_generation.assets.materials import Materials
 
 sys.stdout.reconfigure(line_buffering=True)
