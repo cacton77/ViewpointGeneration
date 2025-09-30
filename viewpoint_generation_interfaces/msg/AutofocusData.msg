@@ -7,6 +7,11 @@ int32 roi_width
 int32 roi_height
 string focus_metric
 float64 focus_value
+float64 ema_focus_value
+float64 dema_focus_value
+float64 dfv
+float64 ddfv
+float64 ratio
 geometry_msgs/PoseStamped end_effector_pose
 geometry_msgs/TwistStamped velocity_command
 bool is_focused
