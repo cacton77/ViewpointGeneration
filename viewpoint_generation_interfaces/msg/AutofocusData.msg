@@ -10,7 +10,7 @@ float64 focus_value
 float64 ema_focus_value
 float64 dema_focus_value
 float64 dfv
-float64 ddfv
+float64 smooth_ddfv
 float64 ratio
 geometry_msgs/PoseStamped end_effector_pose
 geometry_msgs/TwistStamped velocity_command

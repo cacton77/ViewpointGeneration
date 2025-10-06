@@ -854,6 +854,43 @@ class GUIClient():
 
                 layout.add_child(widget)
                 grid.add_child(layout)
+            elif 'metric' in param_name.lower():
+                # Create a dropdown for focus metric selection
+                layout = gui.Horiz(0.25 * em)
+                widget = gui.Combobox()
+                metric = ['sobel', 'squared_gradient', 'fswm']
+                for unit in metric:
+                    widget.add_item(unit)
+                widget.selected_index = metric.index(param_value)
+
+                def on_metric_changed(selected_text, selected_index):
+                    """Handle metric selection change"""
+                    self.on_parameter_changed(
+                        node_name, param_name, selected_text)
+
+                widget.set_on_selection_changed(on_metric_changed)
+
+                layout.add_child(widget)
+                grid.add_child(layout)
+            elif 'algorithm' in param_name.lower():
+                # Create a dropdown for focus algorithm selection
+                layout = gui.Horiz(0.25 * em)
+                widget = gui.Combobox()
+                algorithm = ['default', 'adaptive', 'ehc']
+                for unit in algorithm:
+                    widget.add_item(unit)
+                widget.selected_index = algorithm.index(param_value)
+
+                def on_algorithm_changed(selected_text, selected_index):
+                    """Handle algorithm selection change"""
+                    self.on_parameter_changed(
+                        node_name, param_name, selected_text)
+
+                widget.set_on_selection_changed(on_algorithm_changed)
+
+                layout.add_child(widget)
+                grid.add_child(layout)
+
             else:
                 widget = gui.TextEdit()
                 widget.background_color = Materials.text_edit_background_color
