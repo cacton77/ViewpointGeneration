@@ -1807,9 +1807,9 @@ class GUIClient():
 
         self.update_all_widgets_from_dict()
 
-        intersection_result = self.cast_ray_from_center()
+        # intersection_result = self.cast_ray_from_center()
 
-        self.add_cylinder_pointing_at_camera_simple(intersection_result)
+        # self.add_cylinder_pointing_at_camera_simple(intersection_result)
 
         # Update rosout log
         self.update_log()

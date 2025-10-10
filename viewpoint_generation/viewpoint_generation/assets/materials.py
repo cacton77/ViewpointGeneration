@@ -21,7 +21,7 @@ class Materials:
 
     mesh_material = rendering.MaterialRecord()
     mesh_material.shader = "defaultLit"
-    mesh_material.base_color = [1.0, 1.0, 1.0, 1.0]
+    mesh_material.base_color = [0.8, 0.8, 0.8, 1.0]
 
     bounding_box_material = rendering.MaterialRecord()
     bounding_box_material.shader = "defaultLit"
@@ -35,7 +35,7 @@ class Materials:
     point_cloud_material = rendering.MaterialRecord()
     point_cloud_material.shader = "defaultUnlit"
     point_cloud_material.point_size = 7.0
-    point_cloud_material.base_color = [0.7, 0.7, 0.7, 1.0]
+    point_cloud_material.base_color = [1.0, 1.0, 1.0, 1.0]
 
     curvature_colormap = 'RdYlGn'
     regions_colormap = 'plasma'

@@ -210,7 +210,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             padding = 0.02
             min_x = min_x - padding
             min_y = min_y - padding
-            min_z = max(0.0, min_z - padding)
+            min_z = max(0.01, min_z - padding)
             max_x = max_x + padding
             max_y = max_y + padding
             max_z = max_z + padding
