@@ -62,6 +62,7 @@ def generate_launch_description():
         name="d405_camera",
         output="screen",
         condition=UnlessCondition(LaunchConfiguration("headless_mode")),
+        arguments=['--ros-args', '--log-level', 'error']
     )
 
     control_moveit_launch = IncludeLaunchDescription(

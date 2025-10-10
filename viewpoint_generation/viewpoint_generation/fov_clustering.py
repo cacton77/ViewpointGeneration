@@ -109,7 +109,8 @@ class FOVClustering:
             np.sqrt(radial_distances_sq)) if radial_distances_sq.size > 0 else 0
         radius_mask = radial_distances_sq <= camera_radius**2
 
-        points_in = np.sum(height_mask & radius_mask)
+        # TODO: figure out whether to use height mask or not points_in = np.sum(height_mask & radius_mask)
+        points_in = np.sum(radius_mask)
         points_in_xy = np.sum(radius_mask)
         points_out = points.shape[0] - points_in
 

@@ -13,5 +13,5 @@ float64 dfv
 float64 smooth_ddfv
 float64 ratio
 geometry_msgs/PoseStamped end_effector_pose
-geometry_msgs/TwistStamped velocity_command
+float64 velocity_command
 bool is_focused
