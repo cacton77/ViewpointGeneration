@@ -62,6 +62,19 @@ class GUIClient():
 
     def __init__(self):
         self.app = gui.Application.instance
+
+        # Fonts
+        font_sans_serif = gui.FontDescription(
+            typeface="DejaVu Sans Mono:style=Bold", style=gui.FontStyle.NORMAL, point_size=15)
+        font_monospace = gui.FontDescription(
+            typeface="monospace", style=gui.FontStyle.BOLD, point_size=32)
+
+        # Must be run before application.create_window()
+        font_id_sans_serif = gui.Application.instance.add_font(font_sans_serif)
+        font_id_monospace = gui.Application.instance.add_font(font_monospace)
+
+        self.app.set_font(0, font_sans_serif)
+
         self.window = self.app.create_window(
             "Viewpoint Generation", width=1280, height=720, x=0, y=30)
 
@@ -101,12 +114,35 @@ class GUIClient():
         self.scene_widget.look_at(
             np.array([0, 0, 0]), np.array([1, 1, 1]), np.array([0, 0, 1]))
 
+        def on_mouse(event):
+            for layout in [self.main_layout, self.viewpoint_traversal_layout]:
+                frame = layout.frame
+                left = frame.get_left()
+                right = frame.get_right()
+                top = frame.get_top()
+                bottom = frame.get_bottom()
+                if left <= event.x <= right and top <= event.y <= bottom:
+                    return gui.Widget.EventCallbackResult.CONSUMED
+            # Let scene handle it
+            return gui.Widget.EventCallbackResult.IGNORED
+
+        self.scene_widget.set_on_mouse(on_mouse)
+
         # Add 100mm diameter cylinder at origin
-        cylinder = o3d.geometry.TriangleMesh.create_cylinder(
-            radius=Materials.tabletop_diameter/2, height=Materials.tabletop_thickness)
-        cylinder.translate(np.array([0, 0, -Materials.tabletop_thickness/2]))
-        self.add_geometry(
-            "tabletop", cylinder, Materials.tabletop_material)
+        # cylinder = o3d.geometry.TriangleMesh.create_cylinder(
+        #     radius=Materials.tabletop_diameter/2, height=Materials.tabletop_thickness)
+        # cylinder.translate(np.array([0, 0, -Materials.tabletop_thickness/2]))
+        # self.add_geometry(
+        #     "tabletop", cylinder, Materials.tabletop_material)
+        # Add XY Axes
+
+        self.xy_axes = o3d.geometry.LineSet()
+        self.xy_axes.points = o3d.utility.Vector3dVector(
+            np.array([[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0]]))
+        self.xy_axes.lines = o3d.utility.Vector2iVector(
+            np.array([[0, 1], [2, 3]]))
+        self.xy_axes.colors = o3d.utility.Vector3dVector(
+            np.array([[1, 0, 0], [0, 1, 0]]))
 
         self.ray_casting_scene = o3d.t.geometry.RaycastingScene()
 
@@ -121,6 +157,92 @@ class GUIClient():
         self.current_view_matrix = view_matrix
 
         self.last_draw_time = time.time()
+
+    def add_xy_plane(self, bbox):
+        if bbox:
+            # self.scene_widget.scene.add_geometry(
+            # 'bounding box', bbox, self.axes_line_material)
+            # scale xy_axes by the bounding box diagonal
+            diag = bbox.get_max_bound() - bbox.get_min_bound()
+            diag = np.linalg.norm(np.asarray(diag))
+
+            # XY Axes
+            x0, y0, _ = bbox.get_min_bound()
+            # Round x0 and y0 to the nearest 10
+            x0 = 10 * (round(x0 / 10) - 1)
+            y0 = 10 * (round(y0 / 10) - 1)
+            x1, y1, _ = bbox.get_max_bound()
+            x1 = 10 * (round(x1 / 10) + 1)
+            y1 = 10 * (round(y1 / 10) + 1)
+
+            self.xy_axes = o3d.geometry.LineSet()
+
+            max_x = max(abs(x0), abs(x1))
+            max_y = max(abs(y0), abs(y1))
+            width = max(max_x, max_y)
+            points = [[-width, 0, 0], [width, 0, 0],
+                      [0, 0, -width], [0, 0, width]]
+            lines = [[0, 1], [2, 3]]
+            colors = [[1, 0, 0], [0, 1, 0]]
+
+            self.xy_axes.points = o3d.utility.Vector3dVector(
+                np.array(points))
+            self.xy_axes.lines = o3d.utility.Vector2iVector(
+                np.array(lines))
+            self.xy_axes.colors = o3d.utility.Vector3dVector(
+                np.array(colors))
+
+            # Grid
+
+            x0 = -width
+            x1 = width
+            y0 = -width
+            y1 = width
+
+            self.grid = o3d.geometry.LineSet()
+            points = []
+            lines = []
+            colors = []
+
+            for x in np.linspace(x0, x1, round((x1 - x0) / 10) + 1):
+                if abs(x) < 1e-5:
+                    continue
+                points.append([x, 0, y0])
+                points.append([x, 0, y1])
+                lines.append([len(points)-2, len(points)-1])
+                colors.append([0.3, 0.3, 0.3])
+            for y in np.linspace(y0, y1, round((y1 - y0) / 10) + 1):
+                if abs(y) < 1e-5:
+                    continue
+                points.append([x0, 0, y])
+                points.append([x1, 0, y])
+                lines.append([len(points)-2, len(points)-1])
+                colors.append([0.3, 0.3, 0.3])
+
+            self.grid.points = o3d.utility.Vector3dVector(
+                np.array(points))
+            self.grid.lines = o3d.utility.Vector2iVector(
+                np.array(lines))
+            self.grid.colors = o3d.utility.Vector3dVector(
+                np.array(colors))
+
+            ground_plane = o3d.geometry.TriangleMesh()
+            ground_plane.vertices = o3d.utility.Vector3dVector(
+                np.array([[x0, 0, y0], [x1, 0, y0], [x1, 0, y1], [x0, 0, y1]]))
+            ground_plane.triangles = o3d.utility.Vector3iVector(
+                np.array([[0, 1, 2], [0, 2, 3]]))
+            ground_plane.vertex_normals = o3d.utility.Vector3dVector(
+                np.array([[0, 0, 1], [0, 0, 1], [0, 0, 1], [0, 0, 1]]))
+            self.scene_widget.scene.remove_geometry('ground plane')
+            self.scene_widget.scene.add_geometry(
+                'ground plane', ground_plane, Materials.ground_plane_material)
+
+        self.scene_widget.scene.remove_geometry('xy axes')
+        self.scene_widget.scene.remove_geometry('grid')
+        self.scene_widget.scene.add_geometry(
+            'xy axes', self.xy_axes, Materials.axes_line_material)
+        self.scene_widget.scene.add_geometry(
+            'grid', self.grid, Materials.grid_line_material)
 
     def setup_multi_directional_lighting(self):
         """Configure multiple light sources for even illumination"""
@@ -427,6 +549,13 @@ class GUIClient():
         #     self.MENU_ABOUT, self._on_menu_about)
         # ----
 
+        # Add Footer
+        em = w.theme.font_size
+        self.footer = gui.Horiz(0.25*em)
+        self.footer.add_child(gui.Label("Footer"))
+        self.footer.background_color = Materials.panel_color
+        w.add_child(self.footer)
+
     def _on_menu_save(self):
         pass
 
@@ -592,6 +721,7 @@ class GUIClient():
             self.MENU_SHOW_CURVATURES, show)
 
     def show_regions(self, show=True):
+
         for region_name in self.region_names:
             self.scene_widget.scene.show_geometry(
                 f'{region_name}', show)
@@ -600,6 +730,11 @@ class GUIClient():
             self.show_curvatures(False)
             self.show_noise_points(True)
             self.show_fov_clusters(False)
+            self.scene_widget.scene.modify_geometry_material(
+                "mesh", Materials.mesh_material_transparent)
+        else:
+            self.scene_widget.scene.modify_geometry_material(
+                "mesh", Materials.mesh_material)
 
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_REGIONS, show)
@@ -612,6 +747,11 @@ class GUIClient():
             self.show_point_cloud(False)
             self.show_curvatures(False)
             self.show_regions(False)
+            self.scene_widget.scene.modify_geometry_material(
+                "mesh", Materials.mesh_material_transparent)
+        else:
+            self.scene_widget.scene.modify_geometry_material(
+                "mesh", Materials.mesh_material)
 
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_FOV_CLUSTERS, show)
@@ -1075,6 +1215,8 @@ class GUIClient():
             # region_data = self.get_region_data(region_name)
             # replace _ in region name with space and capitalize first letter
             formatted_name = region_name.replace("_", " ").capitalize()
+            # Remove "Region" prefix
+            formatted_name = formatted_name.replace("Region", "").strip()
             self.region_tabs.add_tab(
                 formatted_name, gui.Vert(0.5*em, gui.Margins(0.25*em)))
 
@@ -1187,6 +1329,8 @@ class GUIClient():
                 self.scene_widget.look_at(
                     bb.get_center(), bb.get_max_bound() * 1.5, np.array([0, 0, 1]))
 
+                self.add_xy_plane(bb)
+
                 self.show_mesh(True)
                 self.show_point_cloud(False)
                 self.show_curvatures(False)
@@ -1258,7 +1402,7 @@ class GUIClient():
             cmap = colormaps[Materials.curvature_colormap]
 
             for i in range(len(normalized_curvature)):
-                val = 1 - normalized_curvature[i]
+                val = normalized_curvature[i]
                 # color = np.array(list(cmap(val)))[0, 0:3]  # Get RGB values
                 color = np.array(list(cmap(val)))[0:3]
                 np.asarray(curvatures_cloud.colors)[i] = color
@@ -1294,7 +1438,9 @@ class GUIClient():
 
         regions_dict = json.load(open(file_path, 'r'))
 
-        np.random.seed(42)  # For reproducible colors
+        cmap = colormaps[Materials.regions_colormap]
+
+        np.random.seed(1)  # For reproducible colors
 
         # Initialize empty geometries for visualization
         geometries_dict = {}
@@ -1312,7 +1458,8 @@ class GUIClient():
             region_indices = region_dict['points']
             region_point_cloud = self.point_cloud.select_by_index(
                 region_indices)
-            region_color = np.random.rand(3)
+
+            region_color = np.array(list(cmap(np.random.rand())))[0:3]
 
             region_view_cloud = o3d.geometry.PointCloud()
             region_view_points = []
@@ -1490,6 +1637,8 @@ class GUIClient():
                 self.show_region_view_manifolds(True)
                 # Set camera view to fit the mesh
                 bbox = self.scene_widget.scene.bounding_box
+
+                self.add_xy_plane(bbox)
 
                 # Set up camera to view the entire bounding box
                 self.scene_widget.setup_camera(
@@ -1861,32 +2010,26 @@ class GUIClient():
         self.scene_widget.frame = r
 
         # Place log layout at the bottom of the window
-        log_height = self.log_layout.calc_preferred_size(
-            layout_context, gui.Widget.Constraints()).height
-        log_width = r.width - em
-        self.log_layout.frame = gui.Rect(
-            0.5 * em, r.height - log_height + 0.5 * em, log_width, log_height)
+        # log_height = self.log_layout.calc_preferred_size(
+        #     layout_context, gui.Widget.Constraints()).height
+        # log_width = r.width - em
+        # self.log_layout.frame = gui.Rect(
+        #     0.5 * em, r.height - log_height + 0.5 * em, log_width, log_height)
+        main_width = 20 * em
+        main_height = r.height - 2 * em
+
+        self.main_layout.frame = gui.Rect(
+            r.width - main_width, 2 * em, main_width, main_height)
 
         # Place viewpoint traversal layout above log layout to the left of main layout
         vpt_height = self.viewpoint_traversal_layout.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height
-        vpt_width = log_width
+        # vpt_width = log_width
+        vpt_width = r.width - main_width
         self.viewpoint_traversal_layout.frame = gui.Rect(
-            0.5 * em, r.height - log_height + 0.5 * em - vpt_height, vpt_width, vpt_height)
+            0, r.height - vpt_height, vpt_width, vpt_height)
 
-        # Place main layout on the right side of the window
-        # Calculate main layout size based on available space
-        # Leave space for log and viewpoint traversal layouts
-        main_width = 22 * em
-        main_height = self.main_layout.calc_preferred_size(
-            layout_context, gui.Widget.Constraints()).height
-        main_height = min(main_height, r.height -
-                          log_height - vpt_height - 2 * em)
-
-        right_margin = 0.5 * em
-        # Place main layout between bottom of header and top of log layout on right side
-        self.main_layout.frame = gui.Rect(
-            r.width - main_width - right_margin, 2 * em, main_width, main_height)
+        self.footer.frame = gui.Rect(0, r.height - 2*em, r.width, 2*em)
 
 
 def main(args=None):

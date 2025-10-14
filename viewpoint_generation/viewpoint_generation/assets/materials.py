@@ -23,6 +23,10 @@ class Materials:
     mesh_material.shader = "defaultLit"
     mesh_material.base_color = [0.8, 0.8, 0.8, 1.0]
 
+    mesh_material_transparent = rendering.MaterialRecord()
+    mesh_material_transparent.shader = "defaultLitTransparency"
+    mesh_material_transparent.base_color = [0.8, 0.8, 0.8, 0.5]
+
     bounding_box_material = rendering.MaterialRecord()
     bounding_box_material.shader = "defaultLit"
     bounding_box_material.base_color = [0.8, 0.8, 0.8, 1.0]
@@ -37,8 +41,10 @@ class Materials:
     point_cloud_material.point_size = 7.0
     point_cloud_material.base_color = [1.0, 1.0, 1.0, 1.0]
 
-    curvature_colormap = 'RdYlGn'
-    regions_colormap = 'plasma'
+    curvature_colormap = 'plasma'
+    regions_colormap = 'BuPu'
+    regions_colormap = 'cubehelix'
+    regions_colormap = 'rainbow'
 
     cluster_material = rendering.MaterialRecord()
     cluster_material.shader = "defaultUnlit"
@@ -84,3 +90,18 @@ class Materials:
     path_material.shader = 'unlitLine'
     path_material.line_width = 4.0
     path_material.base_color = [92/255, 140/255, 207/255, 1.0]
+    path_material.base_color = [0.5, 0.5, 0.5, 1.0]
+
+    ground_plane_material = MaterialRecord()
+    ground_plane_material.shader = 'defaultLitTransparency'
+    ground_plane_material.base_color = [0.0, 0.0, 0.0, 0.1]
+
+    grid_line_material = MaterialRecord()
+    grid_line_material.shader = 'unlitLine'
+    grid_line_material.base_color = [0.5, 0.5, 0.5, 1.0]
+    grid_line_material.line_width = 2.0
+
+    axes_line_material = MaterialRecord()
+    axes_line_material.shader = 'unlitLine'
+    axes_line_material.base_color = [1.0, 1.0, 1.0, 1.0]
+    axes_line_material.line_width = 3.0

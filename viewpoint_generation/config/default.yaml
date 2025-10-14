@@ -12,7 +12,7 @@ gui:
     show_region_view_manifolds: false
     show_regions: false
     show_reticle: true
-    show_skybox: true
+    show_skybox: false
     show_viewpoints: false
     use_sim_time: false
 
