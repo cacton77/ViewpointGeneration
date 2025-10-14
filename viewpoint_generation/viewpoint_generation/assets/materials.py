@@ -13,6 +13,8 @@ class Materials:
     panel_color = gui.Color(36/255, 36/255, 36/255, 0.9)
     panel_color = gui.Color(0.14, 0.14, 0.14, 0.8)
     content_color = gui.Color(0.0, 1.0, 0.0, 0.8)
+    footer_text_color = gui.Color(0.75, 0.75, 0.75, 1.0)
+    footer_panel_color = gui.Color(0.0, 0.0, 0.0, 1.0)
 
     button_background_color = gui.Color(0.4, 0.4, 0.4, 1.0)
     go_button_background_color = gui.Color(0.2, 0.8, 0.2, 1.0)
@@ -88,7 +90,7 @@ class Materials:
 
     path_material = MaterialRecord()
     path_material.shader = 'unlitLine'
-    path_material.line_width = 4.0
+    path_material.line_width = 3.0
     path_material.base_color = [92/255, 140/255, 207/255, 1.0]
     path_material.base_color = [0.5, 0.5, 0.5, 1.0]
 

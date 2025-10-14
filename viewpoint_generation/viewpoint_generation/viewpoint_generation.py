@@ -122,16 +122,6 @@ class ViewpointGeneration():
 
         return min_x, min_y, min_z, max_x, max_y, max_z
 
-        cx = 0.5 * (bbox.max_bound[0] + bbox.min_bound[0])
-        cy = 0.5 * (bbox.max_bound[1] + bbox.min_bound[1])
-        cz = 0.5 * (bbox.max_bound[2] + bbox.min_bound[2])
-
-        sx = max(1e-6, bbox.max_bound[0] - bbox.min_bound[0])
-        sy = max(1e-6, bbox.max_bound[1] - bbox.min_bound[1])
-        sz = max(1e-6, bbox.max_bound[2] - bbox.min_bound[2])
-
-        return cx, cy, cz, sx, sy, sz
-
     def get_mesh_vertices_and_triangles(self):
         """
         Get the vertices and triangles of the mesh.
@@ -712,6 +702,36 @@ class ViewpointGeneration():
         self.regions_file = self.save_regions_dict(self.regions_dict)
 
         return True, self.regions_file
+
+    def get_viewpoint_bounds(self):
+        """
+        Get the mininum and maximum viewpoint positions.
+        Returns:
+            tuple: (min_x, min_y, min_z, max_x, max_y, max_z) of the mesh in meters.
+        """
+        if self.regions_dict['regions'] is None:
+            return None, None, None, None, None, None
+
+        min_x = min_y = min_z = float('inf')
+        max_x = max_y = max_z = float('-inf')
+
+        for region in self.regions_dict['regions'].values():
+            if 'clusters' not in region:
+                continue
+
+            for cluster in region['clusters'].values():
+                if 'viewpoint' not in cluster:
+                    continue
+
+                viewpoint = cluster['viewpoint']
+                min_x = min(min_x, viewpoint['position'][0])
+                min_y = min(min_y, viewpoint['position'][1])
+                min_z = min(min_z, viewpoint['position'][2])
+                max_x = max(max_x, viewpoint['position'][0])
+                max_y = max(max_y, viewpoint['position'][1])
+                max_z = max(max_z, viewpoint['position'][2])
+
+        return min_x, min_y, min_z, max_x, max_y, max_z
 
     def get_viewpoint(self, region_index, cluster_index):
         """

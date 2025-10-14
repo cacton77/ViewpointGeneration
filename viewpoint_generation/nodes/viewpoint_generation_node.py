@@ -28,6 +28,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
     initialized = False
     mesh = None
     bbox_marker = None
+    viewpoints_bbox_marker = None
 
     def __init__(self):
         node_name = 'viewpoint_generation'

@@ -552,8 +552,10 @@ class GUIClient():
         # Add Footer
         em = w.theme.font_size
         self.footer = gui.Horiz(0.25*em)
-        self.footer.add_child(gui.Label("Footer"))
-        self.footer.background_color = Materials.panel_color
+        self.footer_label = gui.Label("Footer")
+        self.footer_label.text_color = Materials.footer_text_color
+        self.footer.add_child(self.footer_label)
+        self.footer.background_color = Materials.footer_panel_color
         w.add_child(self.footer)
 
     def _on_menu_save(self):
@@ -2029,7 +2031,7 @@ class GUIClient():
         self.viewpoint_traversal_layout.frame = gui.Rect(
             0, r.height - vpt_height, vpt_width, vpt_height)
 
-        self.footer.frame = gui.Rect(0, r.height - 2*em, r.width, 2*em)
+        self.footer.frame = gui.Rect(0, r.height, r.width, 2*em)
 
 
 def main(args=None):
@@ -2041,6 +2043,16 @@ def main(args=None):
     use_tick = -1
 
     gui_client = GUIClient()
+
+    gui_client.window.set_needs_layout()
+    gui_client.window.post_redraw()
+
+    def initial_draw():
+        gui_client.window.set_needs_layout()
+        gui_client.window.post_redraw()
+
+    gui.Application.instance.post_to_main_thread(
+        gui_client.window, initial_draw)
 
     gui.Application.instance.run()
 
