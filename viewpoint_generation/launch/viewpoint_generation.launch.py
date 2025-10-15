@@ -25,9 +25,8 @@ def generate_launch_description():
 
     # Use PathJoinSubstitution to build the path at launch time
     config = PathJoinSubstitution([
-        FindPackageShare('viewpoint_generation'),
-        'config',
-        LaunchConfiguration('object')
+        LaunchConfiguration("data_path"),
+        LaunchConfiguration("object")
     ])
 
     viewpoint_generation_node = Node(

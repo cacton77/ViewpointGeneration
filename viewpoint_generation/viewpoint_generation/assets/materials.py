@@ -14,7 +14,7 @@ class Materials:
     panel_color = gui.Color(0.14, 0.14, 0.14, 0.8)
     content_color = gui.Color(0.0, 1.0, 0.0, 0.8)
     footer_text_color = gui.Color(0.75, 0.75, 0.75, 1.0)
-    footer_panel_color = gui.Color(0.0, 0.0, 0.0, 1.0)
+    footer_panel_color = gui.Color(0.0, 0.0, 0.0, 0.8)
 
     button_background_color = gui.Color(0.4, 0.4, 0.4, 1.0)
     go_button_background_color = gui.Color(0.2, 0.8, 0.2, 1.0)
@@ -27,7 +27,7 @@ class Materials:
 
     mesh_material_transparent = rendering.MaterialRecord()
     mesh_material_transparent.shader = "defaultLitTransparency"
-    mesh_material_transparent.base_color = [0.8, 0.8, 0.8, 0.5]
+    mesh_material_transparent.base_color = [0.8, 0.8, 0.8, 0.8]
 
     bounding_box_material = rendering.MaterialRecord()
     bounding_box_material.shader = "defaultLit"
@@ -54,7 +54,7 @@ class Materials:
 
     selected_cluster_material = rendering.MaterialRecord()
     selected_cluster_material.shader = "defaultUnlit"
-    selected_cluster_material.base_color = [0.0, 1.0, 0.0, 1.0]
+    selected_cluster_material.base_color = [0.0, 0.0, 1.0, 1.0]
 
     region_view_material = rendering.MaterialRecord()
     region_view_material.shader = "defaultLitTransparency"
@@ -62,17 +62,20 @@ class Materials:
 
     selected_region_view_material = rendering.MaterialRecord()
     selected_region_view_material.shader = "defaultLitTransparency"
-    selected_region_view_material.base_color = [0.0, 1.0, 0.0, 0.5]
+    selected_region_view_material.base_color = [0.0, 1.0, 1.0, 0.25]
 
     viewpoint_material = rendering.MaterialRecord()
-    viewpoint_material.shader = "defaultLitTransparency"
-    viewpoint_material.base_color = [1.0, 1.0, 1.0, 0.8]
-    viewpoint_size = 20  # Size in mm
+    viewpoint_material.shader = "defaultUnlit"
+    viewpoint_material.base_color = [1.0, 1.0, 1.0, 1.0]
+    viewpoint_type = "sphere"
+    viewpoint_sphere_size = 3  # Size in mm
+    viewpoint_axis_size = 20
+    viewpoint_arrow_scale = 2  # Scale factor for the arrow
 
     selected_viewpoint_material = rendering.MaterialRecord()
     selected_viewpoint_material.shader = "defaultUnlit"
-    selected_viewpoint_material.base_color = [0.0, 1.0, 0.0, 1.0]
-    selected_viewpoint_material.base_color = [193/255, 76/255, 61/255, 1.0]
+    selected_viewpoint_material.base_color = [0.0, 0.0, 1.0, 1.0]
+    # selected_viewpoint_material.base_color = [193/255, 76/255, 61/255, 1.0]
 
     fov_material = rendering.MaterialRecord()
     fov_material.shader = "defaultUnlit"
@@ -90,13 +93,18 @@ class Materials:
 
     path_material = MaterialRecord()
     path_material.shader = 'unlitLine'
-    path_material.line_width = 3.0
+    path_material.line_width = 2.0
     path_material.base_color = [92/255, 140/255, 207/255, 1.0]
     path_material.base_color = [0.5, 0.5, 0.5, 1.0]
 
+    selected_path_material = MaterialRecord()
+    selected_path_material.shader = 'unlitLine'
+    selected_path_material.line_width = 3.0
+    selected_path_material.base_color = [0.0, 1.0, 1.0, 1.0]
+
     ground_plane_material = MaterialRecord()
     ground_plane_material.shader = 'defaultLitTransparency'
-    ground_plane_material.base_color = [0.0, 0.0, 0.0, 0.1]
+    ground_plane_material.base_color = [0.0, 0.0, 0.0, 0.0]
 
     grid_line_material = MaterialRecord()
     grid_line_material.shader = 'unlitLine'

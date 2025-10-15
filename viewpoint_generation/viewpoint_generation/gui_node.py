@@ -38,7 +38,8 @@ class ROSThread(Node):
     target_nodes = [viewpoint_generation_node_name,
                     traversal_node_name,
                     task_planning_node_name,
-                    autofocus_node_name]
+                    autofocus_node_name,
+                    node_name]
 
     flags = {
         'inspect_region_active': False
@@ -47,11 +48,15 @@ class ROSThread(Node):
     robot_moving = False
     path = []  # Move to task planning node eventually
 
+    status_message = "HELLO WORLD"
+
     def __init__(self, stream_id=0):
         super().__init__(self.node_name)
         self.declare_parameters(
             namespace='',
             parameters=[
+                ('file_name', 'default'),
+                ('data_path', '/tmp'),
                 ('show_axes', True),
                 ('show_grid', True),
                 ('show_model_bounding_box', False),
@@ -69,6 +74,8 @@ class ROSThread(Node):
             ]
         )
 
+        self.file_name = self.get_parameter(
+            'file_name').get_parameter_value().string_value
         self.show_axes = self.get_parameter(
             'show_axes').get_parameter_value().bool_value
         self.show_grid = self.get_parameter(
@@ -97,6 +104,8 @@ class ROSThread(Node):
             'show_region_view_manifolds').get_parameter_value().bool_value
         self.show_path = self.get_parameter(
             'show_path').get_parameter_value().bool_value
+        self.data_path = self.get_parameter(
+            'data_path').get_parameter_value().string_value
 
         self.t = threading.Thread(target=self.update, args=())
         self.t.daemon = True  # daemon threads run in background
@@ -192,48 +201,9 @@ class ROSThread(Node):
 
         # ----------- Create clients for task planning services -----------
 
-        # ROSOUT log subscription
-        self.create_subscription(
-            Log,
-            '/rosout',
-            self.rosout_callback,
-            10
-        )
         self.log = []
 
-
         # Wait for services to be available
-        self.wait_for_services()
-
-        self.get_all_parameters()
-
-    def rosout_callback(self, msg):
-        text = f"[{msg.name}] {msg.msg}" if msg.name else msg.msg
-        self.log.append(text)
-
-    def set_param(self, param_name, new_value):
-        """ Set a parameter of this node """
-        if type(new_value) is bool:
-            param_type = rclpy.Parameter.Type.BOOL
-        elif type(new_value) is int:
-            param_type = rclpy.Parameter.Type.INTEGER
-        elif type(new_value) is float:
-            param_type = rclpy.Parameter.Type.DOUBLE
-        elif type(new_value) is str:
-            param_type = rclpy.Parameter.Type.STRING
-        else:
-            self.get_logger().error(
-                f'Unsupported parameter type: {type(new_value)} for {param_name}')
-            return
-        param = rclpy.parameter.Parameter(
-            param_name,
-            param_type,
-            new_value
-        )
-        self.set_parameters([param])
-
-    def wait_for_services(self):
-        """Wait for all required services to be available"""
         self.get_logger().info('Waiting for parameter services...')
 
         # Wait for viewpoint generation services
@@ -253,18 +223,56 @@ class ROSThread(Node):
             self.get_logger().info(
                 f'Waiting for {self.viewpoint_generation_node_name}/viewpoint_projection service...')
 
+        # Update internal dict of parameters
+        self.get_all_parameters()
+
+    def load_config(self, yaml_file):
+        # Check if the file exists
+        if not os.path.exists(yaml_file):
+            self.get_logger().error(f"Config file not found: {yaml_file}")
+            return
+
+        self.initialized = False
+
+        with open(yaml_file, 'r') as file:
+            config_dict = yaml.safe_load(file)
+
+        for node_name, ros_parameters in config_dict.items():
+            params = ros_parameters['ros__parameters']
+            for param_name, param_value in params.items():
+                try:
+                    if node_name == self.node_name:
+                        self.set_parameter(param_name, param_value)
+                    else:
+                        self.set_target_node_parameter(
+                            node_name, param_name, param_value)
+                except Exception as e:
+                    self.get_logger().error(
+                        f"Failed to set parameter {param_name} for {node_name}: {e}")
+
+        self.initialized = True
+
+        self.get_all_parameters()
+
     def save_parameters_to_file(self, file_path):
         """Save all current and connected inspection node parameters to a file"""
+        # Set file_name parameter to last segment of file_path - .yaml
+        self.file_name = os.path.basename(file_path).replace('.yaml', '')
+        self.set_parameter(
+            'file_name',
+            self.file_name
+        )
+
         output_dict = {}
 
-        gui_params = self.get_node_parameters(self.node_name)
-        output_dict[self.node_name] = {'ros__parameters': gui_params}
-        viewpoint_generation_params = self.get_node_parameters(
-            self.viewpoint_generation_node_name)
-        output_dict[self.viewpoint_generation_node_name] = {
-            'ros__parameters': viewpoint_generation_params}
-        # viewpoint_traversal_params = self.get_node_parameters(self.traversal_node_name)
-        # output_dict[self.traversal_node_name] = {'ros__parameters': viewpoint_traversal_params}
+        node_params = self.get_node_parameters(self.node_name)
+        if node_params is not None:
+            output_dict[self.node_name] = {'ros__parameters': node_params}
+
+        for node_name in self.target_nodes:
+            node_params = self.get_node_parameters(node_name)
+            if node_params is not None:
+                output_dict[node_name] = {'ros__parameters': node_params}
 
         # Write to file
         with open(file_path, 'w') as f:
@@ -439,13 +447,13 @@ class ROSThread(Node):
             return False
 
     def select_region(self, region_index):
-        self.set_parameter(self.task_planning_node_name,
-                           'selected_region', region_index)
+        self.set_target_node_parameter(self.task_planning_node_name,
+                                       'selected_region', region_index)
 
     def select_cluster(self, cluster_index):
         """Select a cluster based on cluster index"""
-        self.set_parameter(self.task_planning_node_name,
-                           'selected_viewpoint', cluster_index)
+        self.set_target_node_parameter(self.task_planning_node_name,
+                                       'selected_viewpoint', cluster_index)
 
     def optimize_traversal(self):
         """Optimize the viewpoint traversal path"""
@@ -524,7 +532,6 @@ class ROSThread(Node):
         expanded = {}
         for target_node, flat_params in self.parameters_dict.items():
             expanded[target_node] = self.expand_dict_keys(flat_params)
-
         return expanded
 
     def expand_dict_keys(self, flat_dict):
@@ -638,15 +645,7 @@ class ROSThread(Node):
         if get_future.result() is not None:
             get_response = get_future.result()
 
-            # Check the correct attribute name for parameter values
-            if hasattr(get_response, 'values'):
-                param_values = get_response.values
-            else:
-                # Debug: print available attributes
-                self.get_logger().info(
-                    f'GetParameters response attributes: {dir(get_response)}')
-                self.get_logger().error('Could not find parameter values in response')
-                return
+            param_values = get_response.values
 
             # Store parameters in dictionary
             for name, value in zip(param_names, param_values):
@@ -655,14 +654,6 @@ class ROSThread(Node):
                     continue
 
                 param_value = self.extract_parameter_value(value)
-
-                # If param name ends in '.file' and starts with 'package://', replace it with the package path
-                if name.endswith('.file') and isinstance(param_value, str) and param_value.startswith('package://'):
-                    package_name, relative_path = param_value.split(
-                        'package://', 1)[1].split('/', 1)
-                    package_prefix = get_package_prefix(package_name)
-                    param_value = os.path.join(
-                        package_prefix, 'share', package_name, relative_path)
 
                 if name in self.parameters_dict[node_name]:
                     update_flag = self.parameters_dict[node_name][name]['value'] != param_value
@@ -733,12 +724,33 @@ class ROSThread(Node):
                 self.get_logger().info(f"Update: {info['update_flag']}")
             self.get_logger().info('-' * 30)
 
-    def set_parameter(self, node_name, param_name, new_value):
+    def set_parameter(self, param_name, new_value):
+        """ Set a parameter of this node """
+        if type(new_value) is bool:
+            param_type = rclpy.Parameter.Type.BOOL
+        elif type(new_value) is int:
+            param_type = rclpy.Parameter.Type.INTEGER
+        elif type(new_value) is float:
+            param_type = rclpy.Parameter.Type.DOUBLE
+        elif type(new_value) is str:
+            param_type = rclpy.Parameter.Type.STRING
+        else:
+            self.get_logger().error(
+                f'Unsupported parameter type: {type(new_value)} for {param_name}')
+            return
+        param = rclpy.parameter.Parameter(
+            param_name,
+            param_type,
+            new_value
+        )
+        self.set_parameters([param])
+
+    def set_target_node_parameter(self, target_node, param_name, new_value):
         """Set a parameter on the target node"""
-        if node_name not in self.target_nodes:
-            self.get_logger().warning(f'Node {node_name} not connected')
+        if target_node not in self.target_nodes and target_node != self.node_name:
+            self.get_logger().warning(f'Node {target_node} not connected')
             return False
-        if param_name not in self.parameters_dict[node_name]:
+        if param_name not in self.parameters_dict[target_node]:
             self.get_logger().warning(f'Parameter {param_name} not found')
             return False
 
@@ -746,7 +758,7 @@ class ROSThread(Node):
             self.get_logger().info(
                 f'Setting parameter {param_name} to {new_value}')
 
-            param_info = self.parameters_dict[node_name][param_name]
+            param_info = self.parameters_dict[target_node][param_name]
 
             # Create the message objects (NOT rclpy.parameter.Parameter)
             param_msg = ParameterMsg()
@@ -779,17 +791,17 @@ class ROSThread(Node):
             # Use param_msg, not Parameter object
             set_request.parameters = [param_msg]
 
-            set_future = self.set_params_clients[node_name].call_async(
+            set_future = self.set_params_clients[target_node].call_async(
                 set_request)
             # Add done callback lambda with parameter name and new value
             set_future.add_done_callback(
-                lambda f, node_name=node_name, param_name=param_name, new_value=new_value: self.set_parameter_future_callback(f, node_name, param_name, new_value))
+                lambda f, node_name=target_node, param_name=param_name, new_value=new_value: self.set_target_node_parameter_future_callback(f, node_name, param_name, new_value))
 
         except Exception as e:
             self.get_logger().error(f'Error setting parameter: {str(e)}')
             return False
 
-    def set_parameter_future_callback(self, future, node_name, param_name, new_value):
+    def set_target_node_parameter_future_callback(self, future, node_name, param_name, new_value):
         """Callback for the set parameter future"""
 
         if future.result() is not None:

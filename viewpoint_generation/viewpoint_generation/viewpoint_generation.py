@@ -32,7 +32,9 @@ class ViewpointGeneration():
     point_cloud = None
     curvatures = None  # Will be set after estimating curvature
 
-    ppsqmm = 100
+    # Sampling Parameters
+
+    N_sampling_points = 10000
 
     # Region Growth Parameters
 
@@ -138,49 +140,55 @@ class ViewpointGeneration():
         return vertices, triangles
 
     def set_mesh_file(self, mesh_file, units):
+        """Set the mesh file and its units."""
+
+        # Check if the new mesh file and units are the same as the current ones
+        if mesh_file == self.mesh_file and units == self.mesh_units:
+            return False, 'Mesh file and units already set.'
+
+        # Clear existing mesh
         if mesh_file == '':
-            return False, 'No triangle mesh file provided.'
+            self.mesh = None
+            self.mesh_file = None
+            self.mesh_units = None
+            return True, 'No triangle mesh file provided. Mesh cleared.'
 
-        if mesh_file is not self.mesh_file or units is not self.mesh_units:
-            if mesh_file == '':
-                return False, 'No triangle mesh file provided.'
+        try:
+            mesh = o3d.io.read_triangle_mesh(mesh_file)
+        except Exception as e:
+            return False, f'Could not load requested triangle mesh file: {e}'
 
-            try:
-                mesh = o3d.io.read_triangle_mesh(mesh_file)
-            except Exception as e:
-                return False, f'Could not load requested triangle mesh file: {e}'
+        # Check if the mesh is empty
+        if mesh.is_empty():
+            return False, 'The loaded triangle mesh is empty.'
 
-            # Check if the mesh is empty
-            if mesh.is_empty():
-                return False, 'The loaded triangle mesh is empty.'
+        mesh.compute_vertex_normals()
+        # Estimate normals if not already present
+        if not mesh.has_vertex_normals():
+            mesh.estimate_vertex_normals(
+                search_param=o3d.geometry.KDTreeSearchParamHybrid(
+                    radius=0.1, max_nn=self.region_growing_config.knn_neighbors))
 
-            mesh.compute_vertex_normals()
-            # Estimate normals if not already present
-            if not mesh.has_vertex_normals():
-                mesh.estimate_vertex_normals(
-                    search_param=o3d.geometry.KDTreeSearchParamHybrid(
-                        radius=0.1, max_nn=self.region_growing_config.knn_neighbors))
+        # Scale the mesh to meters
+        if units == 'cm':
+            mesh.scale(0.01, center=(0, 0, 0))
+        elif units == 'mm':
+            mesh.scale(0.001, center=(0, 0, 0))
+        elif units == 'in':
+            mesh.scale(0.0254, center=(0, 0, 0))
+        elif units == 'm':
+            # No scaling needed for meters
+            pass
+        else:
+            return False, 'Unknown units. Mesh not scaled.'
 
-            # Scale the mesh to meters
-            if units == 'cm':
-                mesh.scale(0.01, center=(0, 0, 0))
-            elif units == 'mm':
-                mesh.scale(0.001, center=(0, 0, 0))
-            elif units == 'in':
-                mesh.scale(0.0254, center=(0, 0, 0))
-            elif units == 'm':
-                # No scaling needed for meters
-                pass
-            else:
-                return False, 'Unknown units. Mesh not scaled.'
+        # Check if the mesh has colors
+        mesh.paint_uniform_color(self.mesh_color)
 
-            # Check if the mesh has colors
-            mesh.paint_uniform_color(self.mesh_color)
-
-            # Update the triangle mesh file
-            self.mesh_file = mesh_file
-            self.mesh_units = units
-            self.mesh = mesh
+        # Update the triangle mesh file
+        self.mesh_file = mesh_file
+        self.mesh_units = units
+        self.mesh = mesh
 
         if self.visualize:
             self.viewer.create_window(
@@ -197,14 +205,19 @@ class ViewpointGeneration():
         return True, f'Triangle mesh file set to \'{mesh_file}\' with units \'{units}\'.'
 
     def set_point_cloud_file(self, point_cloud_file, point_cloud_units):
-        if point_cloud_file is self.point_cloud_file:
+        """Set the point cloud file and its units."""
+
+        # Check if the new point cloud file and units are the same as the current ones
+        if point_cloud_file == self.point_cloud_file and point_cloud_units == self.point_cloud_units:
             return True, 'Point cloud file already set.'
 
+        # Clear existing point cloud
         if point_cloud_file == '':
             self.point_cloud_file = None
             self.point_cloud = None
             return True, 'Point cloud file cleared.'
 
+        # Load the new point cloud
         try:
             point_cloud = o3d.io.read_point_cloud(point_cloud_file)
         except Exception as e:
@@ -254,35 +267,19 @@ class ViewpointGeneration():
 
         return True, f'Point cloud file set to \'{point_cloud_file}\' with units \'{point_cloud_units}\'.'
 
-    def set_ppsqmm(self, ppsqmm):
-        if ppsqmm <= 0:
-            msg = 'Points per square millimeter must be greater than 0.'
-            return False, msg
-
-        self.ppsqmm = ppsqmm
-
-        # Recalculate the number of points to sample based on the new ppsqmm
-        if self.mesh is not None:
-            N_points = int(self.mesh.get_surface_area() * (self.ppsqmm * 1e6))
-            if N_points > 100000:
-                N_points = 100000
-            msg = f'Number of points to sample: {N_points}'
-            return True, N_points
-        else:
-            msg = 'No triangle mesh loaded. Cannot set ppsqmm.'
-            return False, 0
-
     def set_sampling_number_of_points(self, N_points):
         if N_points <= 0:
             return False, 'Number of points must be greater than 0.'
         elif self.mesh is None:
             return False, 'No triangle mesh loaded. Cannot set sampling number of points.'
 
+        self.N_sampling_points = N_points
+
         area = self.mesh.get_surface_area()
         ppsqmm = N_points / (area * 1e6)
-        self.ppsqmm = ppsqmm
-        msg = f'Points per square millimeter set to {self.ppsqmm}.'
-        return True, ppsqmm
+        self.fc_config.ppsqmm = ppsqmm
+        msg = f'Points to sample set to {N_points}.'
+        return True, N_points
 
     def sample_point_cloud(self):
         # Perform poisson disk sampling on the triangle mesh
@@ -292,22 +289,20 @@ class ViewpointGeneration():
         elif self.is_running:
             return False, 'Point cloud partitioning is running.'
 
-        N_points = int(self.mesh.get_surface_area() * (self.ppsqmm * 1e6))
-        if N_points <= 0:
+        if self.N_sampling_points <= 0:
             return False, 'Number of points to sample must be greater than 0.'
 
-        print('Number of points to sample:', N_points)
+        print('Number of points to sample:', self.N_sampling_points)
         print(f'Mesh units: {self.mesh_units}')
 
         # Save the sampled point cloud to a file under a directory named after the mesh file in the same directory as the mesh file
         mesh_dir = self.mesh_file.rsplit('/', 1)[0]
         mesh_name = self.mesh_file.rsplit(
             '/', 1)[-1].rsplit('.', 1)[0]
-        point_cloud_dir = mesh_dir + '/' + mesh_name + '_point_cloud'
+        point_cloud_dir = mesh_dir + '/' + mesh_name + '_' + self.mesh_units
         # Name the point_cloud file after the mesh file name with N_points appended and save as a ply file
-        point_cloud_file = point_cloud_dir + '/' + mesh_name + '_' + \
-            self.mesh_units + '_point_cloud_' + \
-            str(int(N_points)) + 'points.ply'
+        point_cloud_file = point_cloud_dir + \
+            '/' + str(int(self.N_sampling_points)) + 'points.ply'
         # Create the directory if it does not exist
         if not os.path.exists(point_cloud_dir):
             os.makedirs(point_cloud_dir)
@@ -316,7 +311,7 @@ class ViewpointGeneration():
         if not os.path.exists(point_cloud_file):
             # Sample the point cloud
             point_cloud = self.mesh.sample_points_poisson_disk(
-                number_of_points=int(N_points), init_factor=5, use_triangle_normal=True)
+                number_of_points=int(self.N_sampling_points), init_factor=5, use_triangle_normal=True)
             # Save the point cloud to a file
             o3d.io.write_point_cloud(point_cloud_file, point_cloud)
 
@@ -500,6 +495,7 @@ class ViewpointGeneration():
         Returns:
             bool: True if the curvature file was set successfully, False otherwise.
         """
+        # Clear existing curvature
         if curvature_file == '':
             self.curvatures_file = None
             self.curvatures = None
@@ -507,7 +503,10 @@ class ViewpointGeneration():
 
         if not os.path.exists(curvature_file):
             return False, f'Curvature file does not exist: \'{curvature_file}\'.'
+        elif not curvature_file.endswith('.npy'):
+            return False, f'Curvature file is not a .npy file: \'{curvature_file}\'.'
 
+        # Load the new curvature
         self.curvatures = np.load(curvature_file)
 
         return True, f'Curvature file set to \'{curvature_file}\'.'
@@ -527,6 +526,8 @@ class ViewpointGeneration():
 
         if not os.path.exists(regions_file):
             return False, f'Regions file does not exist: \'{regions_file}\'.'
+        elif not regions_file.endswith('.json'):
+            return False, f'Regions file is not a .json file: \'{regions_file}\'.'
 
         with open(regions_file, 'r') as f:
             self.regions_dict = json.load(f)
@@ -581,20 +582,30 @@ class ViewpointGeneration():
     def save_regions_dict(self, regions_dict):
         # Save the regions to a json file named after the point cloud curvature file stripped of the  .npy extension
         point_cloud_dir = self.point_cloud_file.rsplit('/', 1)[0]
-        point_cloud_file = self.point_cloud_file.rsplit(
+        point_cloud_name = self.point_cloud_file.rsplit(
             '/', 1)[-1].rsplit('.', 1)[0]
-        regions_file = point_cloud_dir + '/' + point_cloud_file + '_' + \
-            str(self.region_growing_config.seed_threshold) + '_' + \
-            str(self.region_growing_config.min_cluster_size) + '_' + \
-            str(self.region_growing_config.max_cluster_size) + '_' + \
-            str(self.region_growing_config.curvature_threshold) + '_' + \
-            str(self.region_growing_config.curvature_threshold) + '_' + \
-            str(self.region_growing_config.normal_angle_threshold) + '_' + \
-            datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + \
-            '_viewpoints.json'
+        regions_dir = point_cloud_dir + '/' + point_cloud_name + '_regions'
+        # Name after # of Regions and # of Viewpoints if available
+        N_regions = 0
+        N_clusters = 0
+        has_viewpoints = False
+        for region_id, region in regions_dict['regions'].items():
+            N_regions += 1
+            if 'clusters' in region:
+                N_clusters += len(region['clusters'].keys())
+                # if 'viewpoint' in region['clusters']['0']:
+                # has_viewpoints = True
+
+        regions_file = regions_dir + '/' + \
+            str(N_regions) + '_regions_'
+        if N_clusters > 0:
+            regions_file += str(N_clusters) + '_clusters_'
+        if has_viewpoints:
+            regions_file += 'viewpoints_'
+        regions_file += datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + '.json'
         # Create the directory if it does not exist
-        if not os.path.exists(point_cloud_dir):
-            os.makedirs(point_cloud_dir)
+        if not os.path.exists(regions_dir):
+            os.makedirs(regions_dir)
         # Save the region dictionary to a json file
         with open(regions_file, 'w') as f:
             json.dump(regions_dict, f, indent=4)
@@ -619,9 +630,13 @@ class ViewpointGeneration():
             # Perform FOV clustering
             fov_clusters = self.fc.fov_clustering(region_point_cloud)
             self.regions_dict['regions'][region_id]['clusters'] = {}
-            for i, fov_cluster in enumerate(fov_clusters):
+            i = 0
+            for fov_cluster in fov_clusters:
+                if len(fov_cluster) <= 3:
+                    continue
                 self.regions_dict['regions'][region_id]['clusters'][i] = {
                     'points': fov_cluster}
+                i += 1
 
             # Assign default order
             self.regions_dict['regions'][region_id]['order'] = list(

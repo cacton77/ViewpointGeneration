@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
+import os
 import rclpy
 import sys
 import copy
 import time
+import yaml
 import json
 import random
 import numpy as np
@@ -10,9 +12,11 @@ import open3d as o3d
 import open3d.visualization.gui as gui
 from pprint import pprint
 from matplotlib import colormaps
+from scipy.spatial import Delaunay
 
 from viewpoint_generation.gui_node import ROSThread
 from viewpoint_generation.assets.materials import Materials
+from viewpoint_generation.alphashapes import filter_large_triangles
 
 sys.stdout.reconfigure(line_buffering=True)
 isMacOS = sys.platform == 'darwin'
@@ -21,6 +25,7 @@ isMacOS = sys.platform == 'darwin'
 
 class GUIClient():
 
+    MENU_LOGO = 0
     MENU_OPEN = 1
     MENU_SAVE = 2
     MENU_SAVE_AS = 3
@@ -55,6 +60,9 @@ class GUIClient():
 
     region_number = 0
     cluster_number = 0
+    mesh_name = None
+    mesh_units = None
+    point_cloud_name = None
     region_names = []
     cluster_names = []
     last_slider_value = 1
@@ -64,16 +72,17 @@ class GUIClient():
         self.app = gui.Application.instance
 
         # Fonts
-        font_sans_serif = gui.FontDescription(
-            typeface="DejaVu Sans Mono:style=Bold", style=gui.FontStyle.NORMAL, point_size=15)
-        font_monospace = gui.FontDescription(
-            typeface="monospace", style=gui.FontStyle.BOLD, point_size=32)
+        deja_vu_sans = gui.FontDescription(
+            typeface="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", style=gui.FontStyle.NORMAL, point_size=14)
+        deja_vu_sans_it = gui.FontDescription(
+            typeface="/usr/share/fonts/truetype/dejavu/DejaVuSansSans-Oblique.ttf", style=gui.FontStyle.ITALIC, point_size=14)
 
         # Must be run before application.create_window()
-        font_id_sans_serif = gui.Application.instance.add_font(font_sans_serif)
-        font_id_monospace = gui.Application.instance.add_font(font_monospace)
+        self.font_id_sans_serif = gui.Application.instance.add_font(
+            deja_vu_sans)
+        self.font_id_it = gui.Application.instance.add_font(deja_vu_sans_it)
 
-        self.app.set_font(0, font_sans_serif)
+        self.app.set_font(0, deja_vu_sans)
 
         self.window = self.app.create_window(
             "Viewpoint Generation", width=1280, height=720, x=0, y=30)
@@ -160,12 +169,6 @@ class GUIClient():
 
     def add_xy_plane(self, bbox):
         if bbox:
-            # self.scene_widget.scene.add_geometry(
-            # 'bounding box', bbox, self.axes_line_material)
-            # scale xy_axes by the bounding box diagonal
-            diag = bbox.get_max_bound() - bbox.get_min_bound()
-            diag = np.linalg.norm(np.asarray(diag))
-
             # XY Axes
             x0, y0, _ = bbox.get_min_bound()
             # Round x0 and y0 to the nearest 10
@@ -386,6 +389,7 @@ class GUIClient():
                 app_menu.add_separator()
                 app_menu.add_item(
                     "Quit", self.MENU_QUIT)
+            logo_menu = gui.Menu()
             file_menu = gui.Menu()
             file_menu.add_item(
                 "New", self.MENU_NEW)
@@ -397,8 +401,6 @@ class GUIClient():
             file_menu.add_item(
                 "Save As...", self.MENU_SAVE_AS)
             file_menu.add_separator()
-            file_menu.add_item("Import Model", self.MENU_IMPORT_MODEL)
-            file_menu.add_item("Import Point Cloud", self.MENU_IMPORT_PCD)
             if not isMacOS:
                 file_menu.add_separator()
                 file_menu.add_item(
@@ -489,6 +491,7 @@ class GUIClient():
                 # Don't include help menu unless it has something more than
                 # About...
             else:
+                menu.add_menu("@", logo_menu)
                 menu.add_menu("File", file_menu)
                 menu.add_menu("Edit", edit_menu)
                 menu.add_menu("View", view_menu)
@@ -507,6 +510,9 @@ class GUIClient():
             self.MENU_SAVE, self._on_menu_save)
         w.set_on_menu_item_activated(
             self.MENU_SAVE_AS, self._on_menu_save_as)
+        w.set_on_menu_item_activated(
+            self.MENU_OPEN, self._on_menu_open
+        )
         # w.set_on_menu_item_activated(self.MENU_IMPORT_MODEL,
         #                              self._on_menu_import_model)
         # w.set_on_menu_item_activated(self.MENU_IMPORT_PCD,
@@ -553,21 +559,24 @@ class GUIClient():
         em = w.theme.font_size
         self.footer = gui.Horiz(0.25*em)
         self.footer_label = gui.Label("Footer")
+        self.footer_label.font_id = self.font_id_it
         self.footer_label.text_color = Materials.footer_text_color
         self.footer.add_child(self.footer_label)
         self.footer.background_color = Materials.footer_panel_color
         w.add_child(self.footer)
 
     def _on_menu_save(self):
-        pass
+        self.ros_thread.save_parameters_to_file(os.path.join(
+            self.ros_thread.data_path, self.ros_thread.file_name) + ".yaml")
 
     def _on_menu_save_as(self):
         """Handle the Save As menu item"""
         # Open a file dialog to select the save location
         file_dialog = gui.FileDialog(
             gui.FileDialog.SAVE, "Save Config As...", self.window.theme)
-        file_dialog.add_filter("*.yaml", "YAML Files (*.yaml)")
-        file_dialog.add_filter("*.json", "JSON Files (*.json)")
+        file_dialog.add_filter(".yaml", "YAML Files (*.yaml)")
+        file_dialog.add_filter(".json", "JSON Files (*.json)")
+        file_dialog.set_path(self.ros_thread.data_path)
         file_dialog.set_on_done(self._on_save_as_done)
         file_dialog.set_on_cancel(self.window.close_dialog)
         self.window.show_dialog(file_dialog)
@@ -580,6 +589,24 @@ class GUIClient():
             print(f"Parameters saved to {file_path}")
         else:
             print("Save As cancelled")
+
+        self.window.close_dialog()
+
+    def _on_menu_open(self):
+        file_dialog = gui.FileDialog(
+            gui.FileDialog.OPEN, "Open Config...", self.window.theme)
+        file_dialog.add_filter(".yaml", "YAML Files (*.yaml)")
+        file_dialog.set_path(self.ros_thread.data_path)
+        file_dialog.set_on_done(self._on_open_done)
+        file_dialog.set_on_cancel(self.window.close_dialog)
+        self.window.show_dialog(file_dialog)
+
+    def _on_open_done(self, file_path):
+        if file_path:
+            self.ros_thread.load_config(file_path)
+            print(f"Config loaded from {file_path}")
+        else:
+            print("Open cancelled")
 
         self.window.close_dialog()
 
@@ -658,7 +685,7 @@ class GUIClient():
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_AXES, show)
         self.ros_thread.show_axes = show
-        self.ros_thread.set_param('show_axes', show)
+        self.ros_thread.set_parameter('show_axes', show)
 
     def show_grid(self, show=True):
         self.scene_widget.scene.show_ground_plane(
@@ -668,7 +695,7 @@ class GUIClient():
             self.MENU_SHOW_GRID, show)
 
         self.ros_thread.show_grid = show
-        self.ros_thread.set_param('show_grid', show)
+        self.ros_thread.set_parameter('show_grid', show)
 
     def show_model_bounding_box(self, show=True):
         # Show/hide model bounding box.
@@ -677,7 +704,7 @@ class GUIClient():
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_MODEL_BB, show)
         self.ros_thread.show_model_bounding_box = show
-        self.ros_thread.set_param('show_model_bounding_box', show)
+        self.ros_thread.set_parameter('show_model_bounding_box', show)
 
     def show_reticle(self, show=True):
         self.scene_widget.scene.show_geometry('reticle', show)
@@ -685,12 +712,12 @@ class GUIClient():
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_RETICLE, show)
         self.ros_thread.show_reticle = show
-        self.ros_thread.set_param('show_reticle', show)
+        self.ros_thread.set_parameter('show_reticle', show)
 
     def show_skybox(self, show=True):
         self.scene_widget.scene.show_skybox(show)
         self.ros_thread.show_skybox = show
-        self.ros_thread.set_param('show_skybox', show)
+        self.ros_thread.set_parameter('show_skybox', show)
 
     def show_mesh(self, show=True):
         # Show/hide mesh.
@@ -779,7 +806,7 @@ class GUIClient():
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_PATH, show)
         self.ros_thread.show_path = show
-        self.ros_thread.set_param('show_path', show)
+        self.ros_thread.set_parameter('show_path', show)
 
     def show_noise_points(self, show=True):
         self.scene_widget.scene.show_geometry('noise_points', show)
@@ -787,7 +814,11 @@ class GUIClient():
             self.MENU_SHOW_NOISE_POINTS, show)
 
         self.ros_thread.show_noise_points = show
-        self.ros_thread.set_param('show_noise_points', show)
+        self.ros_thread.set_parameter('show_noise_points', show)
+
+    def update_footer(self, message):
+        """Update the footer status message."""
+        self.footer_label.text = message
 
     # ============================================================================
     # INIT MAIN LAYOUT
@@ -836,7 +867,7 @@ class GUIClient():
         """Create a scrollable panel for a tab - ONLY scrolling here"""
         # Create scrollable area directly - no intermediate containers
         scroll_area = gui.ScrollableVert(
-            0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 1.25 * em, 0.25 * em))
+            0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 2 * em, 0.25 * em))
         scroll_area.background_color = Materials.panel_color
 
         # Create the content recursively
@@ -894,8 +925,15 @@ class GUIClient():
 
     def create_nested_content(self, node_name, parent_name, data, em, level=0):
         """Recursively create nested content for parameters"""
-        container = gui.Vert(
-            0.25 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        # Increase spacing based on nesting level for better hierarchy
+        spacing = 0.5 * em if level == 0 else 0.33 * em
+        margins = gui.Margins(
+            left=0.25 * em + (level * 0.125 * em),  # Indent nested levels
+            top=0.25 * em,
+            right=0.0 * em,
+            bottom=0.25 * em
+        )
+        container = gui.Vert(spacing, margins)
 
         # If this is a leaf parameter (has 'name', 'type', 'value')
         if isinstance(data, dict) and 'name' in data and 'type' in data and 'value' in data:
@@ -919,19 +957,25 @@ class GUIClient():
         return container
 
     def create_parameter_widget(self, node_name, param_data, em):
-        """Create a widget for a single parameter"""
-        # Create a grid layout for label and widget
-        grid = gui.VGrid(2, 0.25 * em, gui.Margins(0.75 * em,
-                         0.25 * em, 0.25 * em, 0.25 * em))
+        row = gui.Horiz(0.5 * em, gui.Margins(0.25 * em,
+                        0.25 * em, 0.0 * em, 0.25 * em))
 
         param_name = param_data['name']
         param_type = param_data['type']
         param_value = param_data['value']
 
         # Create label
-        label = gui.Label(param_name.split('.')[-1].replace('_', ' ').title())
+        label_container = gui.Vert()
+        label_container.preferred_width = 6 * em
+        # If "percentage" in param_name, replace with "%"
+        if "percentage" in param_name:
+            param_name = param_name.replace("percentage", "%")
+        label = gui.Label(param_name.split(
+            '.')[-1].replace('_', ' ').title() + ":")
         label.text_color = Materials.text_color
-        grid.add_child(label)
+        label_container.add_child(label)
+        row.add_child(label_container)
+        row.add_stretch()
 
         # Create appropriate widget based on type
         widget = None
@@ -941,97 +985,89 @@ class GUIClient():
             widget.checked = bool(param_value)
             widget.set_on_checked(
                 lambda checked, name=param_name: self.on_parameter_changed(node_name, name, checked))
+            row.add_child(widget)  # ADD HERE
 
         elif param_type == 'integer':
             widget = gui.NumberEdit(gui.NumberEdit.INT)
             widget.int_value = int(param_value)
             widget.set_on_value_changed(
                 lambda value, name=param_name: self.on_parameter_changed(node_name, name, value))
+            row.add_child(widget)  # ADD HERE
 
         elif param_type == 'double':
-            widget = gui.NumberEdit(gui.NumberEdit.DOUBLE)
-            widget.double_value = float(param_value)
+            if 'normal_angle_threshold' in param_name.lower():
+                widget = gui.Slider(gui.Slider.DOUBLE)
+                widget.set_limits(0, 180)
+            else:
+                widget = gui.NumberEdit(gui.NumberEdit.DOUBLE)
+                widget.double_value = float(param_value)
+
             widget.set_on_value_changed(
                 lambda value, name=param_name: self.on_parameter_changed(node_name, name, value))
+            row.add_child(widget)  # ADD HERE
 
         elif param_type == 'string':
             if 'file' in param_name.lower() or 'path' in param_name.lower():
-                # Create a horizontal layout for file path + browse button
-                file_layout = gui.Horiz(0.25 * em)
-
                 widget = gui.TextEdit()
                 widget.background_color = Materials.text_edit_background_color
                 widget.text_value = str(param_value)
                 widget.set_on_text_changed(
-                    lambda text, node_name=node_name, name=param_name: self.on_parameter_changed(node_name, name, text))
+                    lambda text, name=param_name: self.on_parameter_changed(node_name, name, text))
+
+                row.add_child(widget)
+                row.add_fixed(0.25 * em)
 
                 browse_button = gui.Button("...")
                 browse_button.background_color = Materials.button_background_color
                 browse_button.horizontal_padding_em = 0.5
                 browse_button.vertical_padding_em = 0
-                browse_button.set_on_clicked(
-                    lambda node_name=node_name, name=param_name: self.on_browse_file(node_name, name))
+                if 'mesh' in param_name.lower():
+                    browse_button.set_on_clicked(
+                        lambda node_name=node_name, name=param_name: self.on_browse_mesh(node_name, name))
+                elif 'point_cloud' in param_name.lower():
+                    browse_button.set_on_clicked(
+                        lambda node_name=node_name, name=param_name: self.on_browse_pointcloud(node_name, name))
+                elif 'regions' in param_name.lower():
+                    browse_button.set_on_clicked(
+                        lambda node_name=node_name, name=param_name: self.on_browse_regions(node_name, name))
+                else:
+                    browse_button.set_on_clicked(
+                        lambda node_name=node_name, name=param_name: self.on_browse_file(node_name, name))
 
-                file_layout.add_child(widget)
-                # Add some space between text and button
-                file_layout.add_fixed(0.25 * em)
-                file_layout.add_child(browse_button)
+                row.add_child(browse_button)
 
-                grid.add_child(file_layout)
             elif 'unit' in param_name.lower():
-                # Create a dropdown for unit selection
-                layout = gui.Horiz(0.25 * em)
                 widget = gui.Combobox()
                 units = ['m', 'cm', 'mm', 'in', 'ft']
                 for unit in units:
                     widget.add_item(unit)
                 widget.selected_index = units.index(param_value)
+                widget.set_on_selection_changed(
+                    lambda selected_text, selected_index: self.on_parameter_changed(
+                        node_name, param_name, selected_text))
+                row.add_child(widget)  # ADD HERE
 
-                def on_unit_changed(selected_text, selected_index):
-                    """Handle unit selection change"""
-                    self.on_parameter_changed(
-                        node_name, param_name, selected_text)
-
-                widget.set_on_selection_changed(on_unit_changed)
-
-                layout.add_child(widget)
-                grid.add_child(layout)
             elif 'metric' in param_name.lower():
-                # Create a dropdown for focus metric selection
-                layout = gui.Horiz(0.25 * em)
                 widget = gui.Combobox()
-                metric = ['sobel', 'squared_gradient', 'fswm']
-                for unit in metric:
-                    widget.add_item(unit)
-                widget.selected_index = metric.index(param_value)
+                metrics = ['sobel', 'squared_gradient', 'fswm']
+                for metric in metrics:
+                    widget.add_item(metric)
+                widget.selected_index = metrics.index(param_value)
+                widget.set_on_selection_changed(
+                    lambda selected_text, selected_index: self.on_parameter_changed(
+                        node_name, param_name, selected_text))
+                row.add_child(widget)  # ADD HERE
 
-                def on_metric_changed(selected_text, selected_index):
-                    """Handle metric selection change"""
-                    self.on_parameter_changed(
-                        node_name, param_name, selected_text)
-
-                widget.set_on_selection_changed(on_metric_changed)
-
-                layout.add_child(widget)
-                grid.add_child(layout)
             elif 'algorithm' in param_name.lower():
-                # Create a dropdown for focus algorithm selection
-                layout = gui.Horiz(0.25 * em)
                 widget = gui.Combobox()
-                algorithm = ['default', 'adaptive', 'ehc']
-                for unit in algorithm:
-                    widget.add_item(unit)
-                widget.selected_index = algorithm.index(param_value)
-
-                def on_algorithm_changed(selected_text, selected_index):
-                    """Handle algorithm selection change"""
-                    self.on_parameter_changed(
-                        node_name, param_name, selected_text)
-
-                widget.set_on_selection_changed(on_algorithm_changed)
-
-                layout.add_child(widget)
-                grid.add_child(layout)
+                algorithms = ['default', 'adaptive', 'ehc']
+                for algorithm in algorithms:
+                    widget.add_item(algorithm)
+                widget.selected_index = algorithms.index(param_value)
+                widget.set_on_selection_changed(
+                    lambda selected_text, selected_index: self.on_parameter_changed(
+                        node_name, param_name, selected_text))
+                row.add_child(widget)  # ADD HERE
 
             else:
                 widget = gui.TextEdit()
@@ -1039,7 +1075,7 @@ class GUIClient():
                 widget.text_value = str(param_value)
                 widget.set_on_text_changed(
                     lambda text, name=param_name: self.on_parameter_changed(node_name, name, text))
-                grid.add_child(widget)
+                row.add_child(widget)  # ADD HERE
 
         else:
             # Default to text edit for unknown types
@@ -1047,24 +1083,22 @@ class GUIClient():
             widget.background_color = Materials.text_edit_background_color
             widget.text_value = str(param_value)
             widget.set_on_text_changed(
-                lambda text, node_name=node_name, name=param_name: self.on_parameter_changed(node_name, name, text))
-            grid.add_child(widget)
+                lambda text, name=param_name: self.on_parameter_changed(node_name, name, text))
+            row.add_child(widget)  # ADD HERE
 
         # Store widget reference
-        if widget is not None and param_type != 'string' or 'file' not in param_name.lower():
-            self.parameter_widgets[node_name][param_name] = widget
-            grid.add_child(widget)
-        else:
+        if widget is not None:
             self.parameter_widgets[node_name][param_name] = widget
 
-        return grid
+        return row
 
     def on_parameter_changed(self, node_name, param_name, new_value):
         """Handle parameter value changes"""
         # Update the internal dictionary
         self.update_parameter_value(node_name, param_name, new_value)
         # Set Parameter via ROS thread
-        self.set_parameter(node_name, param_name, new_value)
+        self.ros_thread.set_target_node_parameter(
+            node_name, param_name, new_value)
 
     def update_parameter_value(self, node_name, param_name, new_value):
         """Update parameter value in the nested dictionary"""
@@ -1083,10 +1117,64 @@ class GUIClient():
         if final_key in current and isinstance(current[final_key], dict):
             current[final_key]['value'] = new_value
 
+    def on_browse_mesh(self, node_name, param_name):
+        """Handle mesh file browse button clicks"""
+        file_dialog = gui.FileDialog(
+            gui.FileDialog.OPEN, "Choose mesh file", self.window.theme)
+        file_dialog.set_path(self.ros_thread.data_path)
+        file_dialog.add_filter(".stl", "Stereolithography Mesh(*.stl)")
+
+        file_dialog.set_on_cancel(self.window.close_dialog)
+        file_dialog.set_on_done(
+            lambda path: self.on_file_selected(node_name, param_name, path))
+        self.window.show_dialog(file_dialog)
+
+    def on_browse_pointcloud(self, node_name, param_name):
+        """Handle point cloud file browse button clicks"""
+        file_dialog = gui.FileDialog(
+            gui.FileDialog.OPEN, "Choose point cloud file", self.window.theme)
+        file_path = self.ros_thread.data_path
+        if self.mesh_name:
+            pointcloud_path = os.path.join(
+                self.ros_thread.data_path, f"{self.mesh_name}_{self.mesh_units}")
+            # If pointcloud_path exists, use it
+            if os.path.exists(pointcloud_path):
+                file_path = pointcloud_path
+
+        file_dialog.set_path(file_path)
+        file_dialog.add_filter(".ply", "Polygon File Format(*.ply)")
+
+        file_dialog.set_on_cancel(self.window.close_dialog)
+        file_dialog.set_on_done(
+            lambda path: self.on_file_selected(node_name, param_name, path))
+        self.window.show_dialog(file_dialog)
+
+    def on_browse_regions(self, node_name, param_name):
+        """Handle regions file browse button clicks"""
+        file_dialog = gui.FileDialog(
+            gui.FileDialog.OPEN, "Choose regions file", self.window.theme)
+        file_path = self.ros_thread.data_path
+        if self.point_cloud_name:
+            pointcloud_path = os.path.join(
+                self.ros_thread.data_path, f"{self.mesh_name}_{self.mesh_units}")
+            regions_path = os.path.join(
+                pointcloud_path, f"{self.point_cloud_name}_regions")
+            # If regions_path exists, use it
+            if os.path.exists(regions_path):
+                file_path = regions_path
+        file_dialog.set_path(file_path)
+        file_dialog.add_filter(".json", "JSON files (*.json)")
+
+        file_dialog.set_on_cancel(self.window.close_dialog)
+        file_dialog.set_on_done(
+            lambda path: self.on_file_selected(node_name, param_name, path))
+        self.window.show_dialog(file_dialog)
+
     def on_browse_file(self, node_name, param_name):
         """Handle file browse button clicks"""
         file_dialog = gui.FileDialog(
             gui.FileDialog.OPEN, "Choose file", self.window.theme)
+        file_dialog.set_path(self.ros_thread.data_path)
         file_dialog.set_on_cancel(self.window.close_dialog)
         file_dialog.set_on_done(
             lambda path: self.on_file_selected(node_name, param_name, path))
@@ -1108,91 +1196,6 @@ class GUIClient():
     def on_sample_point_cloud(self):
         """Handle sample point cloud button click"""
         self.ros_thread.sample_point_cloud()
-
-    def set_parameter(self, node_name, parameter_name, new_value):
-        self.ros_thread.set_parameter(node_name, parameter_name, new_value)
-
-    def set_widget_value(self, widget, value):
-        """Set the value of a widget based on its type"""
-        try:
-            if hasattr(widget, 'checked'):
-                # Checkbox widget
-                widget.checked = bool(value)
-            elif hasattr(widget, 'int_value'):
-                # Integer NumberEdit widget
-                widget.int_value = int(value)
-            elif hasattr(widget, 'double_value'):
-                # Double NumberEdit widget
-                # Round to 3 decimal places for consistency
-                value = round(float(value), 3)
-                widget.double_value = float(value)
-            elif hasattr(widget, 'text_value'):
-                # TextEdit widget
-                widget.text_value = str(value)
-                if value == '':
-                    widget.text_value = 'None'
-            else:
-                print(f"Warning: Unknown widget type for value: {value}")
-        except Exception as e:
-            print(f"Error setting widget value to {value}: {e}")
-
-    def update_all_widgets_from_dict(self):
-        """Update all widget values from the current parameter dictionary"""
-
-        parameters_dict = self.ros_thread.parameters_dict
-        parameters_updated = False
-
-        for node_name, node_parameter_widgets in self.parameter_widgets.items():
-            for param_name, widget in node_parameter_widgets.items():
-                if param_name in parameters_dict[node_name]:
-                    update_flag = parameters_dict[node_name][param_name]['update_flag']
-                    if update_flag:
-                        parameters_updated = True
-                        # Update the widget value from the parameters dictionary
-                        if 'value' in parameters_dict[node_name][param_name]:
-                            param_value = parameters_dict[node_name][param_name]['value']
-                            self.set_widget_value(widget, param_value)
-
-                            # if param_name is 'model.mesh.file' load the mesh
-                            if 'model.mesh.file' in param_name:
-                                self.import_mesh(param_value)
-                            elif 'model.mesh.units' in param_name:
-                                # If units change, we need to rescale the mesh
-                                mesh_file = self.ros_thread.parameters_dict[
-                                    node_name]['model.mesh.file']['value']
-                                if mesh_file:
-                                    self.import_mesh(mesh_file)
-                            elif 'model.point_cloud.file' in param_name:
-                                self.import_point_cloud(param_value)
-                            elif 'model.point_cloud.units' in param_name:
-                                # If units change, we need to rescale the point cloud
-                                pcd_file = self.ros_thread.parameters_dict[
-                                    node_name]['model.point_cloud.file']['value']
-                                if pcd_file:
-                                    self.import_point_cloud(pcd_file)
-                            elif 'regions.region_growth.curvature.file' in param_name:
-                                self.import_curvature(param_value)
-                            elif 'regions.file' in param_name:
-                                self.import_regions(param_value)
-                            elif 'selected_region' in param_name:
-                                self.select_region(param_value)
-                            elif 'selected_viewpoint' in param_name:
-                                self.select_viewpoint(param_value)
-                            elif 'model.camera.fov.height' in param_name:
-                                self.camera_fov_height = param_value
-                                self.camera_updated = True
-                            elif 'model.camera.fov.width' in param_name:
-                                self.camera_fov_width = param_value
-                                self.camera_updated = True
-
-                            parameters_dict[node_name][param_name]['update_flag'] = False
-                            # print(f"Updated \'{param_name}\' to \'{param_value}\'")
-
-        if parameters_updated:
-            print("------------------------------------")
-            self.window.post_redraw()
-
-        self.ros_thread.parameters_dict = parameters_dict
 
     def init_viewpoint_traversal_layout(self):
         """Initialize the region tabs"""
@@ -1279,6 +1282,11 @@ class GUIClient():
 
         self.window.add_child(self.viewpoint_traversal_layout)
 
+    # -----------------------------------------------------------------------------------#
+
+    def load_config(self, file_path):
+        self.ros_thread.load_config(file_path)
+
     def import_mesh(self, file_path):
         print(f"Importing mesh from {file_path}")
         # Remove point cloud if it exists
@@ -1289,15 +1297,17 @@ class GUIClient():
                 print(f"Warning: Mesh file {file_path} is empty or invalid.")
             else:
 
-                mesh_units = self.ros_thread.parameters_dict[
+                self.mesh_name = file_path.rsplit(
+                    '/', 1)[-1].rsplit('.', 1)[0]
+                self.mesh_units = self.ros_thread.parameters_dict[
                     'viewpoint_generation']['model.mesh.units']['value']
-                if mesh_units == 'mm':
+                if self.mesh_units == 'mm':
                     mesh.scale(1.0, center=(0, 0, 0))
-                elif mesh_units == 'cm':
+                elif self.mesh_units == 'cm':
                     mesh.scale(10, center=(0, 0, 0))
-                elif mesh_units == 'm':
+                elif self.mesh_units == 'm':
                     mesh.scale(1000, center=(0, 0, 0))
-                elif mesh_units == 'in':
+                elif self.mesh_units == 'in':
                     mesh.scale(25.4, center=(0, 0, 0))
 
                 # Create model bounding box
@@ -1329,7 +1339,7 @@ class GUIClient():
                 # Set camera view to fit the mesh
                 bb = mesh.get_axis_aligned_bounding_box()
                 self.scene_widget.look_at(
-                    bb.get_center(), bb.get_max_bound() * 1.5, np.array([0, 0, 1]))
+                    bb.get_center(), bb.get_max_bound() * 1.5, np.array([0, 1, 0]))
 
                 self.add_xy_plane(bb)
 
@@ -1357,6 +1367,8 @@ class GUIClient():
                 print(
                     f"Warning: Point cloud file {file_path} is empty or invalid.")
             else:
+                self.point_cloud_name = file_path.rsplit(
+                    '/', 1)[-1].rsplit('.', 1)[0]
 
                 pcd_units = self.ros_thread.parameters_dict[
                     "viewpoint_generation"]['model.point_cloud.units']['value']
@@ -1501,11 +1513,12 @@ class GUIClient():
                         nb_neighbors=20, std_ratio=2.0)
                     fov_mesh = fov_point_cloud.compute_convex_hull(joggle_inputs=True)[
                         0]
+                    # fov_mesh = delaunay_to_o3d_mesh(fov_point_cloud)
                     fov_mesh.paint_uniform_color(cluster_color)
                     fov_mesh.compute_vertex_normals()
                     avg_normal = np.mean(np.asarray(
                         fov_point_cloud.normals), axis=0)
-                    fov_mesh.translate(avg_normal * 0.005)
+                    fov_mesh.translate(avg_normal * 0.20)
 
                     geometries_dict[region_name]['clusters'][cluster_name] = {
                         'mesh': fov_mesh}
@@ -1513,10 +1526,16 @@ class GUIClient():
                     if 'viewpoint' in cluster_dict:
 
                         show_viewpoints = True
-                        viewpoint_mesh = o3d.geometry.TriangleMesh.create_sphere(
-                            radius=5)
-                        viewpoint_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame(
-                            size=Materials.viewpoint_size, origin=[0, 0, 0])
+                        if Materials.viewpoint_type == "sphere":
+                            viewpoint_mesh = o3d.geometry.TriangleMesh.create_sphere(
+                                radius=Materials.viewpoint_sphere_size)
+                        elif Materials.viewpoint_type == "arrow":
+                            viewpoint_mesh = o3d.geometry.TriangleMesh.create_arrow()
+                            viewpoint_mesh.scale(
+                                Materials.viewpoint_arrow_scale, center=(0, 0, 0))
+                        else:
+                            viewpoint_mesh = o3d.geometry.TriangleMesh.create_coordinate_frame(
+                                size=Materials.viewpoint_axis_size, origin=[0, 0, 0])
                         origin = 1000 * \
                             np.array(
                                 cluster_dict['viewpoint']['origin'])
@@ -1564,6 +1583,9 @@ class GUIClient():
                 if len(region_view_cloud.points) > 4:
                     region_view_mesh = region_view_cloud.compute_convex_hull(
                         joggle_inputs=True)[0]
+                    region_view_mesh = filter_large_triangles(
+                        region_view_mesh, method='iqr', threshold_multiplier=5.0)
+                    region_view_mesh.compute_vertex_normals()
                     # region_view_mesh.paint_uniform_color(region_color)
                     geometries_dict[region_name]['view_mesh'] = region_view_mesh
                 else:
@@ -1632,7 +1654,7 @@ class GUIClient():
             self.show_fov_clusters(True)
             if show_viewpoints:
                 # Set viewpoints_file parameter in task_planning node
-                self.set_parameter(
+                self.ros_thread.set_target_node_parameter(
                     'inspection_task_planning', 'viewpoints_file', file_path)
 
                 self.show_viewpoints(True)
@@ -1662,6 +1684,7 @@ class GUIClient():
             f"Loaded regions from {file_path} and updated point cloud colors")
 
         self.init_viewpoint_traversal_layout()
+        self.select_region(0)
 
         # except Exception as e:
         #     print(f"Error loading regions from {file_path}: {e}")
@@ -1685,13 +1708,20 @@ class GUIClient():
         region_name = self.region_names[self.region_number]
         self.scene_widget.scene.modify_geometry_material(
             f"{region_name}_view_mesh", Materials.region_view_material)
+        # Restore last selected path to regular material
+        last_path_name = f"{region_name}_path"
+        self.scene_widget.scene.modify_geometry_material(
+            last_path_name, Materials.path_material)
 
         self.region_number = region_number
 
-        # Get region view mesh from the scene and paint it green
+        # Get region view mesh from the scene and paint it
         region_name = self.region_names[self.region_number]
         self.scene_widget.scene.modify_geometry_material(
             f"{region_name}_view_mesh", Materials.selected_region_view_material)
+        # Select path
+        self.scene_widget.scene.modify_geometry_material(
+            f"{region_name}_path", Materials.selected_path_material)
 
     def select_viewpoint(self, cluster_number):
         if not self.region_names:
@@ -1974,6 +2004,7 @@ class GUIClient():
         self.show_grid(self.ros_thread.show_grid)
         self.show_model_bounding_box(self.ros_thread.show_model_bounding_box)
         self.show_skybox(self.ros_thread.show_skybox)
+        self.update_footer(self.ros_thread.status_message)
 
         # Sleep to maintain FPS
         this_draw_time = time.time()
@@ -2032,6 +2063,87 @@ class GUIClient():
             0, r.height - vpt_height, vpt_width, vpt_height)
 
         self.footer.frame = gui.Rect(0, r.height, r.width, 2*em)
+
+    def set_widget_value(self, widget, value):
+        """Set the value of a widget based on its type"""
+        try:
+            if hasattr(widget, 'checked'):
+                # Checkbox widget
+                widget.checked = bool(value)
+            elif hasattr(widget, 'int_value'):
+                # Integer NumberEdit widget
+                widget.int_value = int(value)
+            elif hasattr(widget, 'double_value'):
+                # Double NumberEdit widget
+                # Round to 3 decimal places for consistency
+                # value = round(float(value), 3)
+                widget.double_value = value
+            elif hasattr(widget, 'text_value'):
+                # TextEdit widget
+                widget.text_value = str(value)
+                if value == '':
+                    widget.text_value = 'None'
+            else:
+                print(f"Warning: Unknown widget type for value: {value}")
+        except Exception as e:
+            print(f"Error setting widget value to {value}: {e}")
+
+    def update_all_widgets_from_dict(self):
+        """Update all widget values from the current parameter dictionary"""
+
+        parameters_dict = self.ros_thread.parameters_dict
+        parameters_updated = False
+
+        for node_name, node_parameter_widgets in self.parameter_widgets.items():
+            for param_name, widget in node_parameter_widgets.items():
+                if param_name in parameters_dict[node_name]:
+                    update_flag = parameters_dict[node_name][param_name]['update_flag']
+                    if update_flag:
+                        parameters_updated = True
+                        # Update the widget value from the parameters dictionary
+                        if 'value' in parameters_dict[node_name][param_name]:
+                            param_value = parameters_dict[node_name][param_name]['value']
+                            self.set_widget_value(widget, param_value)
+
+                            # if param_name is 'model.mesh.file' load the mesh
+                            if 'model.mesh.file' in param_name:
+                                self.import_mesh(param_value)
+                            elif 'model.mesh.units' in param_name:
+                                # If units change, we need to rescale the mesh
+                                mesh_file = self.ros_thread.parameters_dict[
+                                    node_name]['model.mesh.file']['value']
+                                if mesh_file:
+                                    self.import_mesh(mesh_file)
+                            elif 'model.point_cloud.file' in param_name:
+                                self.import_point_cloud(param_value)
+                            elif 'model.point_cloud.units' in param_name:
+                                # If units change, we need to rescale the point cloud
+                                pcd_file = self.ros_thread.parameters_dict[
+                                    node_name]['model.point_cloud.file']['value']
+                                if pcd_file:
+                                    self.import_point_cloud(pcd_file)
+                            elif 'model.point_cloud.curvature.file' in param_name:
+                                self.import_curvature(param_value)
+                            elif 'regions.file' in param_name:
+                                self.import_regions(param_value)
+                            elif 'selected_region' in param_name:
+                                self.select_region(param_value)
+                            elif 'selected_viewpoint' in param_name:
+                                self.select_viewpoint(param_value)
+                            elif 'model.camera.fov.height' in param_name:
+                                self.camera_fov_height = param_value
+                                self.camera_updated = True
+                            elif 'model.camera.fov.width' in param_name:
+                                self.camera_fov_width = param_value
+                                self.camera_updated = True
+
+                            parameters_dict[node_name][param_name]['update_flag'] = False
+
+        if parameters_updated:
+            print("------------------------------------")
+            self.window.post_redraw()
+
+        self.ros_thread.parameters_dict = parameters_dict
 
 
 def main(args=None):

@@ -16,7 +16,6 @@ autofocus:
     use_sim_time: false
 gui:
   ros__parameters:
-    file_name: default
     data_path: /data/ViewpointGenerationData
     show_axes: false
     show_curvatures: false
@@ -35,21 +34,31 @@ gui:
     use_sim_time: false
 inspection_task_planning:
   ros__parameters:
-    viewpoints_file: /data/ViewpointGenerationData/cylinder_mm/10000points_regions/4_regions_367_clusters_2025-10-14_23-00-30.json
+    controller_manager_name: /controller_manager
     data_path: /data/ViewpointGenerationData
+    selected_region: 0
+    selected_viewpoint: 0
+    servo_controllers:
+    - ur5e_forward_position_controller
+    - turntable_forward_position_controller
+    servo_node_name: servo_node
+    trajectory_controllers:
+    - inspection_cell_controller
     use_sim_time: false
+    viewpoints_file: /data/ViewpointGenerationData/cylinder_mm/10000points_regions/4_regions_367_clusters_2025-10-14_23-00-30.json
 viewpoint_generation:
   ros__parameters:
     model.camera.dof: 0.02
     model.camera.focal_distance: 0.3
     model.camera.fov.height: 0.1
     model.camera.fov.width: 0.1
-    model.mesh.file: /data/ViewpointGenerationData/cylinder.stl
-    model.mesh.units: mm
-    model.point_cloud.file: /data/ViewpointGenerationData/cylinder_mm/10000points.ply
+    model.mesh.file: /data/ViewpointGenerationData/teapot.stl
+    model.mesh.units: in
+    model.point_cloud.file: /data/ViewpointGenerationData/teapot_in/9999points.ply
     model.point_cloud.sampling.number_of_points: 10000
+    model.point_cloud.sampling.ppsqmm: 0.2341362487277471
     model.point_cloud.units: m
-    regions.file: /data/ViewpointGenerationData/cylinder_mm/10000points_regions/4_regions_367_clusters_2025-10-14_23-00-30.json
+    regions.file: /data/ViewpointGenerationData/teapot_in/9999points_regions/11_regions_264_clusters_2025-10-15_00-59-58.json
     regions.fov_clustering.beta_weight: 1.0
     regions.fov_clustering.k-means.maximum_iterations: 100
     regions.fov_clustering.k-means.normal_weight: 1.0
@@ -57,7 +66,7 @@ viewpoint_generation:
     regions.fov_clustering.k-means.point_weight: 1.0
     regions.fov_clustering.lambda_weight: 1.0
     regions.fov_clustering.max_point_out_percentage: 0.001
-    model.point_cloud.curvature.file: ''
+    model.point_cloud.curvature.file: /data/ViewpointGenerationData/teapot_in/9999points_10nn_curvatures.npy
     model.point_cloud.curvature.knn_neighbors: 10
     model.point_cloud.curvature.threshold: 0.1
     regions.region_growth.max_cluster_size: 100000

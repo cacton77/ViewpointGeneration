@@ -41,19 +41,18 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('model.mesh.units', 'm'),
                 ('model.point_cloud.file', ''),
                 ('model.point_cloud.units', 'm'),
-                ('model.point_cloud.sampling.ppsqmm', 1.),
                 ('model.point_cloud.sampling.number_of_points', 100000),
                 ('model.camera.fov.width', 0.02),
                 ('model.camera.fov.height', 0.03),
                 ('model.camera.dof', 0.02),
                 ('model.camera.focal_distance', 0.35),
                 ('regions.file', ''),
-                ('regions.region_growth.curvature.knn_neighbors', 30),
-                ('regions.region_growth.curvature.file', ''),
+                ('model.point_cloud.curvature.knn_neighbors', 30),
+                ('model.point_cloud.curvature.file', ''),
                 ('regions.region_growth.seed_threshold', 15.0),
                 ('regions.region_growth.min_cluster_size', 10),
                 ('regions.region_growth.max_cluster_size', 100000),
-                ('regions.region_growth.curvature_threshold', 0.50),
+                ('model.point_cloud.curvature.threshold', 0.50),
                 ('regions.region_growth.normal_angle_threshold', 15.0),
                 ('regions.fov_clustering.lambda_weight', 1.0),
                 ('regions.fov_clustering.beta_weight', 1.0),
@@ -64,6 +63,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('regions.fov_clustering.k-means.maximum_iterations', 100),
                 ('viewpoints.traversal', ''),
                 ('viewpoints.projection.nothing', ''),
+                ('settings.data_path', '/tmp'),
                 ('settings.cuda_enabled', False)
             ]
         )
@@ -107,22 +107,21 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Viewpoint Generation Helpers
         self.viewpoint_generation = ViewpointGeneration()
 
+        self.set_data_path(self.get_parameter(
+            'settings.data_path').get_parameter_value().string_value)
         self.viewpoint_generation.visualize = self.get_parameter(
             'visualize').get_parameter_value().bool_value
-
         self.set_mesh_file(self.get_parameter('model.mesh.file').get_parameter_value().string_value,
                            self.get_parameter('model.mesh.units').get_parameter_value().string_value)
         self.set_point_cloud_file(self.get_parameter('model.point_cloud.file').get_parameter_value().string_value,
                                   self.get_parameter('model.point_cloud.units').get_parameter_value().string_value)
-        self.set_sampling_ppsqmm(self.get_parameter(
-            'model.point_cloud.sampling.ppsqmm').get_parameter_value().double_value)
         self.set_sampling_number_of_points(
             self.get_parameter(
                 'model.point_cloud.sampling.number_of_points').get_parameter_value().integer_value)
         self.set_knn_neighbors(self.get_parameter(
-            'regions.region_growth.curvature.knn_neighbors').get_parameter_value().integer_value)
+            'model.point_cloud.curvature.knn_neighbors').get_parameter_value().integer_value)
         self.set_curvature_file(self.get_parameter(
-            'regions.region_growth.curvature.file').get_parameter_value().string_value)
+            'model.point_cloud.curvature.file').get_parameter_value().string_value)
         self.set_regions_file(self.get_parameter(
             'regions.file').get_parameter_value().string_value)
         self.set_seed_threshold(self.get_parameter(
@@ -147,22 +146,44 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.block_next_param_callback = False
         self.initialized = True
 
+    def set_parameters_blocked(self, params):
+        for param in params:
+            print(param.name)
+            self.block_next_param_callback = True
+            self.set_parameters([param])
+
+    def set_data_path(self, data_path):
+        """
+        Helper function to set the data path for the partitioner.
+        :param data_path: The path to the data directory.
+        """
+        data_path = os.path.expandvars(data_path)
+        if data_path.startswith('package://'):
+            package_name, relative_path = data_path.split(
+                'package://')[1].split('/', 1)
+            package_path = get_package_prefix(package_name)
+            data_path = os.path.join(
+                package_path, 'share', package_name, relative_path)
+
+        # If path doesn't exist, create it
+        if not os.path.exists(data_path):
+            data_path = '/tmp'
+
+        self.data_path = data_path
+
     def set_mesh_file(self, mesh_file, mesh_units):
         """
         Helper function to set the triangle mesh file for the partitioner.
         :param mesh_file: The path to the triangle mesh file.
         :return: None
         """
+        # If mesh_file exists, copy it to the data path
+        if not mesh_file == '' and not os.path.exists(mesh_file):
+            mesh_file = os.path.join(self.data_path, mesh_file)
 
-        # If mesh_file begins with "package://package_name", replace it with the path to the package
-        if mesh_file.startswith('package://'):
-            package_name, relative_path = mesh_file.split(
-                'package://')[1].split('/', 1)
-            package_path = get_package_prefix(package_name)
-            mesh_file = os.path.join(
-                package_path, 'share', package_name, relative_path)
-
-        mesh_file = os.path.expandvars(mesh_file)
+        # If file doesn't exist, look in data path
+        if not os.path.exists(mesh_file):
+            mesh_file = os.path.join(self.data_path, mesh_file)
 
         success, message = self.viewpoint_generation.set_mesh_file(
             mesh_file, mesh_units)
@@ -190,14 +211,11 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 rclpy.Parameter.Type.STRING,
                 mesh_units
             )
-            self.block_next_param_callback = True
-            self.set_parameters([mesh_file_param])
-            self.block_next_param_callback = True
-            self.set_parameters([mesh_units_param])
+            self.set_parameters_blocked([mesh_file_param, mesh_units_param])
 
             if self.initialized:
                 self.set_point_cloud_file(
-                    point_cloud_file='', point_cloud_units='')
+                    point_cloud_file='', point_cloud_units='mm')
 
             min_x, min_y, min_z, max_x, max_y, max_z = self.viewpoint_generation.get_mesh_bounds()
 
@@ -226,7 +244,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
             # Create a Marker message for the bounding box
             self.bbox_marker = Marker()
-            # TODO: translate dimensions into marker variables
             self.bbox_marker.header.frame_id = 'object_frame'
             self.bbox_marker.header.stamp = self.get_clock().now().to_msg()
             self.bbox_marker.ns = 'bbox'
@@ -240,7 +257,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.bbox_marker.scale.x = sx
             self.bbox_marker.scale.y = sy
             self.bbox_marker.scale.z = sz
-         # semi-transparent cyan
+            # semi-transparent cyan
             self.bbox_marker.color.r = 0.0
             self.bbox_marker.color.g = 1.0
             self.bbox_marker.color.b = 1.0
@@ -311,15 +328,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: None
         """
 
-        # If point_cloud_file begins with "package://package_name", replace it with the path to the package
-        if point_cloud_file.startswith('package://'):
-            package_name, relative_path = point_cloud_file.split(
-                'package://')[1].split('/', 1)
-            package_path = get_package_prefix(package_name)
-            point_cloud_file = os.path.join(
-                package_path, 'share', package_name, relative_path)
-
-        point_cloud_file = os.path.expandvars(point_cloud_file)
+        # If file doesn't exist, look in data path
+        if not point_cloud_file == '' and not os.path.exists(point_cloud_file):
+            point_cloud_file = os.path.join(self.data_path, point_cloud_file)
 
         success, message = self.viewpoint_generation.set_point_cloud_file(
             point_cloud_file, point_cloud_units)
@@ -330,7 +341,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 rclpy.Parameter.Type.STRING,
                 ''
             )
-            self.set_parameters([point_cloud_file_param])
+            self.set_parameters_blocked([point_cloud_file_param])
             self.get_logger().error(
                 f'Could not load requested point cloud file {point_cloud_file}.'
             )
@@ -347,10 +358,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 rclpy.Parameter.Type.STRING,
                 point_cloud_units
             )
-            self.block_next_param_callback = True
-            self.set_parameters([point_cloud_file_param])
-            self.block_next_param_callback = True
-            self.set_parameters([point_cloud_units_param])
+            self.set_parameters_blocked([point_cloud_file_param,
+                                         point_cloud_units_param])
 
             if self.initialized:
                 # Clear the curvature file parameter
@@ -365,15 +374,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: None
         """
 
-        # If curvature_file begins with "package://package_name", replace it with the path to the package
-        if curvature_file.startswith('package://'):
-            package_name, relative_path = curvature_file.split(
-                'package://')[1].split('/', 1)
-            package_path = get_package_prefix(package_name)
-            curvature_file = os.path.join(
-                package_path, 'share', package_name, relative_path)
-
-        curvature_file = os.path.expandvars(curvature_file)
+        # If file doesn't exist, look in data path
+        if not curvature_file == '' and not os.path.exists(curvature_file):
+            curvature_file = os.path.join(self.data_path, curvature_file)
 
         success, message = self.viewpoint_generation.set_curvature_file(
             curvature_file)
@@ -382,29 +385,29 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.get_logger().error(message)
 
             curvature_file_param = rclpy.parameter.Parameter(
-                'regions.region_growth.curvature.file',
+                'model.point_cloud.curvature.file',
                 rclpy.Parameter.Type.STRING,
                 ''
             )
-            self.set_parameters([curvature_file_param])
+
+            self.set_parameters_blocked([curvature_file_param])
 
             return False
         else:
             self.get_logger().info(message)
 
             curvature_file_param = rclpy.parameter.Parameter(
-                'regions.region_growth.curvature.file',
+                'model.point_cloud.curvature.file',
                 rclpy.Parameter.Type.STRING,
                 curvature_file
             )
-            self.block_next_param_callback = True
-            self.set_parameters([curvature_file_param])
+            self.set_parameters_blocked([curvature_file_param])
 
-            if self.initialized:
-                # Clear the regions file parameter
-                self.set_regions_file(regions_file='')
+        if self.initialized:
+            # Clear the regions file parameter
+            self.set_regions_file(regions_file='')
 
-            return True
+        return True
 
     def set_regions_file(self, regions_file):
         """
@@ -413,15 +416,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
         :return: None
         """
 
-        # If regions_file begins with "package://package_name", replace it with the path to the package
-        if regions_file.startswith('package://'):
-            package_name, relative_path = regions_file.split(
-                'package://')[1].split('/', 1)
-            package_path = get_package_prefix(package_name)
-            regions_file = os.path.join(
-                package_path, 'share', package_name, relative_path)
-
-        regions_file = os.path.expandvars(regions_file)
+        # If file doesn't exist, look in data path
+        if not regions_file == '' and not os.path.exists(regions_file):
+            regions_file = os.path.join(self.data_path, regions_file)
 
         success, message = self.viewpoint_generation.set_regions_file(
             regions_file)
@@ -434,6 +431,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 rclpy.Parameter.Type.STRING,
                 ''
             )
+            self.block_next_param_callback = True
             self.set_parameters([regions_file_param])
 
             return False
@@ -471,39 +469,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 self.get_logger().info('CUDA disabled.')
             return True
 
-    def set_sampling_ppsqmm(self, ppsqmm):
-        """
-        Helper function to set the points per square millimeter for the partitioner.
-        :param ppsqmm: The number of points per square millimeter.
-        :return: True if successful, False otherwise.
-        """
-
-        if ppsqmm <= 0:
-            self.get_logger().error(
-                'Points per square millimeter must be greater than 0.'
-            )
-            return False
-
-        success, N_points = self.viewpoint_generation.set_ppsqmm(ppsqmm)
-
-        if not success:
-            self.get_logger().error(
-                f'Failed to set points per square millimeter to {ppsqmm}.'
-            )
-            return False
-        else:
-            self.get_logger().info(
-                f'Points per square millimeter set to {ppsqmm}.')
-            number_of_points_param = rclpy.parameter.Parameter(
-                'model.point_cloud.sampling.number_of_points',
-                rclpy.Parameter.Type.INTEGER,
-                N_points
-            )
-            self.block_next_param_callback = True
-            self.set_parameters([number_of_points_param])
-
-        return True
-
     def set_sampling_number_of_points(self, number_of_points):
         """
         Helper function to set the number of points to sample.
@@ -517,7 +482,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             return False
 
-        success, ppsqmm = self.viewpoint_generation.set_sampling_number_of_points(
+        success, number_of_points = self.viewpoint_generation.set_sampling_number_of_points(
             number_of_points)
 
         if not success:
@@ -528,13 +493,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
         else:
             self.get_logger().info(
                 f'Number of points set to {number_of_points}.')
-            ppsqmm_param = rclpy.parameter.Parameter(
-                'model.point_cloud.sampling.ppsqmm',
-                rclpy.Parameter.Type.DOUBLE,
-                ppsqmm
+            number_of_points_param = rclpy.parameter.Parameter(
+                'model.point_cloud.sampling.number_of_points',
+                rclpy.Parameter.Type.INTEGER,
+                number_of_points
             )
             self.block_next_param_callback = True
-            self.set_parameters([ppsqmm_param])
+            self.set_parameters([number_of_points_param])
 
         return True
 
@@ -601,7 +566,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         else:
             self.get_logger().info(message)
             curvature_file_param = rclpy.parameter.Parameter(
-                'regions.region_growth.curvature.file',
+                'model.point_cloud.curvature.file',
                 rclpy.Parameter.Type.STRING,
                 ''
             )
@@ -712,7 +677,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 f"Curvature estimation completed successfully. Curvature file: {message}")
             # Set the curvature file parameter with the estimated curvature file
             curvature_file_param = rclpy.parameter.Parameter(
-                'regions.region_growth.curvature.file',
+                'model.point_cloud.curvature.file',
                 rclpy.Parameter.Type.STRING,
                 message
             )
@@ -895,15 +860,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     self.get_parameter(
                         'model.point_cloud.file').get_parameter_value().string_value,
                     param.value)
-            elif param.name == 'model.point_cloud.sampling.ppsqmm':
-                success = self.set_sampling_ppsqmm(param.value)
             elif param.name == 'model.point_cloud.sampling.number_of_points':
                 success = self.set_sampling_number_of_points(param.value)
             elif param.name == 'regions.file':
                 success = self.set_regions_file(param.value)
-            elif param.name == 'regions.region_growth.curvature.knn_neighbors':
+            elif param.name == 'model.point_cloud.curvature.knn_neighbors':
                 success = self.set_knn_neighbors(param.value)
-            elif param.name == 'regions.region_growth.curvature.file':
+            elif param.name == 'model.point_cloud.curvature.file':
                 success = self.set_curvature_file(param.value)
             elif param.name == 'regions.region_growth.seed_threshold':
                 success = self.set_seed_threshold(param.value)
@@ -911,7 +874,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 success = self.set_min_cluster_size(param.value)
             elif param.name == 'regions.region_growth.max_cluster_size':
                 success = self.set_max_cluster_size(param.value)
-            elif param.name == 'regions.region_growth.curvature_threshold':
+            elif param.name == 'model.point_cloud.curvature.threshold':
                 success = self.set_curvature_threshold(
                     param.value)
             elif param.name == 'regions.region_growth.normal_angle_threshold':
@@ -972,8 +935,12 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     dof=dof,
                     focal_distance=focal_distance
                 )
+            elif param.name == 'settings.data_path':
+                self.set_data_path(param.value)
             elif param.name == 'settings.cuda_enabled':
                 success = self.enable_cuda_callback(param.value)
+
+            print(f'{param.name}: {success}')
 
         result = SetParametersResult()
         result.successful = success

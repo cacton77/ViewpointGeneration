@@ -13,6 +13,7 @@ from rclpy.action import ActionServer
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from ament_index_python.packages import get_package_prefix
 
 from std_msgs.msg import Bool
 from rcl_interfaces.msg import SetParametersResult
@@ -92,9 +93,10 @@ class InspectionTaskPlanningNode(Node):
                 ('trajectory_controllers', ['inspection_cell_controller']),
                 ('servo_node_name', 'servo_node'),
                 ('controller_manager_name', '/controller_manager'),
-                ('viewpoints_file', '$INSPECTION_WS/src/ViewpointGenerationData/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-19_14-14-00_viewpoints_optimized2025-08-19_16-17-34.json'),
+                ('viewpoints_file', '/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-19_14-14-00_viewpoints_optimized2025-08-19_16-17-34.json'),
                 ('selected_region', 0),
                 ('selected_viewpoint', 0),
+                ('data_path', '/tmp')
             ]
         )
 
@@ -108,6 +110,10 @@ class InspectionTaskPlanningNode(Node):
             'servo_node_name').get_parameter_value().string_value
         self.controller_manager_name = self.get_parameter(
             'controller_manager_name').get_parameter_value().string_value
+
+        # Set data path
+        self.set_data_path(self.get_parameter(
+            'data_path').get_parameter_value().string_value)
 
         self.load_viewpoints(self.get_parameter(
             'viewpoints_file').get_parameter_value().string_value)
@@ -207,12 +213,35 @@ class InspectionTaskPlanningNode(Node):
         self.get_logger().info('All required services are available')
         return True
 
+    def set_data_path(self, data_path):
+        """
+        Helper function to set the data path for the partitioner.
+        :param data_path: The path to the data directory.
+        """
+        data_path = os.path.expandvars(data_path)
+        if data_path.startswith('package://'):
+            package_name, relative_path = data_path.split(
+                'package://')[1].split('/', 1)
+            package_path = get_package_prefix(package_name)
+            data_path = os.path.join(
+                package_path, 'share', package_name, relative_path)
+
+        # If path doesn't exist, create it
+        if not os.path.exists(data_path):
+            data_path = '/tmp'
+
+        self.data_path = data_path
+
     def load_viewpoints(self, filepath):
         self.viewpoints = []
         if filepath == '':
             self.get_logger().warning('Viewpoints file cleared, no viewpoints loaded')
             return False
-        
+
+        # If file doesn't exist, look in data path
+        if not os.path.exists(filepath):
+            filepath = os.path.join(self.data_path, filepath)
+
         # Expand environment variables in filepath
         filepath = os.path.expandvars(filepath)
 
@@ -620,6 +649,8 @@ class InspectionTaskPlanningNode(Node):
         if self.block_next_param_callback:
             self.block_next_param_callback = False
             return SetParametersResult(successful=True)
+
+        success = True
 
         for param in params:
             # Viewpoints file parameter

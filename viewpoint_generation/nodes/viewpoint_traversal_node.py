@@ -172,7 +172,7 @@ class ViewpointTraversalNode(Node):
 
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         new_viewpoint_dict_path = re.sub(
-            r'_optimized.*?\.json$',
+            r'(_optimized.*?)?\.json$',
             f'_optimized{timestamp}.json',
             request.viewpoint_dict_path
         )

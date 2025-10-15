@@ -13,6 +13,10 @@ def generate_launch_description():
     declared_arguments = [
         DeclareLaunchArgument("cell", default_value="alpha"),
         DeclareLaunchArgument("sim", default_value="false",),
+        DeclareLaunchArgument("object", default_value="default.yaml",
+                              description="Configuration file for viewpoint generation."),
+        DeclareLaunchArgument("data_path", default_value="/data/ViewpointGenerationData",
+                              description="Path to the data directory."),
         DeclareLaunchArgument("mock_sensor_commands", default_value="false",
                               description="Enable fake command interfaces for sensors used for simple simulations. "
                               "Used only if 'use_fake_hardware' parameter is true."),
@@ -30,8 +34,7 @@ def generate_launch_description():
                               description="Launch MoveIt for motion planning."),
         DeclareLaunchArgument("use_tool_communication", default_value="false",
                               description="Use tool communication for the robot."),
-        DeclareLaunchArgument("object", default_value="default.yaml",
-                              description="Configuration file for viewpoint generation."),
+
         DeclareLaunchArgument("generation", default_value="true"),
         DeclareLaunchArgument("teleop_config_file",
                               default_value="xbox_controller.yaml", description="Controller configuration file for teleoperation."),
@@ -95,8 +98,7 @@ def generate_launch_description():
         parameters=[
             ParameterFile(
                 PathJoinSubstitution([
-                    FindPackageShare("viewpoint_generation"),
-                    "config",
+                    LaunchConfiguration("data_path"),
                     LaunchConfiguration("object")
                 ]),
                 allow_substs=True
@@ -149,6 +151,7 @@ def generate_launch_description():
             ])
         ]),
         launch_arguments={
+            "data_path": LaunchConfiguration("data_path"),
             "object": LaunchConfiguration("object"),
             "headless_mode": LaunchConfiguration("headless_mode"),
         }.items()
