@@ -16,7 +16,7 @@ from scipy.spatial import Delaunay
 
 from viewpoint_generation.gui_node import ROSThread
 from viewpoint_generation.assets.materials import Materials
-from viewpoint_generation.alphashapes import filter_large_triangles
+from viewpoint_generation.geometry_helpers import filter_large_triangles
 
 sys.stdout.reconfigure(line_buffering=True)
 isMacOS = sys.platform == 'darwin'
