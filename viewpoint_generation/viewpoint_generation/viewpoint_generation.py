@@ -82,6 +82,8 @@ class ViewpointGeneration():
     fc = FOVClustering(fc_config)
     vp = ViewpointProjection(vp_config)
 
+    raycasting_scene = o3d.t.geometry.RaycastingScene()
+
     def __init__(self):
         pass
 
@@ -201,6 +203,11 @@ class ViewpointGeneration():
             self.viewer.run()
             self.viewer.destroy_window()
             self.viewer.clear_geometries()
+
+        # Raycasting Scene
+        self.raycasting_scene = o3d.t.geometry.RaycastingScene()
+        self.raycasting_scene.add_triangles(
+            o3d.t.geometry.TriangleMesh.from_legacy(self.mesh))
 
         return True, f'Triangle mesh file set to \'{mesh_file}\' with units \'{units}\'.'
 
@@ -691,11 +698,15 @@ class ViewpointGeneration():
                 region['points'])
 
             for fov_cluster_id, fov_cluster in region['clusters'].items():
-                fov_points = region_points.select_by_index(
+                fov_pcd = region_points.select_by_index(
                     fov_cluster['points'])
+                fov_points = np.asarray(fov_pcd.points)
+                fov_normals = np.asarray(fov_pcd.normals)
                 # Project viewpoint for the FOV cluster
                 origin, position, direction, orientation = self.vp.project(
-                    np.asarray(fov_points.points), np.asarray(fov_points.normals))
+                    fov_points, fov_normals)
+                self.vp.check_occlusion(
+                    position, fov_points, self.raycasting_scene)
                 # Store the viewpoint in the region dictionary
                 self.regions_dict['regions'][region_id]['clusters'][fov_cluster_id]['viewpoint'] = {
                     'origin': origin.tolist(),
