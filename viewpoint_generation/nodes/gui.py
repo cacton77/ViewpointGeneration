@@ -64,6 +64,7 @@ class GUIClient():
     mesh_units = None
     point_cloud_name = None
     region_names = []
+    geometries_dict = {}
     cluster_names = []
     last_slider_value = 1
     traversal_order = [[0]]
@@ -966,7 +967,7 @@ class GUIClient():
 
         # Create label
         label_container = gui.Vert()
-        label_container.preferred_width = 6 * em
+
         # If "percentage" in param_name, replace with "%"
         if "percentage" in param_name:
             param_name = param_name.replace("percentage", "%")
@@ -974,8 +975,13 @@ class GUIClient():
             '.')[-1].replace('_', ' ').title() + ":")
         label.text_color = Materials.text_color
         label_container.add_child(label)
+
         row.add_child(label_container)
         row.add_stretch()
+
+        # Set preferred_width based on length of text with 6 * em as max:
+        if len(label.text) > 12:
+            label_container.preferred_width = 6 * em
 
         # Create appropriate widget based on type
         widget = None
@@ -1457,7 +1463,7 @@ class GUIClient():
         np.random.seed(1)  # For reproducible colors
 
         # Initialize empty geometries for visualization
-        geometries_dict = {}
+        self.geometries_dict = {}
 
         show_clusters = False
         show_viewpoints = False
@@ -1481,7 +1487,8 @@ class GUIClient():
 
             region_point_cloud.paint_uniform_color(region_color)
 
-            geometries_dict[region_name] = {'cloud': region_point_cloud}
+            self.geometries_dict[region_name] = {'cloud': region_point_cloud}
+            self.geometries_dict[region_name]['color'] = region_color
 
             # If dict has 'clusters' key, process and display them
             if 'clusters' in region_dict:
@@ -1494,7 +1501,7 @@ class GUIClient():
                 # Add cluster order to traversal order for lookup by slider
                 self.traversal_order.append(cluster_order)
 
-                geometries_dict[region_name]['clusters'] = {}
+                self.geometries_dict[region_name]['clusters'] = {}
 
                 i = 0
                 for cluster_id in cluster_order:
@@ -1520,7 +1527,7 @@ class GUIClient():
                         fov_point_cloud.normals), axis=0)
                     fov_mesh.translate(avg_normal * 0.20)
 
-                    geometries_dict[region_name]['clusters'][cluster_name] = {
+                    self.geometries_dict[region_name]['clusters'][cluster_name] = {
                         'mesh': fov_mesh}
 
                     if 'viewpoint' in cluster_dict:
@@ -1568,7 +1575,7 @@ class GUIClient():
                         path_points.append(position)
 
                         viewpoint_mesh.paint_uniform_color([1.0, 1.0, 1.0])
-                        geometries_dict[region_name]['clusters'][cluster_name]['viewpoint'] = {
+                        self.geometries_dict[region_name]['clusters'][cluster_name]['viewpoint'] = {
                             'mesh': viewpoint_mesh
                         }
 
@@ -1587,18 +1594,18 @@ class GUIClient():
                         region_view_mesh, method='iqr', threshold_multiplier=5.0)
                     region_view_mesh.compute_vertex_normals()
                     # region_view_mesh.paint_uniform_color(region_color)
-                    geometries_dict[region_name]['view_mesh'] = region_view_mesh
+                    self.geometries_dict[region_name]['view_mesh'] = region_view_mesh
                 else:
-                    geometries_dict[region_name]['view_mesh'] = None
+                    self.geometries_dict[region_name]['view_mesh'] = None
 
                 if len(path_points) > 1:
                     path_line.points = o3d.utility.Vector3dVector(
                         np.array(path_points))
                     path_line.lines = o3d.utility.Vector2iVector(
                         [[i, i + 1] for i in range(len(path_points) - 1)])
-                    geometries_dict[region_name]['path'] = path_line
+                    self.geometries_dict[region_name]['path'] = path_line
                 else:
-                    geometries_dict[region_name]['path'] = None
+                    self.geometries_dict[region_name]['path'] = None
 
         # Create noise point cloud
         noise_points = regions_dict['noise_points']
@@ -1622,7 +1629,7 @@ class GUIClient():
             "noise_points", noise_point_cloud, Materials.point_cloud_material)
 
         # Add Region Clouds
-        for region_name, region_data in geometries_dict.items():
+        for region_name, region_data in self.geometries_dict.items():
             self.region_names.append(region_name)
             self.add_geometry(
                 region_name, region_data['cloud'], Materials.point_cloud_material)
@@ -1691,9 +1698,11 @@ class GUIClient():
         #     return
 
     def select_region(self, region_number):
-        if not self.region_names:
+        if not self.region_names or not self.geometries_dict:
+            print("No regions or geometries loaded.")
             return
         elif region_number < 0 or region_number >= len(self.region_names):
+            print(f"Invalid region number: {region_number}")
             return
 
         # Restore last viewpoint mesh to regular material
@@ -1722,6 +1731,13 @@ class GUIClient():
         # Select path
         self.scene_widget.scene.modify_geometry_material(
             f"{region_name}_path", Materials.selected_path_material)
+
+        # Get region path mesh from the scene and paint it
+        selected_path_material = Materials.selected_path_material
+        selected_path_material.base_color = np.append(
+            self.geometries_dict[region_name]['color'], 1)
+        self.scene_widget.scene.modify_geometry_material(
+            f"{region_name}_path", selected_path_material)
 
     def select_viewpoint(self, cluster_number):
         if not self.region_names:

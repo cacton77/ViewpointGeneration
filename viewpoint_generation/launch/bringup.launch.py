@@ -121,13 +121,6 @@ def generate_launch_description():
         }.items(),
     )
 
-    joy_node = Node(
-        package="joy",
-        executable="joy_node",
-        name="joy_node",
-        output="screen"
-    )
-
     admittance_control_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
@@ -173,5 +166,4 @@ def generate_launch_description():
         register_event_handler,
         viewpoint_traversal_launch,
         admittance_control_launch,
-        joy_node
     ])
