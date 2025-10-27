@@ -28,6 +28,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
     initialized = False
     mesh = None
     bbox_marker = None
+    pvolume_marker = None
     viewpoints_bbox_marker = None
 
     def __init__(self):
@@ -71,6 +72,21 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Bounding Box Marker Publisher
         self.bbox_marker_publisher = self.create_publisher(
             Marker, f'{node_name}/bounding_box_marker', 10)
+        # Planning Volume Marker Publisher
+        self.pvolume_marker = Marker()
+        self.pvolume_marker.header.frame_id = 'object_frame'
+        self.pvolume_marker.type = Marker.CYLINDER
+        self.pvolume_marker.scale.x = 1.0
+        self.pvolume_marker.scale.y = 1.0
+        self.pvolume_marker.scale.z = 10.0
+        self.pvolume_marker.color.r = 0.0
+        self.pvolume_marker.color.g = 1.0
+        self.pvolume_marker.color.b = 1.0
+        self.pvolume_marker.color.a = 0.25
+        # short lifetime; republish each frame
+        self.pvolume_marker.lifetime = Duration(seconds=1.0).to_msg()
+        self.pvolume_marker_publisher = self.create_publisher(
+            Marker, f'{node_name}/planning_volume_marker', 10)
         # Create planning scene publisher
         self.planning_scene_diff_publisher = self.create_publisher(
             PlanningScene, '/planning_scene', 10)
@@ -295,6 +311,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         # Publish bounding box as marker
         self.bbox_marker_publisher.publish(self.bbox_marker)
+        # Publish planning volume as marker
+        self.pvolume_marker_publisher.publish(self.pvolume_marker)
 
         # Pose of object relative to 'object_frame'
         # Will be changed by Yusen's point cloud registration
@@ -311,6 +329,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
         attached_object.object.operation = CollisionObject.ADD
         attached_object.touch_links = [
             'turntable_disc_link', 'turntable_base_link', 'planning_volume']
+
+        # Planning Volume
+        planning_volume = AttachedCollisionObject()
 
         planning_scene = PlanningScene()
         planning_scene.world.collision_objects.clear()
