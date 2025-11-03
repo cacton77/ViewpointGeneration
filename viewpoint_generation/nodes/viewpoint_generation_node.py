@@ -14,11 +14,11 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from std_srvs.srv import Trigger
 # from viewpoint_generation_interfaces.action import ViewpointGeneration
 
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, ColorRGBA
 from geometry_msgs.msg import PoseStamped, Pose, PointStamped, Point
 from visualization_msgs.msg import Marker
 from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
-from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject
+from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject, ObjectColor
 from viewpoint_generation_interfaces.srv import OptimizeViewpointTraversal
 
 
@@ -328,17 +328,39 @@ class ViewpointGenerationNode(rclpy.node.Node):
         attached_object.object.mesh_poses = [Pose()]
         attached_object.object.operation = CollisionObject.ADD
         attached_object.touch_links = [
-            'turntable_disc_link', 'turntable_base_link', 'planning_volume']
+            'turntable_disc_link', 'turntable_base_link']
 
         # Planning Volume
         planning_volume = AttachedCollisionObject()
+        planning_volume.link_name = 'object_frame'
+        planning_volume.object.header.frame_id = 'object_frame'
+        planning_volume.object.pose = pose
+        planning_volume.object.id = 'planning_volume'
+        planning_volume.object.primitives = [
+            SolidPrimitive(type=SolidPrimitive.CYLINDER,
+                           dimensions=[1.0, 1.0, 1.0])]
+        planning_volume_pose = Pose()
+        planning_volume_pose.position.z = 0.5
+        planning_volume.object.primitive_poses = [planning_volume_pose]
+        planning_volume.object.operation = CollisionObject.ADD
+        planning_volume.touch_links = [
+            'table_link', 'ur5e_mount_link', 'planning_volume',
+            'turntable_base_link_inertia', 'turntable_disc_link',
+            'base_link', 'base_link_inertia', 'shoulder_link', 'upper_arm_link', 'forearm_link', 'wrist_1_link', 'wrist_2_link', 'wrist_3_link'
+        ]
 
         planning_scene = PlanningScene()
         planning_scene.world.collision_objects.clear()
         planning_scene.robot_state.attached_collision_objects.append(
             attached_object)
+        planning_scene.robot_state.attached_collision_objects.append(
+            planning_volume)
         planning_scene.robot_state.is_diff = True
         planning_scene.is_diff = True
+        planning_scene.object_colors.append(ObjectColor(
+            id='object', color=ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)))
+        planning_scene.object_colors.append(ObjectColor(
+            id='planning_volume', color=ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.25)))
 
         self.planning_scene_diff_publisher.publish(planning_scene)
 
