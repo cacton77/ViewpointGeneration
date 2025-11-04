@@ -73,20 +73,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.bbox_marker_publisher = self.create_publisher(
             Marker, f'{node_name}/bounding_box_marker', 10)
         # Planning Volume Marker Publisher
-        self.pvolume_marker = Marker()
-        self.pvolume_marker.header.frame_id = 'object_frame'
-        self.pvolume_marker.type = Marker.CYLINDER
-        self.pvolume_marker.scale.x = 1.0
-        self.pvolume_marker.scale.y = 1.0
-        self.pvolume_marker.scale.z = 10.0
-        self.pvolume_marker.color.r = 0.0
-        self.pvolume_marker.color.g = 1.0
-        self.pvolume_marker.color.b = 1.0
-        self.pvolume_marker.color.a = 0.25
-        # short lifetime; republish each frame
-        self.pvolume_marker.lifetime = Duration(seconds=1.0).to_msg()
-        self.pvolume_marker_publisher = self.create_publisher(
-            Marker, f'{node_name}/planning_volume_marker', 10)
+        self.create_planning_volume_mesh()
+
         # Create planning scene publisher
         self.planning_scene_diff_publisher = self.create_publisher(
             PlanningScene, '/planning_scene', 10)
@@ -303,6 +291,31 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
             return True
 
+    def create_planning_volume_mesh(self, radius=1, height=1):
+        planning_volume_mesh_path = get_package_prefix(
+            'viewpoint_generation') + '/share/viewpoint_generation/meshes/planning_volume.stl'
+        planning_volume_mesh_o3d = o3d.io.read_triangle_mesh(
+            planning_volume_mesh_path)
+        vertices = np.asarray(planning_volume_mesh_o3d.vertices)
+        triangles = np.asarray(planning_volume_mesh_o3d.triangles)
+
+        planning_volume_mesh = Mesh()
+
+        for vertex in vertices:
+            point = Point()
+            point.x = vertex[0]
+            point.y = vertex[1]
+            point.z = vertex[2]
+            planning_volume_mesh.vertices.append(point)
+
+        for triangle in triangles:
+            mesh_triangle = MeshTriangle()
+            mesh_triangle.vertex_indices = triangle.astype(
+                np.uint32).tolist()
+            planning_volume_mesh.triangles.append(mesh_triangle)
+
+        self.planning_volume_mesh = planning_volume_mesh
+
     def update_planning_scene(self):
         if not self.mesh:
             self.get_logger().error(
@@ -311,8 +324,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         # Publish bounding box as marker
         self.bbox_marker_publisher.publish(self.bbox_marker)
-        # Publish planning volume as marker
-        self.pvolume_marker_publisher.publish(self.pvolume_marker)
 
         # Pose of object relative to 'object_frame'
         # Will be changed by Yusen's point cloud registration
@@ -336,12 +347,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
         planning_volume.object.header.frame_id = 'object_frame'
         planning_volume.object.pose = pose
         planning_volume.object.id = 'planning_volume'
-        planning_volume.object.primitives = [
-            SolidPrimitive(type=SolidPrimitive.CYLINDER,
-                           dimensions=[1.0, 1.0, 1.0])]
-        planning_volume_pose = Pose()
-        planning_volume_pose.position.z = 0.5
-        planning_volume.object.primitive_poses = [planning_volume_pose]
+        planning_volume.object.meshes = [self.planning_volume_mesh]
+        planning_volume.object.mesh_poses = [Pose()]
         planning_volume.object.operation = CollisionObject.ADD
         planning_volume.touch_links = [
             'table_link', 'ur5e_mount_link', 'planning_volume',

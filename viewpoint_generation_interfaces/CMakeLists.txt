@@ -36,6 +36,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/OptimizeViewpointTraversal.srv"
   "msg/FocusValue.msg"
   "msg/AutofocusData.msg"
+  "msg/OrientationControlData.msg"
   DEPENDENCIES geometry_msgs sensor_msgs
 )
 

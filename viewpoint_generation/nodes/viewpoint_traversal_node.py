@@ -48,7 +48,7 @@ class ViewpointTraversalNode(Node):
                 ('workspace.min_z', -1.0),
                 ('workspace.max_z', 1.0),
                 ('use_2opt', True),
-                ('use_3opt', True)
+                ('use_3opt', False)
             ]
         )
 
@@ -229,6 +229,28 @@ class ViewpointTraversalNode(Node):
                 self.get_logger().info(
                     f"Initial nearest neighbor distance: {initial_dist:.4f}")
                 optimized_path, optimized_dist = self.local_search_2_opt(
+                    dist_matrix, [initial_path, initial_dist], recursive_seeding=-1, verbose=True)
+                self.get_logger().info(
+                    f"Optimized path for region '{region_name}' with total distance {optimized_dist}")
+                improved = ((initial_dist - optimized_dist) /
+                            initial_dist) * 100
+                self.get_logger().info(f"Improvement: {improved:.2f}%")
+                path = optimized_path[:-
+                                      1] if optimized_path[-1] == optimized_path[0] else optimized_path
+            else:
+                path, total_distance = self.nearest_neighbors_tsp(viewpoints)
+                self.get_logger().info(
+                    f"Optimized path for region '{region_name}' with total distance {total_distance}")
+
+            if self.use_3opt:
+                self.get_logger().info(
+                    f"Using 3-opt optimization for region '{region_name}'")
+                dist_matrix = self.dist_matrix(viewpoints)
+                initial_path, initial_dist = self.nearest_neighbors_tsp(
+                    viewpoints)
+                self.get_logger().info(
+                    f"Initial nearest neighbor distance: {initial_dist:.4f}")
+                optimized_path, optimized_dist = self.local_search_3_opt(
                     dist_matrix, [initial_path, initial_dist], recursive_seeding=-1, verbose=True)
                 self.get_logger().info(
                     f"Optimized path for region '{region_name}' with total distance {optimized_dist}")
