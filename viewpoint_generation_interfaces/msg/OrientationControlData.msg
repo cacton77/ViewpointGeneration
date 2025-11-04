@@ -18,9 +18,9 @@ geometry_msgs/PoseStamped  goal_pose         # EOAT desired pose (its own header
 # Control data
 geometry_msgs/Vector3  rotvec_error          # Z-axis alignment error 
 geometry_msgs/Vector3  torque_cmd            # final torque command [Tx,Ty,Tz]
-float32                K_rx
-float32                K_ry
-float32                K_rz
+float32                k_rx
+float32                k_ry
+float32                k_rz
 
 # Frames
 string  main_camera_frame
