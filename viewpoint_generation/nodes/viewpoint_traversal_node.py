@@ -47,7 +47,8 @@ class ViewpointTraversalNode(Node):
                 ('workspace.max_y', 1.0),
                 ('workspace.min_z', -1.0),
                 ('workspace.max_z', 1.0),
-                ('use_2opt', True)
+                ('use_2opt', True),
+                ('use_3opt', True)
             ]
         )
 
@@ -59,6 +60,8 @@ class ViewpointTraversalNode(Node):
             'multiplanning').get_parameter_value().bool_value
         self.use_2opt = self.get_parameter(
             'use_2opt').get_parameter_value().bool_value
+        self.use_3opt = self.get_parameter(
+            'use_3opt').get_parameter_value().bool_value
 
         self.workspace = {
             'min_x': self.get_parameter('workspace.min_x').get_parameter_value().double_value,
@@ -424,6 +427,8 @@ class ViewpointTraversalNode(Node):
                 self.workspace['max_z'] = param.value
             elif param.name == 'use_2opt':
                 self.use_2opt = param.value
+            elif param.name == 'use_3opt':
+                self.use_3opt = param.value
 
         self.init_workspace()
 
