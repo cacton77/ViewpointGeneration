@@ -1,1 +1,33 @@
 std_msgs/Header header
+
+# Raw point stats
+uint32 num_points_masked
+uint32 num_points_bbox
+uint32 num_points_crop
+
+#visual data
+sensor_msgs/Image        depth_image         # latest depth frame (original encoding)
+sensor_msgs/PointCloud2  cloud_bbox          # points after bbox, in main_camera_frame
+sensor_msgs/PointCloud2  cloud_crop          # points after cylindrical crop, in main_camera_frame
+
+# Geometry and pose data
+geometry_msgs/Point        centroid          # smoothed centroid (EMA)
+geometry_msgs/Vector3      normal            # smoothed normal (+Z goal)
+geometry_msgs/PoseStamped  goal_pose         # EOAT desired pose (its own header)
+
+# Control data
+geometry_msgs/Vector3  rotvec_error          # Z-axis alignment error 
+geometry_msgs/Vector3  torque_cmd            # final torque command [Tx,Ty,Tz]
+float32                K_rx
+float32                K_ry
+float32                K_rz
+
+# Frames
+string  main_camera_frame
+string  target_frame
+
+# EMA & safety config
+bool    ema_enable
+float32 ema_tau_s
+float32 no_target_timeout_s
+bool    publish_zero_when_lost
