@@ -205,9 +205,7 @@ class ViewpointGeneration():
             self.viewer.clear_geometries()
 
         # Raycasting Scene
-        self.raycasting_scene = o3d.t.geometry.RaycastingScene()
-        self.raycasting_scene.add_triangles(
-            o3d.t.geometry.TriangleMesh.from_legacy(self.mesh))
+        self.vp.set_mesh(self.mesh)
 
         return True, f'Triangle mesh file set to \'{mesh_file}\' with units \'{units}\'.'
 
@@ -828,9 +826,9 @@ def create_sample_mesh(k: int = 3, ppsqmm: float = 1000) -> o3d.geometry.PointCl
 if __name__ == "__main__":
     # Create sample point cloud
     print("Creating sample point cloud...")
-    k = 5
-    ppsqmm = 0.5
-    mesh = create_sample_mesh(k)
+    mesh = o3d.read_triangle_mesh("mesh.stl")
+    o3d.visualization.draw_geometries([mesh])
+    exit()
 
     pc = mesh.sample_points_uniformly(
         int(mesh.get_surface_area() * ppsqmm * 1e6), use_triangle_normal=True)
