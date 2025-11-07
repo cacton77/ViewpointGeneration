@@ -76,7 +76,7 @@ class GUIClient():
         deja_vu_sans = gui.FontDescription(
             typeface="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", style=gui.FontStyle.NORMAL, point_size=14)
         deja_vu_sans_it = gui.FontDescription(
-            typeface="/usr/share/fonts/truetype/dejavu/DejaVuSansSans-Oblique.ttf", style=gui.FontStyle.ITALIC, point_size=14)
+            typeface="/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf", style=gui.FontStyle.NORMAL, point_size=14)
 
         # Must be run before application.create_window()
         self.font_id_sans_serif = gui.Application.instance.add_font(
@@ -1053,7 +1053,7 @@ class GUIClient():
                         node_name, param_name, selected_text))
                 row.add_child(widget)  # ADD HERE
 
-            elif 'metric' in param_name.lower():
+            elif 'focus_metric' in param_name.lower():
                 widget = gui.Combobox()
                 metrics = ['sobel', 'squared_gradient', 'fswm']
                 for metric in metrics:
@@ -1064,7 +1064,7 @@ class GUIClient():
                         node_name, param_name, selected_text))
                 row.add_child(widget)  # ADD HERE
 
-            elif 'algorithm' in param_name.lower():
+            elif 'focus_algorithm' in param_name.lower():
                 widget = gui.Combobox()
                 algorithms = ['default', 'adaptive', 'ehc']
                 for algorithm in algorithms:
@@ -1074,6 +1074,28 @@ class GUIClient():
                     lambda selected_text, selected_index: self.on_parameter_changed(
                         node_name, param_name, selected_text))
                 row.add_child(widget)  # ADD HERE
+
+            elif 'tsp_algorithm' in param_name.lower():
+                widget = gui.Combobox()
+                algorithms = ['greedy', '2opt', '3opt', 'LKH'] # TSP algorithms
+                for algorithm in algorithms:
+                    widget.add_item(algorithm)
+                widget.selected_index = algorithms.index(param_value)
+                widget.set_on_selection_changed(
+                    lambda selected_text, selected_index: self.on_parameter_changed(
+                        node_name, param_name, selected_text))
+                row.add_child(widget)  # ADD HERE
+
+            elif 'compare_algorithms' in param_name.lower():
+                widget = gui.Combobox()
+                algorithms = ['2opt', '3opt', 'LKH'] # compare TSP algorithms
+                for algorithm in algorithms:
+                    widget.add_item(algorithm)
+                widget.selected_index = algorithms.index(param_value)
+                widget.set_on_selection_changed(
+                    lambda selected_text, selected_index: self.on_parameter_changed(
+                        node_name, param_name, selected_text))
+                row.add_child(widget)  # ADD HERE  
 
             else:
                 widget = gui.TextEdit()

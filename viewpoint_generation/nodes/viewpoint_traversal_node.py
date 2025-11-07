@@ -47,8 +47,10 @@ class ViewpointTraversalNode(Node):
                 ('workspace.max_y', 1.0),
                 ('workspace.min_z', -1.0),
                 ('workspace.max_z', 1.0),
-                ('use_2opt', True),
-                ('use_3opt', False)
+                ('clear_paths', False),
+                ('tsp_algorithm', 'greedy'),
+                ('compare', False),
+                ('compare_algorithms', '2opt'),
             ]
         )
 
@@ -58,10 +60,10 @@ class ViewpointTraversalNode(Node):
             'planner').get_parameter_value().string_value
         self.multiplanning = self.get_parameter(
             'multiplanning').get_parameter_value().bool_value
-        self.use_2opt = self.get_parameter(
-            'use_2opt').get_parameter_value().bool_value
-        self.use_3opt = self.get_parameter(
-            'use_3opt').get_parameter_value().bool_value
+        self.clear_paths = self.get_parameter(
+            'clear_paths').get_parameter_value().bool_value
+        self.compare = self.get_parameter(
+            'compare').get_parameter_value().bool_value
 
         self.workspace = {
             'min_x': self.get_parameter('workspace.min_x').get_parameter_value().double_value,
@@ -220,7 +222,7 @@ class ViewpointTraversalNode(Node):
             for cluster_name, cluster in clusters_dict.items():
                 viewpoints.append(cluster['viewpoint']['position'])
 
-            if self.use_2opt:
+            if self.tsp_algorithm == '2opt':
                 self.get_logger().info(
                     f"Using 2-opt optimization for region '{region_name}'")
                 dist_matrix = self.dist_matrix(viewpoints)
@@ -241,29 +243,6 @@ class ViewpointTraversalNode(Node):
                 path, total_distance = self.nearest_neighbors_tsp(viewpoints)
                 self.get_logger().info(
                     f"Optimized path for region '{region_name}' with total distance {total_distance}")
-
-            if self.use_3opt:
-                self.get_logger().info(
-                    f"Using 3-opt optimization for region '{region_name}'")
-                dist_matrix = self.dist_matrix(viewpoints)
-                initial_path, initial_dist = self.nearest_neighbors_tsp(
-                    viewpoints)
-                self.get_logger().info(
-                    f"Initial nearest neighbor distance: {initial_dist:.4f}")
-                optimized_path, optimized_dist = self.local_search_3_opt(
-                    dist_matrix, [initial_path, initial_dist], recursive_seeding=-1, verbose=True)
-                self.get_logger().info(
-                    f"Optimized path for region '{region_name}' with total distance {optimized_dist}")
-                improved = ((initial_dist - optimized_dist) /
-                            initial_dist) * 100
-                self.get_logger().info(f"Improvement: {improved:.2f}%")
-                path = optimized_path[:-
-                                      1] if optimized_path[-1] == optimized_path[0] else optimized_path
-            else:
-                path, total_distance = self.nearest_neighbors_tsp(viewpoints)
-                self.get_logger().info(
-                    f"Optimized path for region '{region_name}' with total distance {total_distance}")
-
             viewpoint_dict['regions'][region_name]['order'] = path
 
         return viewpoint_dict
@@ -345,6 +324,20 @@ class ViewpointTraversalNode(Node):
             unvisited.remove(current_point)
 
         return path, total_distance
+    
+    # Clearing the Traversal Paths which were generated in the previous run and highlight only the projected viewpoints.
+    def clear_paths(self, request, response):
+        if not self.planning_component:
+            self.get_logger().error("Planning component is not initialized")
+            response.success = False
+            response.message = "Planning component is not initialized"
+            return response
+
+        self.get_logger().info("Clearing paths from the planning scene")
+        self.planning_component.clear_paths()
+        response.success = True
+        response.message = "Paths cleared successfully"
+        return response
 
     def move_to_pose_stamped_callback(self, request, response):
         if not self.planning_component:
@@ -447,12 +440,14 @@ class ViewpointTraversalNode(Node):
                 self.workspace['max_y'] = param.value
             elif param.name == 'workspace.max_z':
                 self.workspace['max_z'] = param.value
-            elif param.name == 'use_2opt':
-                self.use_2opt = param.value
-            elif param.name == 'use_3opt':
-                self.use_3opt = param.value
-
-        self.init_workspace()
+            elif param.name == 'tsp_algorithm':
+                self.tsp_algorithm = param.value
+            elif param.name == 'clear_paths':
+                self.clear_paths = param.value
+            elif param.name == 'compare':
+                self.compare = param.value    
+            elif param.name == 'compare_algorithms':
+                self.compare_algorithms = param.value    
 
         return SetParametersResult(successful=True)
 

@@ -701,10 +701,8 @@ class ViewpointGeneration():
                 fov_points = np.asarray(fov_pcd.points)
                 fov_normals = np.asarray(fov_pcd.normals)
                 # Project viewpoint for the FOV cluster
-                origin, position, direction, orientation = self.vp.project(
+                origin, position, direction, orientation = self.vp.generate_viewpoint(
                     fov_points, fov_normals)
-                self.vp.check_occlusion(
-                    position, fov_points, self.raycasting_scene)
                 # Store the viewpoint in the region dictionary
                 self.regions_dict['regions'][region_id]['clusters'][fov_cluster_id]['viewpoint'] = {
                     'origin': origin.tolist(),

@@ -35,6 +35,7 @@ class ViewpointProjection:
         origin_normal = np.mean(surface_normals, axis=0)
         # Normalize the average normal vector
         surface_normal = origin_normal / np.linalg.norm(origin_normal)
+        direction = surface_normal
 
         # Project point along the surface normal
         viewpoint, orientation = self.project_point_along_direction(
@@ -43,7 +44,7 @@ class ViewpointProjection:
         # Check occlusion
         distances, occluded = self.check_occlusion(viewpoint, surface_points)
 
-        # return origin, viewpoint, direction, orientation
+        return origin, viewpoint, direction, orientation
 
     def project_point_along_direction(self, origin: list, direction: list) -> list:
         """
