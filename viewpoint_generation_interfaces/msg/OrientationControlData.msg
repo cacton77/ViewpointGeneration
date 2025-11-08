@@ -1,12 +1,8 @@
 std_msgs/Header header
 
-# Raw point stats
-uint32 num_points_masked
-uint32 num_points_bbox
-uint32 num_points_crop
-
 #visual data
 sensor_msgs/Image        depth_image         # latest depth frame (original encoding)
+sensor_msgs/Image        depth_filtered_image # filtered depth (32FC1 meters)
 sensor_msgs/PointCloud2  cloud_bbox          # points after bbox, in main_camera_frame
 sensor_msgs/PointCloud2  cloud_crop          # points after cylindrical crop, in main_camera_frame
 
