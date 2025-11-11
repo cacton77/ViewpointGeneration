@@ -162,7 +162,6 @@ def generate_launch_description():
         d405_camera_node,
         task_planning_node,
         control_moveit_launch,
-        # viewpoint_generation_launch,
         register_event_handler,
         viewpoint_traversal_launch,
         admittance_control_launch,

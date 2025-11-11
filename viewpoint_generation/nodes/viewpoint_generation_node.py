@@ -291,7 +291,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
             return True
 
-    def create_planning_volume_mesh(self, radius=1, height=1):
+    def create_planning_volume_mesh(self, radius=0.5, height=0.75):
         planning_volume_mesh_path = get_package_prefix(
             'viewpoint_generation') + '/share/viewpoint_generation/meshes/planning_volume.stl'
         planning_volume_mesh_o3d = o3d.io.read_triangle_mesh(
@@ -303,9 +303,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         for vertex in vertices:
             point = Point()
-            point.x = vertex[0]
-            point.y = vertex[1]
-            point.z = vertex[2]
+            point.x = radius*vertex[0]
+            point.y = radius*vertex[1]
+            point.z = height*vertex[2]
             planning_volume_mesh.vertices.append(point)
 
         for triangle in triangles:
@@ -472,6 +472,15 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         success, message = self.viewpoint_generation.set_regions_file(
             regions_file)
+
+        # Get Viewpoint Bounds
+        max_radius, max_z = self.viewpoint_generation.get_viewpoint_bounds()
+        print(f"Max Radius: {max_radius}, Max Z: {max_z}")
+        if max_radius < 0 or max_z < 0:
+            self.create_planning_volume_mesh()
+        else:
+            self.create_planning_volume_mesh(
+                radius=max_radius + 0.1, height=max_z + 0.1)
 
         if not success:
             self.get_logger().error(message)

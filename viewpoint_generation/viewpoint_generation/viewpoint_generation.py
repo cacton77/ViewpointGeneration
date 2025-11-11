@@ -541,6 +541,28 @@ class ViewpointGeneration():
 
         return True, f'Regions file set to \'{regions_file}\'.'
 
+    def get_viewpoint_bounds(self):
+        if not self.regions_dict:
+            return None
+
+        max_x = 0
+        max_y = 0
+        max_z = 0
+
+        for region in self.regions_dict['regions'].values():
+            # If no cluster is found, skip this region
+            if 'clusters' not in region:
+                continue
+            for cluster in region['clusters'].values():
+                if 'viewpoint' not in cluster:
+                    continue
+                viewpoint_position = cluster["viewpoint"]["position"]
+                max_x = max(max_x, abs(viewpoint_position[0]))
+                max_y = max(max_y, abs(viewpoint_position[1]))
+                max_z = max(max_z, abs(viewpoint_position[2]))
+
+        return max_x, max_y, max_z
+
     def region_growth(self):
         if self.curvatures_file is None:
             success, msg = self.estimate_curvature()
@@ -731,29 +753,23 @@ class ViewpointGeneration():
         Returns:
             tuple: (min_x, min_y, min_z, max_x, max_y, max_z) of the mesh in meters.
         """
-        if self.regions_dict['regions'] is None:
-            return None, None, None, None, None, None
+        max_radius = max_z = float('-inf')
 
-        min_x = min_y = min_z = float('inf')
-        max_x = max_y = max_z = float('-inf')
-
-        for region in self.regions_dict['regions'].values():
-            if 'clusters' not in region:
-                continue
-
-            for cluster in region['clusters'].values():
-                if 'viewpoint' not in cluster:
+        if self.regions_dict and 'regions' in self.regions_dict:
+            for region in self.regions_dict['regions'].values():
+                if 'clusters' not in region:
                     continue
 
-                viewpoint = cluster['viewpoint']
-                min_x = min(min_x, viewpoint['position'][0])
-                min_y = min(min_y, viewpoint['position'][1])
-                min_z = min(min_z, viewpoint['position'][2])
-                max_x = max(max_x, viewpoint['position'][0])
-                max_y = max(max_y, viewpoint['position'][1])
-                max_z = max(max_z, viewpoint['position'][2])
+                for cluster in region['clusters'].values():
+                    if 'viewpoint' not in cluster:
+                        continue
 
-        return min_x, min_y, min_z, max_x, max_y, max_z
+                    viewpoint = cluster['viewpoint']
+                    max_radius = max(
+                        max_radius, np.linalg.norm(viewpoint['position'][:2]))
+                    max_z = max(max_z, viewpoint['position'][2])
+
+        return max_radius, max_z
 
     def get_viewpoint(self, region_index, cluster_index):
         """

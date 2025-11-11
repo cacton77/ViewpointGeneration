@@ -70,7 +70,7 @@ class ViewpointTraversalNode(Node):
         self.tsp_algorithm = self.get_parameter(
             'tsp_algorithm').get_parameter_value().string_value
         self.compare_algorithms = self.get_parameter(
-            'compare_algorithms').get_parameter_value().string_value    
+            'compare_algorithms').get_parameter_value().string_value
 
         self.workspace = {
             'min_x': self.get_parameter('workspace.min_x').get_parameter_value().double_value,
@@ -221,7 +221,8 @@ class ViewpointTraversalNode(Node):
 
         for region_name, region in viewpoint_dict['regions'].items():
             num_clusters = len(region['clusters'])
-            viewpoint_dict['regions'][region_name]['order'] = list(range(num_clusters))
+            viewpoint_dict['regions'][region_name]['order'] = list(
+                range(num_clusters))
 
         regions_dict = viewpoint_dict['regions']
         current_algorithm = self.tsp_algorithm
@@ -258,16 +259,19 @@ class ViewpointTraversalNode(Node):
                     f"Unknown TSP algorithm: {current_algorithm}")
                 continue
 
-            self.get_logger().info(f"Algorithm completed. Distance: {distance:.4f}")  
-            self.get_logger().info(f"Path length: {len(path)}")  
+            self.get_logger().info(
+                f"Algorithm completed. Distance: {distance:.4f}")
+            self.get_logger().info(f"Path length: {len(path)}")
 
             self.algorithm_results[current_algorithm][region_name] = {
                 'path': path.copy(),
                 'distance': distance
             }
 
-            path_to_save = path[:-1] if (len(path) > 0 and path[-1] == path[0]) else path
-            self.get_logger().info(f"Saving path with {len(path_to_save)} points") 
+            path_to_save = path[:-1] if (len(path)
+                                         > 0 and path[-1] == path[0]) else path
+            self.get_logger().info(
+                f"Saving path with {len(path_to_save)} points")
             viewpoint_dict['regions'][region_name]['order'] = path_to_save
 
         self.completed_algorithms.add(current_algorithm)
@@ -276,7 +280,7 @@ class ViewpointTraversalNode(Node):
         #         self.show_comparison(current_algorithm, self.compare_algorithms)
 
         return viewpoint_dict
-    
+
     def nearest_neighbors_tsp(self, points):
         num_points = len(points)
         unvisited = set(range(num_points))
@@ -317,7 +321,8 @@ class ViewpointTraversalNode(Node):
 
             for i in range(len(vp_list[0]) - 2):
                 for j in range(i + 2, len(vp_list[0])):
-                    new_tour = (vp_list[0][:i+1] + vp_list[0][i+1:j+1][::-1] + vp_list[0][j+1:])
+                    new_tour = (vp_list[0][:i+1] + vp_list[0]
+                                [i+1:j+1][::-1] + vp_list[0][j+1:])
 
                     if len(new_tour) > 0 and new_tour[-1] != new_tour[0]:
                         new_tour.append(new_tour[0])
@@ -343,7 +348,6 @@ class ViewpointTraversalNode(Node):
                 recursive_seeding = -2
 
         return vp_list[0], vp_list[1]
-
 
     def local_search_3_opt(self, dist_matrix, viewpoint, recursive_seeding=-1):
         if recursive_seeding < 0:
@@ -380,34 +384,41 @@ class ViewpointTraversalNode(Node):
                     for k in range(j + 1, n):
                         if improvement_found:
                             break
-                        #Generate all possible 3-opt moves
+                        # Generate all possible 3-opt moves
                         segment_A = tour[:i+1]
                         segment_B = tour[i+1:j+1]
                         segment_C = tour[j+1:k+1]
                         segment_D = tour[k+1:]
 
                         new_tours = [
-                            segment_A + segment_B[::-1] + segment_C + segment_D,
-                            segment_A + segment_B + segment_C[::-1] + segment_D,
+                            segment_A + segment_B[::-1] +
+                            segment_C + segment_D,
+                            segment_A + segment_B +
+                            segment_C[::-1] + segment_D,
                             segment_A + segment_C + segment_B + segment_D,
-                            segment_A + segment_B[::-1] + segment_C[::-1] + segment_D,
-                            segment_A + segment_C + segment_B[::-1] + segment_D,
-                            segment_A + segment_C[::-1] + segment_B + segment_D,
-                            segment_A + segment_C[::-1] + segment_B[::-1] + segment_D,
+                            segment_A + segment_B[::-1] +
+                            segment_C[::-1] + segment_D,
+                            segment_A + segment_C +
+                            segment_B[::-1] + segment_D,
+                            segment_A + segment_C[::-1] +
+                            segment_B + segment_D,
+                            segment_A + segment_C[::-1] +
+                            segment_B[::-1] + segment_D,
                         ]
-                        #Check each new tour and update to the best route
+                        # Check each new tour and update to the best route
                         for new_tour in new_tours:
                             if len(new_tour) > 0 and new_tour[-1] != new_tour[0]:
                                 new_tour_closed = new_tour + [new_tour[0]]
                             else:
                                 new_tour_closed = new_tour
-                            new_dist = self.dist_calc(dist_matrix, [new_tour_closed, 0])
+                            new_dist = self.dist_calc(
+                                dist_matrix, [new_tour_closed, 0])
                             if new_dist < best_route[1]:
                                 best_route[0] = new_tour_closed
                                 best_route[1] = new_dist
                                 improvement_found = True
                                 break
-            #update the best route if an improvement was found
+            # update the best route if an improvement was found
             if best_route[1] < vp_list[1]:
                 vp_list = copy.deepcopy(best_route)
 
@@ -426,7 +437,7 @@ class ViewpointTraversalNode(Node):
     def lin_kernighan_helsgaun(self, viewpoints, dist_matrix, initial_solution, num_iterations=10, num_candidates=5):
         viewpoints_array = np.array(viewpoints)
         n = len(viewpoints)
-        #initialize the tour and distance
+        # initialize the tour and distance
         if isinstance(initial_solution, list) and len(initial_solution) == 2:
             current_tour = copy.deepcopy(initial_solution[0])
             current_dist = initial_solution[1]
@@ -435,13 +446,15 @@ class ViewpointTraversalNode(Node):
             current_dist = self.dist_calc(dist_matrix, [current_tour, 0])
         if current_tour[-1] == current_tour[0]:
             current_tour = current_tour[:-1]
-        #build candidate sets based on nearest neighbors for each viewpoint
-        candidate_edges = self.build_candidate_sets(viewpoints_array, dist_matrix, num_candidates)
-        #check the best tour and distance
+        # build candidate sets based on nearest neighbors for each viewpoint
+        candidate_edges = self.build_candidate_sets(
+            viewpoints_array, dist_matrix, num_candidates)
+        # check the best tour and distance
         best_tour = current_tour.copy()
         best_dist = current_dist
-        for iteration in range(num_iterations): #perform LKH iterations
-            improved_tour, improved_dist = self.lk_with_candidates(current_tour, dist_matrix, candidate_edges)
+        for iteration in range(num_iterations):  # perform LKH iterations
+            improved_tour, improved_dist = self.lk_with_candidates(
+                current_tour, dist_matrix, candidate_edges)
             if improved_dist < best_dist:
                 best_tour = improved_tour.copy()
                 best_dist = improved_dist
@@ -449,12 +462,13 @@ class ViewpointTraversalNode(Node):
                 current_dist = improved_dist
             if iteration < num_iterations - 1:
                 current_tour = self.double_bridge_perturbation(current_tour)
-                current_dist = self.dist_calc(dist_matrix, [current_tour + [current_tour[0]], 0])
+                current_dist = self.dist_calc(
+                    dist_matrix, [current_tour + [current_tour[0]], 0])
 
         best_tour_closed = best_tour + [best_tour[0]]
         return best_tour_closed, best_dist
 
-    #Build candidate sets based on nearest neighbors
+    # Build candidate sets based on nearest neighbors
     def build_candidate_sets(self, viewpoints, dist_matrix, k):
         n = len(viewpoints)
         candidates = {}
@@ -468,7 +482,8 @@ class ViewpointTraversalNode(Node):
     def lk_with_candidates(self, tour, dist_matrix, candidates):
         n = len(tour)
         current_tour = tour.copy()
-        current_dist = self.dist_calc(dist_matrix, [current_tour + [current_tour[0]], 0])
+        current_dist = self.dist_calc(
+            dist_matrix, [current_tour + [current_tour[0]], 0])
 
         improved = True
         iterations = 0
@@ -488,12 +503,15 @@ class ViewpointTraversalNode(Node):
                     if abs(i - j_pos) <= 1:
                         continue
                     if i < j_pos:
-                        new_tour = (current_tour[:i+1] + current_tour[i+1:j_pos+1][::-1] + current_tour[j_pos+1:])
+                        new_tour = (
+                            current_tour[:i+1] + current_tour[i+1:j_pos+1][::-1] + current_tour[j_pos+1:])
                     else:
-                        new_tour = (current_tour[:j_pos+1] + current_tour[j_pos+1:i+1][::-1] + current_tour[i+1:])
+                        new_tour = (
+                            current_tour[:j_pos+1] + current_tour[j_pos+1:i+1][::-1] + current_tour[i+1:])
 
                     new_tour_closed = new_tour + [new_tour[0]]
-                    new_dist = self.dist_calc(dist_matrix, [new_tour_closed, 0])
+                    new_dist = self.dist_calc(
+                        dist_matrix, [new_tour_closed, 0])
                     if new_dist < current_dist:
                         current_tour = new_tour
                         current_dist = new_dist
@@ -516,41 +534,43 @@ class ViewpointTraversalNode(Node):
         segments.append(tour[prev:])
 
         if len(segments) >= 5:
-            new_tour = segments[0] + segments[2] + segments[1] + segments[3] + segments[4]
+            new_tour = segments[0] + segments[2] + \
+                segments[1] + segments[3] + segments[4]
         else:
             new_tour = tour
 
-        return new_tour    
-    
+        return new_tour
+
     # Clearing the Traversal Paths which were generated in the previous run and highlight only the projected viewpoints.
     def clear_paths_callback(self, request, response):
         self.algorithm_results.clear()
         self.completed_algorithms.clear()
-        
+
         response.success = True
         response.message = "Paths cleared"
         return response
-    
+
     def run_greedy(self, viewpoints):
         path, distance = self.nearest_neighbors_tsp(viewpoints)
         return path, distance
-    
+
     def run_2opt(self, viewpoints, dist_matrix):
         initial_path, initial_dist = self.nearest_neighbors_tsp(viewpoints)
-        optimized_path, optimized_dist = self.local_search_2_opt(dist_matrix, [initial_path, initial_dist], recursive_seeding=-1)
+        optimized_path, optimized_dist = self.local_search_2_opt(
+            dist_matrix, [initial_path, initial_dist], recursive_seeding=-1)
         return optimized_path, optimized_dist
 
     def run_3opt(self, viewpoints, dist_matrix):
         initial_path, initial_dist = self.nearest_neighbors_tsp(viewpoints)
-        optimized_path, optimized_dist = self.local_search_3_opt(dist_matrix, [initial_path, initial_dist], recursive_seeding=-1)
+        optimized_path, optimized_dist = self.local_search_3_opt(
+            dist_matrix, [initial_path, initial_dist], recursive_seeding=-1)
         return optimized_path, optimized_dist
 
     def run_lkh(self, viewpoints, dist_matrix):
         initial_path, initial_dist = self.nearest_neighbors_tsp(viewpoints)
-        optimized_path, optimized_dist = self.lin_kernighan_helsgaun(viewpoints, dist_matrix, [initial_path, initial_dist])
+        optimized_path, optimized_dist = self.lin_kernighan_helsgaun(
+            viewpoints, dist_matrix, [initial_path, initial_dist])
         return optimized_path, optimized_dist
-
-
 
     def move_to_pose_stamped_callback(self, request, response):
         if not self.planning_component:
@@ -658,9 +678,9 @@ class ViewpointTraversalNode(Node):
             elif param.name == 'clear_paths':
                 self.clear_paths = param.value
             elif param.name == 'compare':
-                self.compare = param.value    
+                self.compare = param.value
             elif param.name == 'compare_algorithms':
-                self.compare_algorithms = param.value    
+                self.compare_algorithms = param.value
 
         return SetParametersResult(successful=True)
 
