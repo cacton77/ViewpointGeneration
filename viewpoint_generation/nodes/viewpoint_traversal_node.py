@@ -363,9 +363,9 @@ class ViewpointTraversalNode(Node):
 
         dist = vp_list[1] * 2
         iteration = 0
-        max_iterations = 10
+        # max_iterations = 10
 
-        while count < recursive_seeding and iteration < max_iterations:
+        while count < recursive_seeding:
             best_route = copy.deepcopy(vp_list)
             improvement_found = False
 
