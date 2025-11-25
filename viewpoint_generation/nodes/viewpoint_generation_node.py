@@ -65,7 +65,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('viewpoints.traversal', ''),
                 ('viewpoints.projection.nothing', ''),
                 ('settings.data_path', '/tmp'),
-                ('settings.cuda_enabled', False)
+                ('settings.cuda_enabled', False),
+                ('settings.planning_volume_opacity', 0.0),
             ]
         )
 
@@ -144,6 +145,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
             'model.camera.focal_distance').get_parameter_value().double_value
         self.viewpoint_generation.cuda_enabled = self.get_parameter(
             'settings.cuda_enabled').get_parameter_value().bool_value
+        self.planning_volume_opacity = self.get_parameter(
+            'settings.planning_volume_opacity').get_parameter_value().double_value
 
         self.add_on_set_parameters_callback(self.parameter_callback)
 
@@ -365,9 +368,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
         planning_scene.robot_state.is_diff = True
         planning_scene.is_diff = True
         planning_scene.object_colors.append(ObjectColor(
-            id='object', color=ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)))
+            id='object', color=ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.5)))
         planning_scene.object_colors.append(ObjectColor(
-            id='planning_volume', color=ColorRGBA(r=0.0, g=1.0, b=1.0, a=0.25)))
+            id='planning_volume', color=ColorRGBA(r=0.0, g=1.0, b=1.0, a=self.planning_volume_opacity)))
 
         self.planning_scene_diff_publisher.publish(planning_scene)
 
@@ -998,6 +1001,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 self.set_data_path(param.value)
             elif param.name == 'settings.cuda_enabled':
                 success = self.enable_cuda_callback(param.value)
+            elif param.name == 'settings.planning_volume_opacity':
+                self.planning_volume_opacity = param.value
 
             print(f'{param.name}: {success}')
 
