@@ -16,8 +16,10 @@ geometry_msgs/PoseStamped  goal_pose         # EOAT desired pose (its own header
 # Control data
 geometry_msgs/Vector3  rotvec_error          # Z-axis alignment error 
 geometry_msgs/Vector3  torque_cmd            # final torque command [Tx,Ty,Tz]
-geometry_msgs/Vector3  force_cmd              # final force command [Fx,Fy,Fz]      # <<< NEW
-geometry_msgs/Vector3  pos_error              # translational error (p_des_cf)      # <<< NEW
+geometry_msgs/Vector3  force_cmd          # final force command [Fx,Fy,Fz]
+geometry_msgs/Vector3  torque_cmd_cam      # torque actually applied at camera origin (after inertia scaling)
+
+
 float32                k_p
 float32                k_d
 float32                k_i
