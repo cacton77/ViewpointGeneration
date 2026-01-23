@@ -35,12 +35,16 @@ class ROSThread(Node):
     task_planning_node_name = 'inspection_task_planning'
     autofocus_node_name = 'autofocus'
     orientation_control_node_name = 'orientation_controller'
+    admittance_control_node_name = 'admittance_control'
+    teleop_node_name = 'teleop'
 
     target_nodes = [viewpoint_generation_node_name,
                     traversal_node_name,
                     task_planning_node_name,
                     autofocus_node_name,
                     orientation_control_node_name,
+                    admittance_control_node_name,
+                    teleop_node_name,
                     node_name]
 
     flags = {

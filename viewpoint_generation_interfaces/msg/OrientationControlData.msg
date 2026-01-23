@@ -16,6 +16,9 @@ geometry_msgs/PoseStamped  goal_pose         # EOAT desired pose (its own header
 # Control data
 geometry_msgs/Vector3  rotvec_error          # Z-axis alignment error 
 geometry_msgs/Vector3  torque_cmd            # final torque command [Tx,Ty,Tz]
+geometry_msgs/Vector3  cam_force_cmd         # Force sent to admittance control
+geometry_msgs/Vector3  cam_torque_cmd        # Torque sent to admittance control
+
 
 float32                k_p
 float32                k_d
