@@ -42,7 +42,7 @@ class ViewpointProjection:
             origin, surface_normal)
 
         # Check occlusion
-        distances, occluded = self.check_occlusion(viewpoint, surface_points)
+        # distances, occluded = self.check_occlusion(viewpoint, surface_points)
 
         return origin, viewpoint, direction, orientation
 
