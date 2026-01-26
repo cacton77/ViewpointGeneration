@@ -59,14 +59,15 @@ def generate_launch_description():
         }.items()
     )
 
-    d405_camera_node = Node(
-        package="realsense2_camera",
-        executable="realsense2_camera_node",
-        name="d405_camera",
-        output="screen",
-        condition=UnlessCondition(LaunchConfiguration("headless_mode")),
-        arguments=['--ros-args', '--log-level', 'error']
-    )
+    # Depth camera launch moved to inspection_eoat
+    # d405_camera_node = Node(
+    #     package="realsense2_camera",
+    #     executable="realsense2_camera_node",
+    #     name="d405_camera",
+    #     output="screen",
+    #     condition=UnlessCondition(LaunchConfiguration("headless_mode")),
+    #     arguments=['--ros-args', '--log-level', 'error']
+    # )
 
     control_moveit_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -159,7 +160,7 @@ def generate_launch_description():
 
     return LaunchDescription(declared_arguments + [
         macro_camera_launch,
-        d405_camera_node,
+        # d405_camera_node,
         task_planning_node,
         control_moveit_launch,
         register_event_handler,
