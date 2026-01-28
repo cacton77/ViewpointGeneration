@@ -483,7 +483,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.create_planning_volume_mesh()
         else:
             self.create_planning_volume_mesh(
-                radius=max_radius + 0.1, height=max_z + 0.1)
+                radius=max_radius + 0.2, height=2 * max_z + 0.1)
 
         if not success:
             self.get_logger().error(message)

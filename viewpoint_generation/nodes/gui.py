@@ -1096,6 +1096,17 @@ class GUIClient():
                     lambda selected_text, selected_index: self.on_parameter_changed(
                         node_name, param_name, selected_text))
                 row.add_child(widget)  # ADD HERE  
+            
+            elif 'controller_type' in param_name.lower():
+                widget = gui.Combobox()
+                controller_types = ['PD', 'PID']
+                for ctype in controller_types:
+                    widget.add_item(ctype)
+                widget.selected_index = controller_types.index(param_value)
+                widget.set_on_selection_changed(
+                    lambda selected_text, selected_index: self.on_parameter_changed(
+                        node_name, param_name, selected_text))
+                row.add_child(widget)  # ADD HERE
 
             else:
                 widget = gui.TextEdit()

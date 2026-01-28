@@ -35,7 +35,7 @@ gui:
     use_sim_time: false
 inspection_task_planning:
   ros__parameters:
-    viewpoints_file: /data/ViewpointGenerationData/cylinder_mm/10000points_regions/4_regions_367_clusters_2025-10-14_23-00-30.json
+    viewpoints_file: ''
     data_path: /data/ViewpointGenerationData
     use_sim_time: false
 viewpoint_generation:
@@ -49,7 +49,7 @@ viewpoint_generation:
     model.point_cloud.file: /data/ViewpointGenerationData/cylinder_mm/10000points.ply
     model.point_cloud.sampling.number_of_points: 10000
     model.point_cloud.units: m
-    regions.file: /data/ViewpointGenerationData/cylinder_mm/10000points_regions/4_regions_367_clusters_2025-10-14_23-00-30.json
+    regions.file: ''
     regions.fov_clustering.beta_weight: 1.0
     regions.fov_clustering.k-means.maximum_iterations: 100
     regions.fov_clustering.k-means.normal_weight: 1.0

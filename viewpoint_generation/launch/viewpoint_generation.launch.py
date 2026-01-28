@@ -10,18 +10,24 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    ld = LaunchDescription()
 
-    object_arg = DeclareLaunchArgument(
-        'object',
-        default_value='default.yaml',
-        description='Name of the config file'
-    )
-    headless_mode_arg = DeclareLaunchArgument(
-        'headless_mode',
-        default_value='false',
-        description='Run in headless mode (without GUI).'
-    )
+    declared_arguments = [
+        DeclareLaunchArgument(
+            'object',
+            default_value='default.yaml',
+            description='Name of the config file'
+        ),
+        DeclareLaunchArgument(
+            'data_path',
+            default_value='/data/ViewpointGenerationData',
+            description='Path to the data directory.'
+        ),
+        DeclareLaunchArgument(
+            'headless_mode',
+            default_value='false',
+            description='Run in headless mode (without GUI).'
+        ),
+    ]
 
     # Use PathJoinSubstitution to build the path at launch time
     config = PathJoinSubstitution([
@@ -62,9 +68,7 @@ def generate_launch_description():
         )
     )
 
-    ld.add_action(object_arg)
-    ld.add_action(viewpoint_generation_node)
-    ld.add_action(rqt_node)
-    ld.add_action(register_event_handler)
-
-    return ld
+    return LaunchDescription(declared_arguments + [
+        viewpoint_generation_node,
+        register_event_handler
+    ])
