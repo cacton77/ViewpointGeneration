@@ -1107,6 +1107,17 @@ class GUIClient():
                     lambda selected_text, selected_index: self.on_parameter_changed(
                         node_name, param_name, selected_text))
                 row.add_child(widget)  # ADD HERE
+            
+            elif 'normal_estimation_algorithm' in param_name.lower():
+                widget = gui.Combobox()
+                algorithms = ['PCA', 'RANSAC']
+                for algorithm in algorithms:
+                    widget.add_item(algorithm)
+                widget.selected_index = algorithms.index(param_value)
+                widget.set_on_selection_changed(
+                    lambda selected_text, selected_index: self.on_parameter_changed(
+                        node_name, param_name, selected_text))
+                row.add_child(widget)  # ADD HERE
 
             else:
                 widget = gui.TextEdit()
