@@ -17,30 +17,35 @@ geometry_msgs/PoseStamped  current_pose      # Current EOAT pose
 geometry_msgs/TwistStamped current_twist     # Current EOAT twist
 geometry_msgs/PoseStamped  goal_pose         # EOAT desired pose (its own header)
 
-# Control data
-#geometry_msgs/Vector3  rotvec_error          # Z-axis alignment error 
-#geometry_msgs/Vector3  torque_cmd            # final torque command [Tx,Ty,Tz]
-#geometry_msgs/Vector3  cam_force_cmd         # Force sent to admittance control
-#geometry_msgs/Vector3  cam_torque_cmd        # Torque sent to admittance control
-float32                theta_error            # angle error between camera Z and target normal (radians)
-float32                theta_error_filtered   # Kalman filtered angle error (radians)
-float32                dtheta_error           # derivative of error (radians/s)
-float32                dtheta_error_filtered  # Kalman filtered derivative of error (radians/s)
-float32                itheta_error           # integral of error over time
+# Control data - separate pitch (X-axis) and yaw (Y-axis) control
+# Pitch: rotation about camera X-axis
+float32                pitch_error_raw        # raw pitch angle error before filtering (radians)
+float32                dpitch_error_raw       # raw derivative of pitch error before filtering (radians/s)
+float32                pitch_error            # pitch angle error (radians)
+float32                dpitch_error           # derivative of pitch error (radians/s)
+float32                ipitch_error           # integral of pitch error over time
+
+# Yaw: rotation about camera Y-axis
+float32                yaw_error_raw          # raw yaw angle error before filtering (radians)
+float32                dyaw_error_raw         # raw derivative of yaw error before filtering (radians/s)
+float32                yaw_error              # yaw angle error (radians)
+float32                dyaw_error             # derivative of yaw error (radians/s)
+float32                iyaw_error             # integral of yaw error over time
+
+# Roll: rotation about camera Z-axis
 float32                roll_error             # roll error around camera Z (radians)
 float32                droll_error            # derivative of roll error (radians/s)
 float32                iroll_error            # integral of roll error over time
 
-float32                k_p_theta
-float32                k_d_theta
-float32                k_i_theta
-float32                k_p_roll
-float32                k_d_roll
-float32                k_i_roll
+# PID gains (same for pitch and yaw)
+float32                k_p
+float32                k_d
+float32                k_i
 
-geometry_msgs/Vector3  theta_axis    # final torque command axis [ax,ay,az]
-float32                theta_torque_command  # torque command around theta axis
-float32                roll_torque_command    # torque command around roll axis
+# Torque commands
+float32                pitch_torque_command   # torque command about X-axis (Nm)
+float32                yaw_torque_command     # torque command about Y-axis (Nm)
+float32                roll_torque_command    # torque command about Z-axis (Nm)
 
 # Frames
 geometry_msgs/TransformStamped camera_transform  # Transform from object_frame to camera_frame
