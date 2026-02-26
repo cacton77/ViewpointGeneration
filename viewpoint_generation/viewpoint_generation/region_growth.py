@@ -296,7 +296,7 @@ class RegionGrowing:
         print(f"Found {len(seed_candidates)} seed candidates")
 
         # Region growing
-        clusters = []
+        regions = []
         processed = np.zeros(len(self.points), dtype=bool)
 
         growing_start = time.time()
@@ -306,8 +306,8 @@ class RegionGrowing:
 
             region = self.grow_region_from_seed(seed_idx, processed)
             if region:
-                clusters.append(region)
-                print(f"Cluster {len(clusters)}: {len(region)} points")
+                regions.append(region)
+                print(f"Cluster {len(regions)}: {len(region)} points")
 
         print(
             f"Region growing completed in {time.time() - growing_start:.2f}s")
@@ -317,9 +317,9 @@ class RegionGrowing:
 
         print(f"Total segmentation time: {time.time() - start_time:.2f}s")
         print(
-            f"Found {len(clusters)} clusters and {len(noise_points)} noise points")
+            f"Found {len(regions)} regions and {len(noise_points)} noise points")
 
-        return clusters, noise_points
+        return regions, noise_points
 
     def visualize_segmentation(self, clusters: List[List[int]], noise_points: List[int]):
         """Visualize the segmentation results with different colors for each cluster."""

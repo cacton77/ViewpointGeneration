@@ -572,10 +572,10 @@ class ViewpointGeneration():
 
         regions_dict = {'regions': {}}
 
-        clusters, noise_points = self.rg.segment(self.point_cloud)
+        regions, noise_points = self.rg.segment(self.point_cloud)
 
-        for i, cluster in enumerate(clusters):
-            regions_dict['regions'][i] = {'points': cluster}
+        for i, region in enumerate(regions):
+            regions_dict['regions'][i] = {'points': region}
             regions_dict['noise_points'] = noise_points
 
         regions_dict['order'] = list(regions_dict['regions'].keys())

@@ -1,0 +1,6 @@
+numpy<1.25.0
+open3d
+pytransform3d
+requests
+bayesian-optimization
+matplotlib

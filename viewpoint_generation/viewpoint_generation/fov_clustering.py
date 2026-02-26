@@ -302,7 +302,10 @@ class FOVClustering:
         return k_opt, valid_clusters
 
     def fov_clustering(self, point_cloud):
-        """ Partition a region of a point cloud into regions within camera fov and dof. """
+        """ Partition a region of a point cloud into regions within camera fov and dof. 
+        input: point cloud of a region (with normals) Open3D PointCloud
+        Returns a list of clusters, where each cluster is a list of point indices. """
+
         # Get the region point cloud
 
         points = np.asarray(point_cloud.points)

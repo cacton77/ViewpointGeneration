@@ -83,6 +83,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Update planning scene timer
         self.create_timer(1.0, self.update_planning_scene)
 
+        # --- ROS Services and Actions ---
+
         # Sample PCD Service
         services_cb_group = MutuallyExclusiveCallbackGroup()
         self.create_service(Trigger, node_name + '/sample_point_cloud',
@@ -223,6 +225,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
             if self.initialized:
                 self.set_point_cloud_file(
                     point_cloud_file='', point_cloud_units='mm')
+
+            # Create Bounding Box 
 
             min_x, min_y, min_z, max_x, max_y, max_z = self.viewpoint_generation.get_mesh_bounds()
 
