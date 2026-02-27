@@ -32,7 +32,7 @@ gui:
     show_skybox: false
     show_viewpoints: false
     use_sim_time: false
-inspection_task_planning:
+task_planning:
   ros__parameters:
     controller_manager_name: /controller_manager
     data_path: /data/ViewpointGenerationData

@@ -50,11 +50,11 @@ class FLAGS:
     error = False
 
 
-class InspectionTaskPlanningNode(Node):
+class TaskPlanningNode(Node):
 
     block_next_param_callback = False
 
-    node_name = 'inspection_task_planning'
+    node_name = 'task_planning'
     viewpoint_generation_node_name = 'viewpoint_generation'
     viewpoint_traversal_node_name = 'viewpoint_traversal'
 
@@ -682,7 +682,7 @@ def main():
     executor = MultiThreadedExecutor(num_threads=4)
     # executor = rclpy.executors.SingleThreadedExecutor()
 
-    node = InspectionTaskPlanningNode()
+    node = TaskPlanningNode()
     executor.add_node(node)
 
     try:

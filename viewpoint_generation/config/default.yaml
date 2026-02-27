@@ -33,7 +33,7 @@ gui:
     show_skybox: false
     show_viewpoints: false
     use_sim_time: false
-inspection_task_planning:
+task_planning:
   ros__parameters:
     viewpoints_file: ''
     data_path: /data/ViewpointGenerationData

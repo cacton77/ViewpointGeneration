@@ -32,7 +32,7 @@ class ROSThread(Node):
     node_name = 'gui'
     viewpoint_generation_node_name = 'viewpoint_generation'
     traversal_node_name = 'viewpoint_traversal'
-    task_planning_node_name = 'inspection_task_planning'
+    task_planning_node_name = 'task_planning'
     autofocus_node_name = 'autofocus'
     orientation_control_node_name = 'orientation_controller'
     admittance_control_node_name = 'admittance_control'
@@ -138,17 +138,17 @@ class ROSThread(Node):
                 f'{target_node}/set_parameters',
                 callback_group=set_params_cb_group
             )
-            if not list_params_client.wait_for_service(timeout_sec=2.0):
+            if not list_params_client.wait_for_service(timeout_sec=1.0):
                 self.get_logger().warning(
                     f'Failed to connect to {target_node}/list_parameters service')
                 failed_targets.append(target_node)
                 self.target_nodes.remove(target_node)
-            elif not get_params_client.wait_for_service(timeout_sec=2.0):
+            elif not get_params_client.wait_for_service(timeout_sec=1.0):
                 self.get_logger().warning(
                     f'Failed to connect to {target_node}/get_parameters service')
                 failed_targets.append(target_node)
                 self.target_nodes.remove(target_node)
-            elif not set_params_client.wait_for_service(timeout_sec=2.0):
+            elif not set_params_client.wait_for_service(timeout_sec=1.0):
                 self.get_logger().warning(
                     f'Failed to connect to {target_node}/set_parameters service')
                 failed_targets.append(target_node)

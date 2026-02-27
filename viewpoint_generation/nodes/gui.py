@@ -94,7 +94,6 @@ class GUIClient():
         r = self.window.content_rect
         self.menu_height = 2.5 * em
         self.header_height = 3 * em
-        self.footer_height = 10 * em
 
         self.ros_thread = ROSThread()
         self.ros_thread.start()
@@ -125,7 +124,7 @@ class GUIClient():
             np.array([0, 0, 0]), np.array([1, 1, 1]), np.array([0, 0, 1]))
 
         def on_mouse(event):
-            for layout in [self.main_layout, self.viewpoint_traversal_layout]:
+            for layout in [self.main_layout, self.action_layout]:
                 frame = layout.frame
                 left = frame.get_left()
                 right = frame.get_right()
@@ -159,7 +158,6 @@ class GUIClient():
         self.window.add_child(self.scene_widget)
 
         self.setup_multi_directional_lighting()
-        # self.window.add_child(self.parameter_panel)
         self.window.set_on_layout(self._on_layout)
 
         camera = self.scene_widget.scene.camera
@@ -167,6 +165,7 @@ class GUIClient():
         self.current_view_matrix = view_matrix
 
         self.last_draw_time = time.time()
+        self.layout_initialized = False
 
     def add_xy_plane(self, bbox):
         if bbox:
@@ -492,7 +491,6 @@ class GUIClient():
                 # Don't include help menu unless it has something more than
                 # About...
             else:
-                menu.add_menu("@", logo_menu)
                 menu.add_menu("File", file_menu)
                 menu.add_menu("Edit", edit_menu)
                 menu.add_menu("View", view_menu)
@@ -555,16 +553,6 @@ class GUIClient():
         # w.set_on_menu_item_activated(
         #     self.MENU_ABOUT, self._on_menu_about)
         # ----
-
-        # Add Footer
-        em = w.theme.font_size
-        self.footer = gui.Horiz(0.25*em)
-        self.footer_label = gui.Label("Footer")
-        self.footer_label.font_id = self.font_id_it
-        self.footer_label.text_color = Materials.footer_text_color
-        self.footer.add_child(self.footer_label)
-        self.footer.background_color = Materials.footer_panel_color
-        w.add_child(self.footer)
 
     def _on_menu_save(self):
         self.ros_thread.save_parameters_to_file(os.path.join(
@@ -817,10 +805,6 @@ class GUIClient():
         self.ros_thread.show_noise_points = show
         self.ros_thread.set_parameter('show_noise_points', show)
 
-    def update_footer(self, message):
-        """Update the footer status message."""
-        self.footer_label.text = message
-
     # ============================================================================
     # INIT MAIN LAYOUT
     # ============================================================================
@@ -836,35 +820,46 @@ class GUIClient():
         self.main_layout = gui.TabControl()
         self.main_layout.background_color = Materials.panel_color
 
+        self.action_layout = gui.TabControl()
+        self.action_layout.background_color = Materials.panel_color
+
         # Create tabs for each top-level key
         for node_name, tab_data in self.parameters_dict.items():
             self.parameter_widgets[node_name] = {}
-            tab_panel = self.create_tab_panel(node_name, tab_data, em)
-            # Replace _ with a space in node_name
-            self.main_layout.add_tab(
-                node_name.title().replace('_', ' '), tab_panel)
-
-        # Create a log layout with widget
-        self.log_layout = gui.Vert(0.5 * em, gui.Margins(0.5 * em))
-        self.log_layout.background_color = Materials.panel_color
-        self.log_widget = gui.ListView()
-        self.log_widget.set_max_visible_items(5)
-
-        collapsable_log = gui.CollapsableVert(
-            "Log", 0.25 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        collapsable_log.add_child(self.log_widget)
-        collapsable_log.set_is_open(False)
-
-        self.log_layout.add_child(collapsable_log)
-
-        self.viewpoint_traversal_layout = gui.Vert(
-            0.5 * em, gui.Margins(0.5 * em))
-        self.init_viewpoint_traversal_layout()
+            if node_name in ['viewpoint_traversal', 'task_planning']:
+                action_tab_panel = self.create_action_tab_panel(node_name, tab_data, em)
+                self.action_layout.add_tab(
+                    node_name.title().replace('_', ' '), action_tab_panel)
+            else:
+                main_tab_panel = self.create_main_tab_panel(node_name, tab_data, em)
+                self.main_layout.add_tab(
+                    node_name.title().replace('_', ' '), main_tab_panel)
 
         self.window.add_child(self.main_layout)
-        self.window.add_child(self.log_layout)
+        self.window.add_child(self.action_layout)
+    
+    def create_action_tab_panel(self, node_name, tab_data, em):
+        """Create a panel for action tabs - NO scrolling, just buttons"""
+        panel = gui.Vert(0.5 * em, gui.Margins(0.25 * em))
+        panel.background_color = Materials.panel_color
 
-    def create_tab_panel(self, node_name, tab_data, em):
+        for section_name, section_data in tab_data.items():
+            if section_name in ['servo_controllers', 'trajectory_controllers', 'servo_node_name', 'controller_manager_name', 'viewpoints_file', 'data_path']:
+                continue
+            if isinstance(section_data, dict):
+                if section_name == 'selected_region':
+                    # Special case for selected_region - create a set of len(self.region_names) tabs with no content
+                    print(f"Creating region tabs for {node_name}: {self.region_names}")
+                    region_tabs = gui.TabControl()
+                    region_tabs.background_color = Materials.panel_color
+                    for region_name in self.region_names:
+                        region_tabs.add_tab(region_name.title().replace('_', ' '), gui.Vert())
+                    panel.add_child(region_tabs)
+                    self.parameter_widgets[node_name][section_name] = region_tabs
+
+        return panel
+
+    def create_main_tab_panel(self, node_name, tab_data, em):
         """Create a scrollable panel for a tab - ONLY scrolling here"""
         # Create scrollable area directly - no intermediate containers
         scroll_area = gui.ScrollableVert(
@@ -1277,12 +1272,12 @@ class GUIClient():
 
         def _on_region_tab_changed(value):
             """Handle region tab change"""
-            self.ros_thread.select_region(value)
             max_value = len(
                 self.traversal_order[value]) - 1 if self.traversal_order else 0
-            self.viewpoint_slider.set_limits(
-                0, max_value)
+            self.viewpoint_slider.set_limits(0, max_value)
             self.viewpoint_slider.int_value = 0
+            self.ros_thread.select_cluster(0)
+            self.ros_thread.select_region(value)
 
         self.region_tabs.set_on_selected_tab_changed(_on_region_tab_changed)
 
@@ -1706,7 +1701,7 @@ class GUIClient():
             if show_viewpoints:
                 # Set viewpoints_file parameter in task_planning node
                 self.ros_thread.set_target_node_parameter(
-                    'inspection_task_planning', 'viewpoints_file', file_path)
+                    'task_planning', 'viewpoints_file', file_path)
 
                 self.show_viewpoints(True)
                 self.show_region_view_manifolds(True)
@@ -1734,8 +1729,12 @@ class GUIClient():
         print(
             f"Loaded regions from {file_path} and updated point cloud colors")
 
-        self.init_viewpoint_traversal_layout()
-        self.select_region(0)
+        # self.init_viewpoint_traversal_layout()
+        em = self.window.theme.font_size
+        self.region_tabs = gui.TabControl()
+        for region_name in self.region_names:
+            self.region_tabs.add_tab(region_name, gui.Vert(0.5*em, gui.Margins(0.25*em)))
+        # self.select_region(0)
 
         # except Exception as e:
         #     print(f"Error loading regions from {file_path}: {e}")
@@ -1782,6 +1781,11 @@ class GUIClient():
             self.geometries_dict[region_name]['color'], 1)
         self.scene_widget.scene.modify_geometry_material(
             f"{region_name}_path", selected_path_material)
+
+        # Always reset to viewpoint 0 when switching regions so the visual
+        # state is consistent regardless of ROS callback ordering or whether
+        # selected_viewpoint was already 0 (no update_flag set).
+        self.select_viewpoint(0)
 
     def select_viewpoint(self, cluster_number):
         if not self.region_names:
@@ -2037,13 +2041,6 @@ class GUIClient():
         print(f"Mouse orbit center set to: {intersection_point}")
         return True
 
-    def update_log(self):
-        log = self.ros_thread.log
-        # Update log widget with last 5 log entries
-        self.log_widget.set_items(log[-5:])
-        self.log_widget.selected_index = len(
-            log) - 1  # Select the last log entry
-
     def update_scene(self):
 
         self.update_all_widgets_from_dict()
@@ -2053,7 +2050,6 @@ class GUIClient():
         # self.add_cylinder_pointing_at_camera_simple(intersection_result)
 
         # Update rosout log
-        self.update_log()
 
         lockon = False
         if lockon:
@@ -2064,7 +2060,6 @@ class GUIClient():
         self.show_grid(self.ros_thread.show_grid)
         self.show_model_bounding_box(self.ros_thread.show_model_bounding_box)
         self.show_skybox(self.ros_thread.show_skybox)
-        self.update_footer(self.ros_thread.status_message)
 
         # Sleep to maintain FPS
         this_draw_time = time.time()
@@ -2092,37 +2087,38 @@ class GUIClient():
         return True  # False would cancel the close
 
     def on_main_window_tick_event(self):
+        if not self.layout_initialized:
+            self.window.set_needs_layout()
+            self.window.post_redraw()
+            self.layout_initialized = True
         self.update_scene()
 
     def _on_layout(self, layout_context):
 
         em = self.window.theme.font_size
+        margin = 0.5 * em
 
         r = self.window.content_rect
 
         self.scene_widget.frame = r
 
-        # Place log layout at the bottom of the window
-        # log_height = self.log_layout.calc_preferred_size(
-        #     layout_context, gui.Widget.Constraints()).height
-        # log_width = r.width - em
-        # self.log_layout.frame = gui.Rect(
-        #     0.5 * em, r.height - log_height + 0.5 * em, log_width, log_height)
         main_width = 20 * em
-        main_height = r.height - 2 * em
+        main_height = r.height - 2 * margin
 
         self.main_layout.frame = gui.Rect(
-            r.width - main_width, 2 * em, main_width, main_height)
+            r.width - main_width - margin,
+            r.y + margin,
+            main_width,
+            main_height)
 
-        # Place viewpoint traversal layout above log layout to the left of main layout
-        vpt_height = self.viewpoint_traversal_layout.calc_preferred_size(
+        vpt_height = self.action_layout.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height
-        # vpt_width = log_width
-        vpt_width = r.width - main_width
-        self.viewpoint_traversal_layout.frame = gui.Rect(
-            0, r.height - vpt_height, vpt_width, vpt_height)
-
-        self.footer.frame = gui.Rect(0, r.height, r.width, 2*em)
+        vpt_width = r.width - main_width - 3 * margin
+        self.action_layout.frame = gui.Rect(
+            margin,
+            r.y + r.height - vpt_height - margin,
+            vpt_width,
+            vpt_height)
 
     def set_widget_value(self, widget, value):
         """Set the value of a widget based on its type"""
@@ -2130,14 +2126,12 @@ class GUIClient():
             if hasattr(widget, 'checked'):
                 # Checkbox widget
                 widget.checked = bool(value)
+            elif hasattr(widget, 'double_value'):
+                # Double NumberEdit / Slider widget
+                widget.double_value = float(value)
             elif hasattr(widget, 'int_value'):
                 # Integer NumberEdit widget
                 widget.int_value = int(value)
-            elif hasattr(widget, 'double_value'):
-                # Double NumberEdit widget
-                # Round to 3 decimal places for consistency
-                # value = round(float(value), 3)
-                widget.double_value = value
             elif hasattr(widget, 'text_value'):
                 # TextEdit widget
                 widget.text_value = str(value)
@@ -2187,9 +2181,11 @@ class GUIClient():
                             elif 'regions.file' in param_name:
                                 self.import_regions(param_value)
                             elif 'selected_region' in param_name:
-                                self.select_region(param_value)
+                                # self.select_region(param_value)
+                                pass
                             elif 'selected_viewpoint' in param_name:
-                                self.select_viewpoint(param_value)
+                                # self.select_viewpoint(param_value)
+                                pass
                             elif 'model.camera.fov.height' in param_name:
                                 self.camera_fov_height = param_value
                                 self.camera_updated = True
