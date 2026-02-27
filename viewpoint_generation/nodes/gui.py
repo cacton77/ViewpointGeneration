@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from curses.panel import panel
 import os
 import rclpy
 import sys
@@ -847,15 +848,10 @@ class GUIClient():
             if section_name in ['servo_controllers', 'trajectory_controllers', 'servo_node_name', 'controller_manager_name', 'viewpoints_file', 'data_path']:
                 continue
             if isinstance(section_data, dict):
-                if section_name == 'selected_region':
-                    # Special case for selected_region - create a set of len(self.region_names) tabs with no content
-                    print(f"Creating region tabs for {node_name}: {self.region_names}")
-                    region_tabs = gui.TabControl()
-                    region_tabs.background_color = Materials.panel_color
-                    for region_name in self.region_names:
-                        region_tabs.add_tab(region_name.title().replace('_', ' '), gui.Vert())
-                    panel.add_child(region_tabs)
-                    self.parameter_widgets[node_name][section_name] = region_tabs
+                if section_name in ['selected_region', 'selected_cluster']:
+                    widget_grid = self.create_parameter_widget(node_name, section_data, em)
+                    panel.add_child(widget_grid)
+                    
 
         return panel
 
@@ -989,11 +985,20 @@ class GUIClient():
             row.add_child(widget)  # ADD HERE
 
         elif param_type == 'integer':
-            widget = gui.NumberEdit(gui.NumberEdit.INT)
-            widget.int_value = int(param_value)
-            widget.set_on_value_changed(
-                lambda value, name=param_name: self.on_parameter_changed(node_name, name, value))
-            row.add_child(widget)  # ADD HERE
+            if 'selected_region' in param_name.lower() or 'selected_cluster' in param_name.lower():
+                print(f"Creating slider for {param_name} with value {param_value}")
+                # Special case for selected_region and selected_cluster - create a slider to select index
+                widget = gui.Slider(gui.Slider.INT)  
+                widget.set_limits(0, 100)  # Placeholder range, will be updated dynamically
+                widget.set_on_value_changed(
+                    lambda value, name=param_name: self.on_parameter_changed(node_name, name, value))
+                row.add_child(widget)  # ADD HERE
+            else:
+                widget = gui.NumberEdit(gui.NumberEdit.INT)
+                widget.int_value = int(param_value)
+                widget.set_on_value_changed(
+                    lambda value, name=param_name: self.on_parameter_changed(node_name, name, value))
+                row.add_child(widget)  # ADD HERE
 
         elif param_type == 'double':
             if 'normal_angle_threshold' in param_name.lower():
@@ -1122,6 +1127,8 @@ class GUIClient():
                     lambda text, name=param_name: self.on_parameter_changed(node_name, name, text))
                 row.add_child(widget)  # ADD HERE
 
+
+
         else:
             # Default to text edit for unknown types
             widget = gui.TextEdit()
@@ -1237,6 +1244,18 @@ class GUIClient():
                 widget.text_value = file_path
 
         self.window.close_dialog()  # Close the dialog after selection
+
+        # Immediately trigger the appropriate import — don't wait for the
+        # update_flag polling loop, which won't fire because update_parameter_value
+        # already wrote the new value locally, making the poll see no change.
+        if 'model.mesh.file' in param_name:
+            self.import_mesh(file_path)
+        elif 'model.point_cloud.file' in param_name:
+            self.import_point_cloud(file_path)
+        elif 'model.point_cloud.curvature.file' in param_name:
+            self.import_curvature(file_path)
+        elif 'regions.file' in param_name:
+            self.import_regions(file_path)
 
     def on_sample_point_cloud(self):
         """Handle sample point cloud button click"""
@@ -1614,6 +1633,7 @@ class GUIClient():
                         path_points.append(position)
 
                         viewpoint_mesh.paint_uniform_color([1.0, 1.0, 1.0])
+
                         self.geometries_dict[region_name]['clusters'][cluster_name]['viewpoint'] = {
                             'mesh': viewpoint_mesh
                         }

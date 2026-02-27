@@ -258,6 +258,8 @@ class ROSThread(Node):
 
         self.initialized = True
 
+        self.file_name = os.path.basename(yaml_file).replace('.yaml', '')
+
         self.get_all_parameters()
 
     def save_parameters_to_file(self, file_path):
@@ -662,7 +664,10 @@ class ROSThread(Node):
                 param_value = self.extract_parameter_value(value)
 
                 if name in self.parameters_dict[node_name]:
-                    update_flag = self.parameters_dict[node_name][name]['value'] != param_value
+                    value_changed = self.parameters_dict[node_name][name]['value'] != param_value
+                    # Preserve an existing True flag — concurrent polls from load_config
+                    # can clobber it back to False before the GUI tick has a chance to act.
+                    update_flag = self.parameters_dict[node_name][name]['update_flag'] or value_changed
                     # self.get_logger().info(
                     # f'Parameter {name} updated: {update_flag} (old: \'{self.parameters_dict[name]["value"]}\', new: \'{param_value}\')')
                 else:

@@ -23,7 +23,7 @@ setup(
     maintainer_email='actonc@uw.edu',
     description='TODO: Package description',
     license='Apache-2.0',
-    tests_require=['pytest'],
+
     entry_points={
         'console_scripts': [
             'viewpoint_generation_node = nodes.viewpoint_generation_node:main',
