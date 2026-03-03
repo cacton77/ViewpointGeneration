@@ -5,13 +5,18 @@ from open3d.visualization.rendering import MaterialRecord
 
 class Materials:
 
+    font_size = 13
+
     scene_background_color = [36/255, 37/255, 39/255, 1.0]
 
     panel_color = gui.Color(25/255, 25/255, 25/255, 0.8)
     panel_color = gui.Color(175/255, 175/255, 175/255, 0.8)
     panel_color = gui.Color(0.5, 0.5, 0.5, 0.8)
     panel_color = gui.Color(36/255, 36/255, 36/255, 0.9)
-    panel_color = gui.Color(0.14, 0.14, 0.14, 0.8)
+    panel_color = gui.Color(0.14, 0.14, 0.14, 0.5)
+    collapsable_panel_color = gui.Color(0.4, 0.4, 0.4, 1.0)
+    tab_control_background_color = gui.Color(0.1, 0.1, 0.1, 0.6)
+    tab_control_background_color = gui.Color(36/255, 37/255, 39/255, 0.6)
     content_color = gui.Color(0.0, 1.0, 0.0, 0.8)
     footer_text_color = gui.Color(0.75, 0.75, 0.75, 1.0)
     footer_panel_color = gui.Color(0.0, 0.0, 0.0, 0.8)
@@ -80,10 +85,6 @@ class Materials:
     fov_material = rendering.MaterialRecord()
     fov_material.shader = "defaultUnlit"
     fov_material.base_color = [1.0, 1.0, 1.0, 1.0]
-
-    reticle_material = rendering.MaterialRecord()
-    reticle_material.shader = "defaultUnlit"
-    reticle_material.base_color = [204/255, 108/255, 231/255, 1.0]
 
     tabletop_material = rendering.MaterialRecord()
     tabletop_material.shader = "defaultLitTransparency"

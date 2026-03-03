@@ -9,9 +9,8 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
-from rclpy.parameter import Parameter
 from rcl_interfaces.msg import ParameterDescriptor, ParameterType
-from rcl_interfaces.srv import GetParameters, SetParameters, ListParameters
+from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters, SetParameters
 from rcl_interfaces.msg import ParameterValue
 from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterValue, ParameterType, Log
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
@@ -63,10 +62,9 @@ class ROSThread(Node):
             parameters=[
                 ('file_name', 'default'),
                 ('data_path', '/tmp'),
-                ('show_axes', True),
-                ('show_grid', True),
+                ('show_axes', False),
+                ('show_grid', False),
                 ('show_model_bounding_box', False),
-                ('show_reticle', True),
                 ('show_skybox', True),
                 ('show_mesh', True),
                 ('show_point_cloud', True),
@@ -88,8 +86,6 @@ class ROSThread(Node):
             'show_grid').get_parameter_value().bool_value
         self.show_model_bounding_box = self.get_parameter(
             'show_model_bounding_box').get_parameter_value().bool_value
-        self.show_reticle = self.get_parameter(
-            'show_reticle').get_parameter_value().bool_value
         self.show_skybox = self.get_parameter(
             'show_skybox').get_parameter_value().bool_value
         self.show_mesh = self.get_parameter(
@@ -119,15 +115,19 @@ class ROSThread(Node):
         # Connect to parameters of target nodes
         # Create service clients
         self.list_params_clients = {}
+        self.describe_params_clients = {}
         self.get_params_clients = {}
         self.set_params_clients = {}
         set_params_cb_group = MutuallyExclusiveCallbackGroup()
-        target_nodes_copy = self.target_nodes.copy()
         failed_targets = []
-        for target_node in target_nodes_copy:
+        for target_node in self.target_nodes.copy():
             list_params_client = self.create_client(
                 ListParameters,
                 f'{target_node}/list_parameters'
+            )
+            describe_params_client = self.create_client(
+                DescribeParameters,
+                f'{target_node}/describe_parameters'
             )
             get_params_client = self.create_client(
                 GetParameters,
@@ -138,23 +138,15 @@ class ROSThread(Node):
                 f'{target_node}/set_parameters',
                 callback_group=set_params_cb_group
             )
+            # Wait for the list parameters service to be available as a test of connectivity to the node
             if not list_params_client.wait_for_service(timeout_sec=1.0):
                 self.get_logger().warning(
                     f'Failed to connect to {target_node}/list_parameters service')
                 failed_targets.append(target_node)
                 self.target_nodes.remove(target_node)
-            elif not get_params_client.wait_for_service(timeout_sec=1.0):
-                self.get_logger().warning(
-                    f'Failed to connect to {target_node}/get_parameters service')
-                failed_targets.append(target_node)
-                self.target_nodes.remove(target_node)
-            elif not set_params_client.wait_for_service(timeout_sec=1.0):
-                self.get_logger().warning(
-                    f'Failed to connect to {target_node}/set_parameters service')
-                failed_targets.append(target_node)
-                self.target_nodes.remove(target_node)
             else:
                 self.list_params_clients[target_node] = list_params_client
+                self.describe_params_clients[target_node] = describe_params_client
                 self.get_params_clients[target_node] = get_params_client
                 self.set_params_clients[target_node] = set_params_client
 
@@ -164,7 +156,6 @@ class ROSThread(Node):
             f'Failed to connect to the following targets: {failed_targets}')
 
         # Dictionary to store parameter information
-
         self.parameters_dict = {}
         for target_node in self.target_nodes:
             self.parameters_dict[target_node] = {}
@@ -264,90 +255,28 @@ class ROSThread(Node):
 
     def save_parameters_to_file(self, file_path):
         """Save all current and connected inspection node parameters to a file"""
-        # Set file_name parameter to last segment of file_path - .yaml
+        if os.path.basename(file_path) == 'new.yaml':
+            self.get_logger().warn("Cannot save over 'new.yaml'. Use Save As to save with a different name.")
+            return
+
         self.file_name = os.path.basename(file_path).replace('.yaml', '')
-        self.set_parameter(
-            'file_name',
-            self.file_name
-        )
+        self.set_parameter('file_name', self.file_name)
 
-        output_dict = {}
+        output_dict = {
+            node_name: {
+                'ros__parameters': {
+                    name: info['value']
+                    for name, info in params.items()
+                }
+            }
+            for node_name, params in self.parameters_dict.items()
+            if params
+        }
 
-        node_params = self.get_node_parameters(self.node_name)
-        if node_params is not None:
-            output_dict[self.node_name] = {'ros__parameters': node_params}
-
-        for node_name in self.target_nodes:
-            node_params = self.get_node_parameters(node_name)
-            if node_params is not None:
-                output_dict[node_name] = {'ros__parameters': node_params}
-
-        # Write to file
         with open(file_path, 'w') as f:
             yaml.dump(output_dict, f, default_flow_style=False)
 
         self.get_logger().info(f'Parameters saved to {file_path}')
-
-    def get_node_parameters(self, target_node_name):
-        # Create parameter client for the target node
-        param_client = self.create_client(
-            ListParameters, f'/{target_node_name}/list_parameters')
-        get_client = self.create_client(
-            GetParameters, f'/{target_node_name}/get_parameters')
-
-        if not param_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error(
-                f'Parameter service not available for {target_node_name}')
-            return None
-
-        # List all parameters
-        list_request = ListParameters.Request()
-        list_future = param_client.call_async(list_request)
-        rclpy.spin_until_future_complete(self, list_future)
-
-        if list_future.result() is not None:
-            param_names = list_future.result().result.names
-
-            # Get parameter values
-            get_request = GetParameters.Request()
-            get_request.names = param_names
-            get_future = get_client.call_async(get_request)
-            rclpy.spin_until_future_complete(self, get_future)
-
-            if get_future.result() is not None:
-                param_values = get_future.result().values
-
-                # Create parameter dictionary
-                params_dict = {}
-                for name, value in zip(param_names, param_values):
-                    params_dict[name] = self._parameter_value_to_python(value)
-
-                return params_dict
-
-        return None
-
-    def _parameter_value_to_python(self, param_value):
-        """Convert ROS parameter value to Python type"""
-        if param_value.type == Parameter.Type.BOOL.value:
-            return param_value.bool_value
-        elif param_value.type == Parameter.Type.INTEGER.value:
-            return param_value.integer_value
-        elif param_value.type == Parameter.Type.DOUBLE.value:
-            return param_value.double_value
-        elif param_value.type == Parameter.Type.STRING.value:
-            return param_value.string_value
-        elif param_value.type == Parameter.Type.BYTE_ARRAY.value:
-            return list(param_value.byte_array_value)
-        elif param_value.type == Parameter.Type.BOOL_ARRAY.value:
-            return list(param_value.bool_array_value)
-        elif param_value.type == Parameter.Type.INTEGER_ARRAY.value:
-            return list(param_value.integer_array_value)
-        elif param_value.type == Parameter.Type.DOUBLE_ARRAY.value:
-            return list(param_value.double_array_value)
-        elif param_value.type == Parameter.Type.STRING_ARRAY.value:
-            return list(param_value.string_array_value)
-        else:
-            return None
 
     # ============================================================================
     # VIEWPOINT GENERATION AND TRAVERSAL OPTIMIZATION
@@ -636,19 +565,36 @@ class ROSThread(Node):
                 return
 
             if param_names:
-                # Get parameter values
-                get_request = GetParameters.Request()
-                get_request.names = param_names
-                get_future = self.get_params_clients[node_name].call_async(
-                    get_request)
-                get_future.add_done_callback(
-                    lambda future, node_name=node_name, param_names=param_names: self.get_all_parameter_values_future_callback(future, node_name, param_names))
+                # Describe parameters to retrieve descriptors (ranges, constraints)
+                describe_request = DescribeParameters.Request()
+                describe_request.names = param_names
+                describe_future = self.describe_params_clients[node_name].call_async(
+                    describe_request)
+                describe_future.add_done_callback(
+                    lambda future, node_name=node_name, param_names=param_names: self.get_all_parameter_descriptors_future_callback(future, node_name, param_names))
             else:
                 self.get_logger().info('No parameters found in target node')
         else:
             self.get_logger().error('Failed to list parameters')
 
-    def get_all_parameter_values_future_callback(self, get_future, node_name, param_names):
+    def get_all_parameter_descriptors_future_callback(self, describe_future, node_name, param_names):
+        """Callback for the describe parameters future; fires GetParameters next."""
+        descriptors = {}
+        if describe_future.result() is not None:
+            for desc in describe_future.result().descriptors:
+                descriptors[desc.name] = desc
+        else:
+            self.get_logger().warning(
+                f'Failed to get parameter descriptors for {node_name}')
+
+        get_request = GetParameters.Request()
+        get_request.names = param_names
+        get_future = self.get_params_clients[node_name].call_async(get_request)
+        get_future.add_done_callback(
+            lambda future, node_name=node_name, param_names=param_names, descriptors=descriptors:
+                self.get_all_parameter_values_future_callback(future, node_name, param_names, descriptors))
+
+    def get_all_parameter_values_future_callback(self, get_future, node_name, param_names, descriptors):
         """Callback for the get parameters future"""
         if get_future.result() is not None:
             get_response = get_future.result()
@@ -668,16 +614,33 @@ class ROSThread(Node):
                     # Preserve an existing True flag — concurrent polls from load_config
                     # can clobber it back to False before the GUI tick has a chance to act.
                     update_flag = self.parameters_dict[node_name][name]['update_flag'] or value_changed
-                    # self.get_logger().info(
-                    # f'Parameter {name} updated: {update_flag} (old: \'{self.parameters_dict[name]["value"]}\', new: \'{param_value}\')')
                 else:
                     update_flag = True
 
+                desc = descriptors.get(name)
+
+                # ------- Param info dict structure -------
+                if desc and desc.floating_point_range:
+                    range = (
+                        desc.floating_point_range[0].from_value,
+                        desc.floating_point_range[0].to_value,
+                    )
+                elif desc and desc.integer_range:
+                    range = (
+                        desc.integer_range[0].from_value,
+                        desc.integer_range[0].to_value,
+                    )
+                else:
+                    range = None
                 param_info = {
                     'name': name,
                     'type': self.get_parameter_type_string(value.type),
                     'value': param_value,
-                    'update_flag': update_flag
+                    'update_flag': update_flag,
+                    'description': desc.description if desc else '',
+                    'control': desc.additional_constraints if desc else '',
+                    'range': range,
+                    'read_only': desc.read_only if desc else False,
                 }
                 self.parameters_dict[node_name][name] = param_info
         else:

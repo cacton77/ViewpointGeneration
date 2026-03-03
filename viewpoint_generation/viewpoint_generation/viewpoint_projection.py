@@ -13,6 +13,24 @@ class ViewpointProjectionConfig:
     focal_distance: float = 0.3
     hemisphere_points: int = 10000
 
+    def to_dict(self):
+        return {
+            "focal_distance": {
+                "value": self.focal_distance,
+                "type": "float",
+                "description": "Distance from surface to project viewpoints along the surface normal",
+                "control": "slider",
+                "range": [0.1, 1.0],
+            },
+            "hemisphere_points": {
+                "value": self.hemisphere_points,
+                "type": "integer",
+                "description": "Number of hemisphere sample points for viewpoint search",
+                "control": "slider",
+                "range": [100, 100000],
+            },
+        }
+
 
 class ViewpointProjection:
     def __init__(self, config: ViewpointProjectionConfig):

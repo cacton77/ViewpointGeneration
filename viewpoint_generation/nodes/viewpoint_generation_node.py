@@ -7,7 +7,10 @@ import open3d as o3d
 from rclpy.duration import Duration
 from rclpy.action import ActionServer
 from viewpoint_generation.viewpoint_generation import ViewpointGeneration
-from rcl_interfaces.msg import SetParametersResult
+from rcl_interfaces.msg import (
+    SetParametersResult, ParameterDescriptor,
+    FloatingPointRange, IntegerRange,
+)
 from ament_index_python.packages import get_package_prefix
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
@@ -19,7 +22,7 @@ from geometry_msgs.msg import PoseStamped, Pose, PointStamped, Point
 from visualization_msgs.msg import Marker
 from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject, ObjectColor
-from viewpoint_generation_interfaces.srv import OptimizeViewpointTraversal
+from viewpoint_generation_interfaces.srv import ImportCadModel, OptimizeViewpointTraversal
 
 
 class ViewpointGenerationNode(rclpy.node.Node):
@@ -37,35 +40,15 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('visualize', False),
                 ('model.mesh.file', ''),
                 ('model.mesh.units', 'm'),
                 ('model.point_cloud.file', ''),
                 ('model.point_cloud.units', 'm'),
                 ('model.point_cloud.sampling.number_of_points', 100000),
-                ('model.camera.fov.width', 0.02),
-                ('model.camera.fov.height', 0.03),
-                ('model.camera.dof', 0.02),
-                ('model.camera.focal_distance', 0.35),
-                ('regions.file', ''),
-                ('model.point_cloud.curvature.knn_neighbors', 30),
+                ('results.file', ''),
                 ('model.point_cloud.curvature.file', ''),
-                ('regions.region_growth.seed_threshold', 15.0),
-                ('regions.region_growth.min_cluster_size', 10),
-                ('regions.region_growth.max_cluster_size', 100000),
-                ('model.point_cloud.curvature.threshold', 0.50),
-                ('regions.region_growth.normal_angle_threshold', 15.0),
-                ('regions.fov_clustering.lambda_weight', 1.0),
-                ('regions.fov_clustering.beta_weight', 1.0),
-                ('regions.fov_clustering.max_point_out_percentage', 0.001),
-                ('regions.fov_clustering.k-means.point_weight', 1.0),
-                ('regions.fov_clustering.k-means.normal_weight', 1.0),
-                ('regions.fov_clustering.k-means.number_of_runs', 10),
-                ('regions.fov_clustering.k-means.maximum_iterations', 100),
                 ('viewpoints.traversal', ''),
-                ('viewpoints.projection.nothing', ''),
                 ('settings.data_path', '/tmp'),
-                ('settings.cuda_enabled', False),
                 ('settings.planning_volume_opacity', 0.0),
             ]
         )
@@ -85,8 +68,11 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         # --- ROS Services and Actions ---
 
-        # Sample PCD Service
         services_cb_group = MutuallyExclusiveCallbackGroup()
+        # Import CAD Model Service
+        self.create_service(ImportCadModel, node_name + '/import_cad_model',
+                            self.import_cad_model_callback, callback_group=services_cb_group)
+        # Sample PCD Service
         self.create_service(Trigger, node_name + '/sample_point_cloud',
                             self.sample_point_cloud_callback, callback_group=services_cb_group)
         # Estimate Curvature Service
@@ -114,10 +100,73 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Viewpoint Generation Helpers
         self.viewpoint_generation = ViewpointGeneration()
 
+        # Declare RegionGrowingConfig and FOVClusteringConfig fields as ROS
+        # parameters with full ParameterDescriptors (range, description,
+        # additional_constraints).  Adding a field to either config dataclass
+        # and its to_dict() is sufficient — no changes needed here or in the
+        # parameter_callback.  Both configs are routed via set_algorithm_param.
+
+        def _make_descriptor(field_info):
+            desc = ParameterDescriptor()
+            desc.description = field_info.get('description', '')
+            desc.additional_constraints = field_info.get('control', '')
+            range_val = field_info.get('range')
+            if range_val is not None:
+                if field_info['type'] == 'float':
+                    fp = FloatingPointRange()
+                    fp.from_value = float(range_val[0])
+                    fp.to_value = float(range_val[1])
+                    fp.step = 0.0
+                    desc.floating_point_range = [fp]
+                elif field_info['type'] == 'integer':
+                    ir = IntegerRange()
+                    ir.from_value = int(range_val[0])
+                    ir.to_value = int(range_val[1])
+                    ir.step = 0
+                    desc.integer_range = [ir]
+            return desc
+
+        def _auto_declare_parameters(prefix, config_dict, excluded):
+            """Declare params and apply launch-file overrides for one config."""
+            params = [
+                (f'{prefix}{field_name}', field_info['value'],
+                 _make_descriptor(field_info))
+                for field_name, field_info in config_dict.items()
+                if field_name not in excluded
+            ]
+            if params:
+                self.declare_parameters(namespace='', parameters=params)
+                for ros_param_name, _, _ in params:
+                    field_name = ros_param_name[len(prefix):]
+                    value = self.get_parameter(ros_param_name).value
+                    success, message = self.viewpoint_generation.set_algorithm_param(
+                        field_name, value)
+                    if not success:
+                        self.get_logger().error(message)
+
+        _auto_declare_parameters(
+            prefix='regions.region_growth.',
+            config_dict=self.viewpoint_generation.region_growing_config.to_dict(),
+            excluded=set(),
+        )
+        _auto_declare_parameters(
+            prefix='regions.fov_clustering.',
+            config_dict=self.viewpoint_generation.fc_config.to_dict(),
+            excluded=set(),
+        )
+        _auto_declare_parameters(
+            prefix='viewpoints.projection.',
+            config_dict=self.viewpoint_generation.vp_config.to_dict(),
+            excluded=set(),
+        )
+
         self.set_data_path(self.get_parameter(
             'settings.data_path').get_parameter_value().string_value)
-        self.viewpoint_generation.visualize = self.get_parameter(
-            'visualize').get_parameter_value().bool_value
+        # Load results FIRST so that set_mesh_file / set_point_cloud_file can
+        # detect that those files are already recorded in self.results and skip
+        # resetting the regions/clusters.
+        self.set_results_file(self.get_parameter(
+            'results.file').get_parameter_value().string_value)
         self.set_mesh_file(self.get_parameter('model.mesh.file').get_parameter_value().string_value,
                            self.get_parameter('model.mesh.units').get_parameter_value().string_value)
         self.set_point_cloud_file(self.get_parameter('model.point_cloud.file').get_parameter_value().string_value,
@@ -125,28 +174,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.set_sampling_number_of_points(
             self.get_parameter(
                 'model.point_cloud.sampling.number_of_points').get_parameter_value().integer_value)
-        self.set_knn_neighbors(self.get_parameter(
-            'model.point_cloud.curvature.knn_neighbors').get_parameter_value().integer_value)
         self.set_curvature_file(self.get_parameter(
             'model.point_cloud.curvature.file').get_parameter_value().string_value)
-        self.set_regions_file(self.get_parameter(
-            'regions.file').get_parameter_value().string_value)
-        self.set_seed_threshold(self.get_parameter(
-            'regions.region_growth.seed_threshold').get_parameter_value().double_value)
-        self.set_min_cluster_size(self.get_parameter(
-            'regions.region_growth.min_cluster_size').get_parameter_value().integer_value)
-        self.set_max_cluster_size(self.get_parameter(
-            'regions.region_growth.max_cluster_size').get_parameter_value().integer_value)
-        self.viewpoint_generation.fov_width = self.get_parameter(
-            'model.camera.fov.width').get_parameter_value().double_value
-        self.viewpoint_generation.fov_height = self.get_parameter(
-            'model.camera.fov.height').get_parameter_value().double_value
-        self.viewpoint_generation.dof = self.get_parameter(
-            'model.camera.dof').get_parameter_value().double_value
-        self.viewpoint_generation.focal_distance = self.get_parameter(
-            'model.camera.focal_distance').get_parameter_value().double_value
-        self.viewpoint_generation.cuda_enabled = self.get_parameter(
-            'settings.cuda_enabled').get_parameter_value().bool_value
         self.planning_volume_opacity = self.get_parameter(
             'settings.planning_volume_opacity').get_parameter_value().double_value
 
@@ -180,6 +209,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         self.data_path = data_path
 
+    def import_cad_model_callback(self, request, response):
+        pass
+
     def set_mesh_file(self, mesh_file, mesh_units):
         """
         Helper function to set the triangle mesh file for the partitioner.
@@ -197,6 +229,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         success, message = self.viewpoint_generation.set_mesh_file(
             mesh_file, mesh_units)
 
+
         if not success:
             mesh_file_param = rclpy.parameter.Parameter(
                 'model.mesh.file',
@@ -205,11 +238,10 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             # self.block_next_param_callback = True
             # self.set_parameters([mesh_file_param])
-            self.get_logger().error(message)
+            self.get_logger().warn(message)
             return False
         else:
-            self.get_logger().info(message)
-
+            self.get_logger().info('Import mesh completed successfully.')
             mesh_file_param = rclpy.parameter.Parameter(
                 'model.mesh.file',
                 rclpy.Parameter.Type.STRING,
@@ -220,7 +252,14 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 rclpy.Parameter.Type.STRING,
                 mesh_units
             )
-            self.set_parameters_blocked([mesh_file_param, mesh_units_param])
+            params = [mesh_file_param, mesh_units_param]
+            # results_file is None only when set_mesh_file reset self.results
+            # (i.e. a genuinely different mesh was loaded). In that case clear
+            # the results.file parameter so stale results are not shown.
+            if self.viewpoint_generation.results_file is None:
+                params.append(rclpy.parameter.Parameter(
+                    'results.file', rclpy.Parameter.Type.STRING, ''))
+            self.set_parameters_blocked(params)
 
             if self.initialized:
                 self.set_point_cloud_file(
@@ -325,7 +364,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
     def update_planning_scene(self):
         if not self.mesh:
-            self.get_logger().error(
+            self.get_logger().warning(
                 'No mesh loaded. Cannot update planning scene.')
             return False
 
@@ -399,12 +438,10 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ''
             )
             self.set_parameters_blocked([point_cloud_file_param])
-            self.get_logger().error(
-                f'Could not load requested point cloud file {point_cloud_file}.'
-            )
+            self.get_logger().warn(message)
             return False
         else:
-            self.get_logger().info(message)
+            self.get_logger().info('Import point cloud completed successfully.')
             point_cloud_file_param = rclpy.parameter.Parameter(
                 'model.point_cloud.file',
                 rclpy.Parameter.Type.STRING,
@@ -415,8 +452,12 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 rclpy.Parameter.Type.STRING,
                 point_cloud_units
             )
-            self.set_parameters_blocked([point_cloud_file_param,
-                                         point_cloud_units_param])
+            params = [point_cloud_file_param, point_cloud_units_param]
+            # Only clear results.file when the PCD change caused a results reset
+            if self.viewpoint_generation.results_file is None:
+                params.append(rclpy.parameter.Parameter(
+                    'results.file', rclpy.Parameter.Type.STRING, ''))
+            self.set_parameters_blocked(params)
 
             if self.initialized:
                 # Clear the curvature file parameter
@@ -460,25 +501,21 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             self.set_parameters_blocked([curvature_file_param])
 
-        if self.initialized:
-            # Clear the regions file parameter
-            self.set_regions_file(regions_file='')
-
         return True
 
-    def set_regions_file(self, regions_file):
+    def set_results_file(self, results_file):
         """
-        Helper function to set the regions file for the partitioner.
-        :param regions_file: The path to the regions file.
+        Helper function to set the results.file for the partitioner.
+        :param results_file: The path to the results.file.
         :return: None
         """
 
         # If file doesn't exist, look in data path
-        if not regions_file == '' and not os.path.exists(regions_file):
-            regions_file = os.path.join(self.data_path, regions_file)
+        if not results_file == '' and not os.path.exists(results_file):
+            results_file = os.path.join(self.data_path, results_file)
 
-        success, message = self.viewpoint_generation.set_regions_file(
-            regions_file)
+        success, message = self.viewpoint_generation.set_results_file(
+            results_file)
 
         # Get Viewpoint Bounds
         max_radius, max_z = self.viewpoint_generation.get_viewpoint_bounds()
@@ -492,25 +529,25 @@ class ViewpointGenerationNode(rclpy.node.Node):
         if not success:
             self.get_logger().error(message)
 
-            regions_file_param = rclpy.parameter.Parameter(
-                'regions.file',
+            results_file_param = rclpy.parameter.Parameter(
+                'results.file',
                 rclpy.Parameter.Type.STRING,
                 ''
             )
             self.block_next_param_callback = True
-            self.set_parameters([regions_file_param])
+            self.set_parameters([results_file_param])
 
             return False
         else:
             self.get_logger().info(message)
 
-            regions_file_param = rclpy.parameter.Parameter(
-                'regions.file',
+            results_file_param = rclpy.parameter.Parameter(
+                'results.file',
                 rclpy.Parameter.Type.STRING,
-                regions_file
+                results_file
             )
             self.block_next_param_callback = True
-            self.set_parameters([regions_file_param])
+            self.set_parameters([results_file_param])
 
             return True
 
@@ -769,13 +806,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         if success:
             self.get_logger().info(
-                f"Region growth completed successfully. Regions file: {message}")
-            region_file_param = rclpy.parameter.Parameter(
-                'regions.file',
+                f"Region growth completed successfully. results.file: {message}")
+            results_file_param = rclpy.parameter.Parameter(
+                'results.file',
                 rclpy.Parameter.Type.STRING,
                 message
             )
-            self.set_parameters([region_file_param])
+            self.set_parameters([results_file_param])
         else:
             self.get_logger().error(f"Region growth failed: {message}")
 
@@ -808,14 +845,14 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         if success:
             self.get_logger().info(
-                f"FOV clustering completed successfully. Regions file updated: {message}")
-            # Set the regions file parameter with the FOV clustering result
-            regions_file_param = rclpy.parameter.Parameter(
-                'regions.file',
+                f"FOV clustering completed successfully. results.file updated: {message}")
+            # Set the results.file parameter with the FOV clustering result
+            results_file_param = rclpy.parameter.Parameter(
+                'results.file',
                 rclpy.Parameter.Type.STRING,
                 message
             )
-            self.set_parameters([regions_file_param])
+            self.set_parameters([results_file_param])
         else:
             self.get_logger().error(f"FOV clustering failed: {message}")
 
@@ -841,13 +878,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.get_logger().info(
                 f"Viewpoint projection completed successfully. Viewpoints file: {message}")
             # Set the viewpoints file parameter with the projected viewpoints file
-            # Set the regions file parameter with the FOV clustering result
-            regions_file_param = rclpy.parameter.Parameter(
-                'regions.file',
+            # Set the results.file parameter with the FOV clustering result
+            results_file_param = rclpy.parameter.Parameter(
+                'results.file',
                 rclpy.Parameter.Type.STRING,
                 message
             )
-            self.set_parameters([regions_file_param])
+            self.set_parameters([results_file_param])
         else:
             self.get_logger().error(f"Viewpoint projection failed: {message}")
 
@@ -859,7 +896,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
     def optimize_traversal(self, request, response):
         request = OptimizeViewpointTraversal.Request()
         request.viewpoint_dict_path = self.get_parameter(
-            'regions.file').get_parameter_value().string_value
+            'results.file').get_parameter_value().string_value
 
         future = self.optimize_traversal_client.call_async(request)
         future.add_done_callback(self.optimize_traversal_callback)
@@ -874,14 +911,14 @@ class ViewpointGenerationNode(rclpy.node.Node):
             if result.success:
                 self.get_logger().info('Optimization successful.')
                 new_viewpoint_dict_path = result.new_viewpoint_dict_path
-                # Update the regions file parameter with the new viewpoint dictionary path
-                regions_file_param = rclpy.parameter.Parameter(
-                    'regions.file',
+                # Update the results.file parameter with the new viewpoint dictionary path
+                results_file_param = rclpy.parameter.Parameter(
+                    'results.file',
                     rclpy.Parameter.Type.STRING,
                     new_viewpoint_dict_path
                 )
                 self.block_next_param_callback = True
-                self.set_parameters([regions_file_param])
+                self.set_parameters([results_file_param])
                 self.get_logger().info(
                     f'New viewpoint dictionary saved at: {new_viewpoint_dict_path}')
             else:
@@ -907,9 +944,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Iterate through the parameters and set the corresponding values
         # based on the parameter name
         for param in params:
-            if param.name == 'visualize':
-                self.viewpoint_generation.visualize = param.value
-            elif param.name == 'model.mesh.file':
+            if param.name == 'model.mesh.file':
                 success = self.set_mesh_file(param.value,
                                              self.get_parameter(
                                                  'model.mesh.units').get_parameter_value().string_value)
@@ -928,83 +963,24 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     param.value)
             elif param.name == 'model.point_cloud.sampling.number_of_points':
                 success = self.set_sampling_number_of_points(param.value)
-            elif param.name == 'regions.file':
-                success = self.set_regions_file(param.value)
-            elif param.name == 'model.point_cloud.curvature.knn_neighbors':
-                success = self.set_knn_neighbors(param.value)
+            elif param.name == 'results.file':
+                success = self.set_results_file(param.value)
             elif param.name == 'model.point_cloud.curvature.file':
                 success = self.set_curvature_file(param.value)
-            elif param.name == 'regions.region_growth.seed_threshold':
-                success = self.set_seed_threshold(param.value)
-            elif param.name == 'regions.region_growth.min_cluster_size':
-                success = self.set_min_cluster_size(param.value)
-            elif param.name == 'regions.region_growth.max_cluster_size':
-                success = self.set_max_cluster_size(param.value)
-            elif param.name == 'model.point_cloud.curvature.threshold':
-                success = self.set_curvature_threshold(
-                    param.value)
-            elif param.name == 'regions.region_growth.normal_angle_threshold':
-                success = self.set_normal_angle_threshold(param.value)
-            elif param.name == 'model.camera.fov.height':
-                fov_height = param.value
-                fov_width = self.get_parameter(
-                    'model.camera.fov.width').get_parameter_value().double_value
-                dof = self.get_parameter(
-                    'model.camera.dof').get_parameter_value().double_value
-                focal_distance = self.get_parameter(
-                    'model.camera.focal_distance').get_parameter_value().double_value
-                self.set_camera_parameters(
-                    fov_height=fov_height,
-                    fov_width=fov_width,
-                    dof=dof,
-                    focal_distance=focal_distance
-                )
-            elif param.name == 'model.camera.fov.width':
-                fov_height = self.get_parameter(
-                    'model.camera.fov.height').get_parameter_value().double_value
-                fov_width = param.value
-                dof = self.get_parameter(
-                    'model.camera.dof').get_parameter_value().double_value
-                focal_distance = self.get_parameter(
-                    'model.camera.focal_distance').get_parameter_value().double_value
-                self.set_camera_parameters(
-                    fov_height=fov_height,
-                    fov_width=fov_width,
-                    dof=dof,
-                    focal_distance=focal_distance
-                )
-            elif param.name == 'model.camera.dof':
-                fov_height = self.get_parameter(
-                    'model.camera.fov.height').get_parameter_value().double_value
-                fov_width = self.get_parameter(
-                    'model.camera.fov.width').get_parameter_value().double_value
-                dof = param.value
-                focal_distance = self.get_parameter(
-                    'model.camera.focal_distance').get_parameter_value().double_value
-                self.set_camera_parameters(
-                    fov_height=fov_height,
-                    fov_width=fov_width,
-                    dof=dof,
-                    focal_distance=focal_distance
-                )
-            elif param.name == 'model.camera.focal_distance':
-                fov_height = self.get_parameter(
-                    'model.camera.fov.height').get_parameter_value().double_value
-                fov_width = self.get_parameter(
-                    'model.camera.fov.width').get_parameter_value().double_value
-                dof = self.get_parameter(
-                    'model.camera.dof').get_parameter_value().double_value
-                focal_distance = param.value
-                self.set_camera_parameters(
-                    fov_height=fov_height,
-                    fov_width=fov_width,
-                    dof=dof,
-                    focal_distance=focal_distance
-                )
+            elif (param.name.startswith('regions.region_growth.') or
+                  param.name.startswith('regions.fov_clustering.') or
+                  param.name.startswith('viewpoints.projection.')):
+                field_name = param.name.split('.')[-1]
+                success, message = self.viewpoint_generation.set_algorithm_param(
+                    field_name, param.value)
+                if success:
+                    self.get_logger().info(message)
+                    if field_name == 'knn_neighbors':
+                        self.set_curvature_file(curvature_file='')
+                else:
+                    self.get_logger().error(message)
             elif param.name == 'settings.data_path':
                 self.set_data_path(param.value)
-            elif param.name == 'settings.cuda_enabled':
-                success = self.enable_cuda_callback(param.value)
             elif param.name == 'settings.planning_volume_opacity':
                 self.planning_volume_opacity = param.value
 

@@ -53,8 +53,6 @@ def generate_launch_description():
         launch_arguments={
             "cell": LaunchConfiguration("cell"),
             "use_fake_hardware": LaunchConfiguration("sim"),
-            "launch_rviz": LaunchConfiguration("launch_rviz"),
-            "launch_moveit": LaunchConfiguration("launch_moveit"),
         }.items(),
         condition=IfCondition(cell_enabled)
     )

@@ -252,7 +252,7 @@ class TaskPlanningNode(Node):
 
         try:
             for region_id in region_order:
-                region_dict = regions_dict['regions'][str(region_id)]
+                region_dict = regions_dict['meshes'][0]['regions'][str(region_id)]
                 cluster_order = region_dict['order']
                 region_viewpoints = []
                 for cluster_id in cluster_order:
