@@ -170,9 +170,9 @@ class ViewpointGeneration():
 
         # Generate dimensions string
         min_x, min_y, min_z, max_x, max_y, max_z = self.get_mesh_bounds()
-        dimensions_str = f"(LxWxH): {max_x - min_x:.2f} x {max_y - min_y:.2f} x {max_z - min_z:.2f} {units}"
+        dimensions_str = f"(LxWxH): {max_x - min_x:.2f} x {max_y - min_y:.2f} x {max_z - min_z:.2f} m"
         # Generate Surface Area string
-        surface_area_str = f"Surface Area: {self.mesh.get_surface_area():.2f} {units}^2"
+        surface_area_str = f"Surface Area: {self.mesh.get_surface_area():.2f} m^2"
 
         # Only reset results when a genuinely different mesh is loaded.
         # When launching from a saved config the results file is loaded first;
@@ -188,12 +188,19 @@ class ViewpointGeneration():
                     'dimensions': dimensions_str,
                     'surface_area': surface_area_str,
                     'point_cloud': {},
-                    'regions': {},
+                    'regions': [],
                     'order': [],
                     'noise_points': []
                     }
                 ]
             }
+            self.results_file = None
+        else:
+            # Same file but units changed — update metadata and mark for re-save
+            # so the front end and results file reflect the new scale.
+            self.results['meshes'][0]['units'] = units
+            self.results['meshes'][0]['dimensions'] = dimensions_str
+            self.results['meshes'][0]['surface_area'] = surface_area_str
             self.results_file = None
 
         if self.visualize:
@@ -269,7 +276,7 @@ class ViewpointGeneration():
             self.results['meshes'][0]['point_cloud'] = {
                 'file': point_cloud_file,
                 'units': point_cloud_units,
-                'num_points': len(point_cloud.points)
+                'points': len(point_cloud.points)
             }
             self.results_file = None
 
@@ -513,7 +520,7 @@ class ViewpointGeneration():
         curvature_start = time.time()
 
         neighbors_list = [self.rg.get_neighbors(i)
-                          for i in range(len(points))]
+                          for i in list(range(len(points)))]
         curvatures = self.rg.compute_curvatures(
             points, normals, neighbors_list)
 
@@ -604,11 +611,11 @@ class ViewpointGeneration():
         max_y = 0
         max_z = 0
 
-        for region in self.results['meshes'][0]['regions'].values():
+        for region in self.results['meshes'][0]['regions']:
             # If no cluster is found, skip this region
             if 'clusters' not in region:
                 continue
-            for cluster in region['clusters'].values():
+            for cluster in region['clusters']:
                 if 'viewpoint' not in cluster:
                     continue
                 viewpoint_position = cluster["viewpoint"]["position"]
@@ -629,15 +636,17 @@ class ViewpointGeneration():
         # Reset results
         for i in range(len(self.results['meshes'])):
 
-            self.results['meshes'][i]['regions'] = {}
+            self.results['meshes'][i]['regions'] = []
 
             regions, noise_points = self.rg.segment(self.point_cloud)
 
             for j, region in enumerate(regions):
-                self.results['meshes'][i]['regions'][j] = {'points': region}
+                self.results['meshes'][i]['regions'].append({'points': region,
+                                                           'clusters': [],
+                                                           'order': []})
                 self.results['meshes'][i]['noise_points'] = noise_points
 
-            self.results['meshes'][i]['order'] = list(self.results['meshes'][i]['regions'].keys())
+            self.results['meshes'][i]['order'] = list(range(len(self.results['meshes'][i]['regions'])))
 
         self.results_file = self.save_results(self.results)
 
@@ -647,8 +656,8 @@ class ViewpointGeneration():
             colors = plt.get_cmap('tab20')(
                 np.linspace(0, 1, len(self.results['meshes'][0]['regions'])))
             point_colors = np.zeros((len(self.point_cloud.points), 3))
-            for region_id, region in self.results['meshes'][0]['regions'].items():
-                color = colors[int(region_id) % len(colors)][:3]
+            for region_id, region in enumerate(self.results['meshes'][0]['regions']):
+                color = colors[region_id % len(colors)][:3]
                 point_colors[region['points']] = color
             if 'noise_points' in self.results['meshes'][0]:
                 point_colors[self.results['meshes'][0]['noise_points']] = (0.5, 0.5, 0.5)
@@ -675,10 +684,10 @@ class ViewpointGeneration():
         N_regions = 0
         N_clusters = 0
         regions = results.get('meshes', [{}])[0].get('regions', {})
-        for region in regions.values():
+        for region in regions:
             N_regions += 1
             if 'clusters' in region:
-                N_clusters += len(region['clusters'].keys())
+                N_clusters += len(region['clusters'])
 
         # With no regions yet, write to /tmp to avoid cluttering the data directory
         if N_regions == 0:
@@ -723,25 +732,23 @@ class ViewpointGeneration():
                 return False, msg
 
         # Iterate through regions in the region dictionary
-        for region_id, region in self.results['meshes'][0]['regions'].items():
+        for region_id, region in enumerate(self.results['meshes'][0]['regions']):
             print(f"Performing FOV clustering on region {region_id} with {len(region['points'])} points.")
             region_point_cloud = self.point_cloud.select_by_index(
                 region['points'])
             # Perform FOV clustering
             fov_clusters = self.fc.fov_clustering(region_point_cloud)
             print(f"Region {region_id} clustered into {len(fov_clusters)} FOV clusters.")
-            self.results['meshes'][0]['regions'][region_id]['clusters'] = {}
-            i = 0
+            self.results['meshes'][0]['regions'][region_id]['clusters'] = []
             for fov_cluster in fov_clusters:
                 if len(fov_cluster) <= 3:
                     continue
-                self.results['meshes'][0]['regions'][region_id]['clusters'][i] = {
-                    'points': fov_cluster}
-                i += 1
+                self.results['meshes'][0]['regions'][region_id]['clusters'].append({
+                    'points': fov_cluster})
 
             # Assign default order
             self.results['meshes'][0]['regions'][region_id]['order'] = list(
-                self.results['meshes'][0]['regions'][region_id]['clusters'].keys())
+                range(len(self.results['meshes'][0]['regions'][region_id]['clusters'])))
 
         self.results_file = self.save_results(self.results)
 
@@ -751,9 +758,9 @@ class ViewpointGeneration():
             colors = plt.get_cmap('tab20')(
                 np.linspace(0, 1, 20))
             point_colors = np.zeros((len(self.point_cloud.points), 3))
-            for region_id, region in self.results['meshes'][0]['regions'].items():
-                for cluster_id, cluster in region['clusters'].items():
-                    color = colors[int(cluster_id) % len(colors)][:3]
+            for region_id, region in enumerate(self.results['meshes'][0]['regions']):
+                for cluster_id, cluster in enumerate(region['clusters']):
+                    color = colors[cluster_id % len(colors)][:3]
                     region_points = self.point_cloud.select_by_index(
                         region['points'])
                     cluster_points = region_points.select_by_index(
@@ -784,14 +791,14 @@ class ViewpointGeneration():
             return False, 'No region file loaded. Please run region growth first.'
 
         # Iterate through regions in the region dictionary
-        for region_id, region in self.results['meshes'][0]['regions'].items():
+        for region_id, region in enumerate(self.results['meshes'][0]['regions']):
             if 'clusters' not in region:
                 continue
 
             region_points = self.point_cloud.select_by_index(
                 region['points'])
 
-            for fov_cluster_id, fov_cluster in region['clusters'].items():
+            for fov_cluster_id, fov_cluster in enumerate(region['clusters']):
                 fov_pcd = region_points.select_by_index(
                     fov_cluster['points'])
                 fov_points = np.asarray(fov_pcd.points)
@@ -829,12 +836,12 @@ class ViewpointGeneration():
         """
         max_radius = max_z = float('-inf')
 
-        if self.results and 'regions' in self.results:
-            for region in self.results['meshes'][0]['regions'].values():
+        if self.results and 'meshes' in self.results:
+            for region in self.results['meshes'][0]['regions']:
                 if 'clusters' not in region:
                     continue
 
-                for cluster in region['clusters'].values():
+                for cluster in region['clusters']:
                     if 'viewpoint' not in cluster:
                         continue
 
@@ -857,20 +864,19 @@ class ViewpointGeneration():
         if self.results_file is None:
             return None, 'No results file loaded. Please run region growth first.'
 
-        if self.results is None or 'regions' not in self.results:
+        if self.results is None or 'meshes' not in self.results:
             return None, 'No regions found in the results dictionary.'
 
         if region_index < 0 or region_index >= len(self.results['meshes'][0]['regions']):
             return None, f'Invalid region index: {region_index}.'
 
-        if 'clusters' not in self.results['meshes'][0]['regions'][str(region_index)]:
+        if 'clusters' not in self.results['meshes'][0]['regions'][region_index]:
             return None, f'No clusters found for region index: {region_index}.'
 
-        if cluster_index < 0 or cluster_index >= len(self.results['meshes'][0]['regions'][str(region_index)]['clusters']):
+        if cluster_index < 0 or cluster_index >= len(self.results['meshes'][0]['regions'][region_index]['clusters']):
             return None, f'Invalid cluster index: {cluster_index}.'
 
-        viewpoint = self.results['meshes'][0]['regions'][str(
-            region_index)]['clusters'][str(cluster_index)].get('viewpoint', None)
+        viewpoint = self.results['meshes'][0]['regions'][region_index]['clusters'][cluster_index].get('viewpoint', None)
 
         if viewpoint is None:
             return None, 'No viewpoint found for the specified region and cluster.'

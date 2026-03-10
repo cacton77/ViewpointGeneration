@@ -220,8 +220,8 @@ class ROSThread(Node):
             self.get_logger().info(
                 f'Waiting for {self.viewpoint_generation_node_name}/viewpoint_projection service...')
 
-        # Update internal dict of parameters
-        self.get_all_parameters()
+        # Update internal dict of parameters on timer
+        self.create_timer(1.0, self.get_all_parameters)
 
     def load_config(self, yaml_file):
         # Check if the file exists
@@ -609,14 +609,6 @@ class ROSThread(Node):
 
                 param_value = self.extract_parameter_value(value)
 
-                if name in self.parameters_dict[node_name]:
-                    value_changed = self.parameters_dict[node_name][name]['value'] != param_value
-                    # Preserve an existing True flag — concurrent polls from load_config
-                    # can clobber it back to False before the GUI tick has a chance to act.
-                    update_flag = self.parameters_dict[node_name][name]['update_flag'] or value_changed
-                else:
-                    update_flag = True
-
                 desc = descriptors.get(name)
 
                 # ------- Param info dict structure -------
@@ -632,6 +624,15 @@ class ROSThread(Node):
                     )
                 else:
                     range = None
+
+                if name in self.parameters_dict[node_name]:
+                    value_changed = self.parameters_dict[node_name][name]['value'] != param_value
+                    range_changed = self.parameters_dict[node_name][name].get('range') != range
+                    # Preserve an existing True flag — concurrent polls from load_config
+                    # can clobber it back to False before the GUI tick has a chance to act.
+                    update_flag = self.parameters_dict[node_name][name]['update_flag'] or value_changed or range_changed
+                else:
+                    update_flag = True
                 param_info = {
                     'name': name,
                     'type': self.get_parameter_type_string(value.type),

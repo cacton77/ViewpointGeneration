@@ -361,6 +361,7 @@ class GUIClient():
                 Point Cloud:
                   File: ...
                   Units: ...
+                  Points: ...
                 Regions: N
                 Clusters: N
 
@@ -394,11 +395,11 @@ class GUIClient():
             pcd_id = new_tree.add_text_item(mesh_id, "Point Cloud")
             new_tree.add_text_item(pcd_id, f"File: {pcd.get('file', '')}")
             new_tree.add_text_item(pcd_id, f"Units: {pcd.get('units', '')}")
-
+            new_tree.add_text_item(pcd_id, f"Points: {pcd.get('points', 0)}")
             regions = mesh_entry.get('regions', {})
             n_regions = len(regions)
             n_clusters = sum(
-                len(r.get('clusters', {})) for r in regions.values()
+                len(r.get('clusters', {})) for r in regions
             )
             new_tree.add_text_item(mesh_id, f"Regions: {n_regions}")
             new_tree.add_text_item(mesh_id, f"Clusters: {n_clusters}")
@@ -1183,9 +1184,10 @@ class GUIClient():
 
     def update_scene(self):
 
-        self._refresh_file_tree()
 
         self.update_all_widgets_from_dict()
+
+        self._refresh_file_tree()
 
         # Update visible geometry
         self.show_axes(self.ros_thread.show_axes)
@@ -1270,9 +1272,17 @@ class GUIClient():
         # the user triggers another draw (e.g. a mouse click).
         self.window.post_redraw()
 
-    def set_widget_value(self, widget, value):
-        """Set the value of a widget based on its type"""
+    def set_widget_value(self, widget, value, limits=None):
+        """Set the value of a widget based on its type.
+
+        If *limits* is a (min, max) tuple and the widget is a slider,
+        the slider range is updated before setting the value so the new
+        value is always within the valid range.
+        """
         try:
+            if limits is not None and hasattr(widget, 'set_limits'):
+                widget.set_limits(limits[0], limits[1])
+
             if hasattr(widget, 'checked'):
                 # Checkbox widget
                 widget.checked = bool(value)
@@ -1307,7 +1317,8 @@ class GUIClient():
                         # Update the widget value from the parameters dictionary
                         if 'value' in parameters_dict[node_name][param_name]:
                             param_value = parameters_dict[node_name][param_name]['value']
-                            self.set_widget_value(widget, param_value)
+                            param_range = parameters_dict[node_name][param_name].get('range')
+                            self.set_widget_value(widget, param_value, limits=param_range)
                             
                             if 'results.file' in param_name:
                                 self.visualize_results(param_value)

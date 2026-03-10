@@ -8,7 +8,7 @@ from rclpy.duration import Duration
 from rclpy.action import ActionServer
 from viewpoint_generation.viewpoint_generation import ViewpointGeneration
 from rcl_interfaces.msg import (
-    SetParametersResult, ParameterDescriptor,
+    SetParametersResult, ParameterDescriptor, ParameterType,
     FloatingPointRange, IntegerRange,
 )
 from ament_index_python.packages import get_package_prefix
@@ -22,7 +22,7 @@ from geometry_msgs.msg import PoseStamped, Pose, PointStamped, Point
 from visualization_msgs.msg import Marker
 from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject, ObjectColor
-from viewpoint_generation_interfaces.srv import ImportCadModel, OptimizeViewpointTraversal
+from viewpoint_generation_interfaces.srv import OptimizeViewpointTraversal
 
 
 class ViewpointGenerationNode(rclpy.node.Node):
@@ -30,9 +30,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
     block_next_param_callback = False
     initialized = False
     mesh = None
-    bbox_marker = None
-    pvolume_marker = None
-    viewpoints_bbox_marker = None
+    mesh_order_index = 0
+    region_order_index = 0
+    cluster_order_index = 0
 
     def __init__(self):
         node_name = 'viewpoint_generation'
@@ -45,57 +45,10 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('model.point_cloud.file', ''),
                 ('model.point_cloud.units', 'm'),
                 ('model.point_cloud.sampling.number_of_points', 100000),
-                ('results.file', ''),
                 ('model.point_cloud.curvature.file', ''),
-                ('viewpoints.traversal', ''),
-                ('settings.data_path', '/tmp'),
-                ('settings.planning_volume_opacity', 0.0),
+                
             ]
         )
-
-        # Bounding Box Marker Publisher
-        self.bbox_marker_publisher = self.create_publisher(
-            Marker, f'{node_name}/bounding_box_marker', 10)
-        # Planning Volume Marker Publisher
-        self.create_planning_volume_mesh()
-
-        # Create planning scene publisher
-        self.planning_scene_diff_publisher = self.create_publisher(
-            PlanningScene, '/planning_scene', 10)
-        self.get_logger().info('Planning scene publisher created.')
-        # Update planning scene timer
-        self.create_timer(1.0, self.update_planning_scene)
-
-        # --- ROS Services and Actions ---
-
-        services_cb_group = MutuallyExclusiveCallbackGroup()
-        # Import CAD Model Service
-        self.create_service(ImportCadModel, node_name + '/import_cad_model',
-                            self.import_cad_model_callback, callback_group=services_cb_group)
-        # Sample PCD Service
-        self.create_service(Trigger, node_name + '/sample_point_cloud',
-                            self.sample_point_cloud_callback, callback_group=services_cb_group)
-        # Estimate Curvature Service
-        self.create_service(Trigger, node_name + '/estimate_curvature',
-                            self.estimate_curvature_callback, callback_group=services_cb_group)
-        # Region Growth Service
-        self.create_service(Trigger, node_name + '/region_growth',
-                            self.region_growth_callback, callback_group=services_cb_group)
-        # FOV Clustering Service
-        self.create_service(Trigger, node_name + '/fov_clustering',
-                            self.fov_clustering_callback, callback_group=services_cb_group)
-        # Viewpoint Projection Service
-        self.create_service(Trigger, node_name + '/viewpoint_projection',
-                            self.viewpoint_projection_callback, callback_group=services_cb_group)
-        # Optimize Traversal Service
-        self.create_service(Trigger, node_name +
-                            '/optimize_traversal', self.optimize_traversal, callback_group=services_cb_group)
-
-        # Connect to viewpoint traversal service
-        viewpoint_traversal_node_name = 'viewpoint_traversal'
-
-        self.optimize_traversal_client = self.create_client(
-            OptimizeViewpointTraversal, f'{viewpoint_traversal_node_name}/optimize_traversal', callback_group=services_cb_group)
 
         # Viewpoint Generation Helpers
         self.viewpoint_generation = ViewpointGeneration()
@@ -160,6 +113,58 @@ class ViewpointGenerationNode(rclpy.node.Node):
             excluded=set(),
         )
 
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('results.file', ''),
+                ('results.selected_mesh', 0),
+                ('results.selected_region', 0),
+                ('results.selected_cluster', 0),
+                ('settings.data_path', '/tmp'),
+                ('settings.pv_opacity', 0.0),
+            ]
+        )
+
+
+        # Planning Volume Marker Publisher
+        self.create_planning_volume_mesh()
+
+        # Create planning scene publisher
+        self.planning_scene_diff_publisher = self.create_publisher(
+            PlanningScene, '/planning_scene', 10)
+        self.get_logger().info('Planning scene publisher created.')
+        # Update planning scene timer
+        self.create_timer(1.0, self.update_planning_scene)
+
+        # --- ROS Services and Actions ---
+
+        services_cb_group = MutuallyExclusiveCallbackGroup()
+        # Sample PCD Service
+        self.create_service(Trigger, node_name + '/sample_point_cloud',
+                            self.sample_point_cloud_callback, callback_group=services_cb_group)
+        # Estimate Curvature Service
+        self.create_service(Trigger, node_name + '/estimate_curvature',
+                            self.estimate_curvature_callback, callback_group=services_cb_group)
+        # Region Growth Service
+        self.create_service(Trigger, node_name + '/region_growth',
+                            self.region_growth_callback, callback_group=services_cb_group)
+        # FOV Clustering Service
+        self.create_service(Trigger, node_name + '/fov_clustering',
+                            self.fov_clustering_callback, callback_group=services_cb_group)
+        # Viewpoint Projection Service
+        self.create_service(Trigger, node_name + '/viewpoint_projection',
+                            self.viewpoint_projection_callback, callback_group=services_cb_group)
+        # Optimize Traversal Service
+        self.create_service(Trigger, node_name +
+                            '/optimize_traversal', self.optimize_traversal, callback_group=services_cb_group)
+
+        # Connect to viewpoint traversal service
+        viewpoint_traversal_node_name = 'viewpoint_traversal'
+
+        self.optimize_traversal_client = self.create_client(
+            OptimizeViewpointTraversal, f'{viewpoint_traversal_node_name}/optimize_traversal', callback_group=services_cb_group)
+
+
         self.set_data_path(self.get_parameter(
             'settings.data_path').get_parameter_value().string_value)
         # Load results FIRST so that set_mesh_file / set_point_cloud_file can
@@ -176,8 +181,12 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 'model.point_cloud.sampling.number_of_points').get_parameter_value().integer_value)
         self.set_curvature_file(self.get_parameter(
             'model.point_cloud.curvature.file').get_parameter_value().string_value)
-        self.planning_volume_opacity = self.get_parameter(
-            'settings.planning_volume_opacity').get_parameter_value().double_value
+        self.pv_opacity = self.get_parameter(
+            'settings.pv_opacity').get_parameter_value().double_value
+        
+        self.set_selected_mesh_region_and_cluster(self.get_parameter('results.selected_mesh').get_parameter_value().integer_value,
+                                                 self.get_parameter('results.selected_region').get_parameter_value().integer_value,
+                                                 self.get_parameter('results.selected_cluster').get_parameter_value().integer_value)
 
         self.add_on_set_parameters_callback(self.parameter_callback)
 
@@ -208,9 +217,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
             data_path = '/tmp'
 
         self.data_path = data_path
-
-    def import_cad_model_callback(self, request, response):
-        pass
 
     def set_mesh_file(self, mesh_file, mesh_units):
         """
@@ -254,11 +260,15 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             params = [mesh_file_param, mesh_units_param]
             # results_file is None only when set_mesh_file reset self.results
-            # (i.e. a genuinely different mesh was loaded). In that case clear
-            # the results.file parameter so stale results are not shown.
+            # (i.e. a genuinely different mesh was loaded). Save the results
+            # immediately so the visualizer can read the mesh path, then update
+            # the results.file parameter with the real path.
             if self.viewpoint_generation.results_file is None:
+                saved = self.viewpoint_generation.save_results(
+                    self.viewpoint_generation.results)
+                self.viewpoint_generation.results_file = saved
                 params.append(rclpy.parameter.Parameter(
-                    'results.file', rclpy.Parameter.Type.STRING, ''))
+                    'results.file', rclpy.Parameter.Type.STRING, saved or ''))
             self.set_parameters_blocked(params)
 
             if self.initialized:
@@ -291,30 +301,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
             sx = max(1e-6, max_x - min_x)
             sy = max(1e-6, max_y - min_y)
             sz = max(1e-6, max_z - min_z)
-
-            # Create a Marker message for the bounding box
-            self.bbox_marker = Marker()
-            self.bbox_marker.header.frame_id = 'object_frame'
-            self.bbox_marker.header.stamp = self.get_clock().now().to_msg()
-            self.bbox_marker.ns = 'bbox'
-            self.bbox_marker.id = 0
-            self.bbox_marker.type = Marker.CUBE
-            self.bbox_marker.action = Marker.ADD
-            self.bbox_marker.pose.position.x = cx
-            self.bbox_marker.pose.position.y = cy
-            self.bbox_marker.pose.position.z = cz
-            self.bbox_marker.pose.orientation.w = 1.0
-            self.bbox_marker.scale.x = sx
-            self.bbox_marker.scale.y = sy
-            self.bbox_marker.scale.z = sz
-            # semi-transparent cyan
-            self.bbox_marker.color.r = 0.0
-            self.bbox_marker.color.g = 1.0
-            self.bbox_marker.color.b = 1.0
-            self.bbox_marker.color.a = 0.25
-            # short lifetime; republish each frame
-            self.bbox_marker.lifetime = Duration(seconds=1.0).to_msg()
-            # self.bbox_marker.header.frame_id = 'object_frame'
 
             # Create a mesh from the file
             self.mesh = Mesh()
@@ -368,9 +354,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 'No mesh loaded. Cannot update planning scene.')
             return False
 
-        # Publish bounding box as marker
-        self.bbox_marker_publisher.publish(self.bbox_marker)
-
         # Pose of object relative to 'object_frame'
         # Will be changed by Yusen's point cloud registration
         pose = Pose()
@@ -413,7 +396,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         planning_scene.object_colors.append(ObjectColor(
             id='object', color=ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.5)))
         planning_scene.object_colors.append(ObjectColor(
-            id='planning_volume', color=ColorRGBA(r=0.0, g=1.0, b=1.0, a=self.planning_volume_opacity)))
+            id='planning_volume', color=ColorRGBA(r=0.0, g=1.0, b=1.0, a=self.pv_opacity)))
 
         self.planning_scene_diff_publisher.publish(planning_scene)
 
@@ -453,10 +436,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 point_cloud_units
             )
             params = [point_cloud_file_param, point_cloud_units_param]
-            # Only clear results.file when the PCD change caused a results reset
+            # Only save/update results.file when the PCD change caused a results reset
             if self.viewpoint_generation.results_file is None:
+                saved = self.viewpoint_generation.save_results(
+                    self.viewpoint_generation.results)
+                self.viewpoint_generation.results_file = saved
                 params.append(rclpy.parameter.Parameter(
-                    'results.file', rclpy.Parameter.Type.STRING, ''))
+                    'results.file', rclpy.Parameter.Type.STRING, saved or ''))
             self.set_parameters_blocked(params)
 
             if self.initialized:
@@ -548,6 +534,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             self.block_next_param_callback = True
             self.set_parameters([results_file_param])
+
+            if self.initialized:
+                self.set_selected_mesh_region_and_cluster(0, 0, 0)
 
             return True
 
@@ -928,6 +917,135 @@ class ViewpointGenerationNode(rclpy.node.Node):
         except Exception as e:
             self.get_logger().error(f"Optimization failed: {e}")
 
+    def set_selected_mesh_region_and_cluster(self, mesh_order_index, region_order_index, cluster_order_index):
+        """
+        Helper function to set the selected region and viewpoint for visualization.
+        :param mesh_order_index: The index of the selected mesh in the results.
+        :param region_order_index: The index of the selected region in the region order list.
+        :param cluster_order_index: The index of the selected cluster in the cluster order list.
+        :return: None
+        """
+
+        if mesh_order_index != self.mesh_order_index:
+            # Reset selected region and cluster if the mesh has changed to avoid out of bounds errors
+            region_order_index = 0
+            cluster_order_index = 0
+        if region_order_index != self.region_order_index:
+            # Reset selected cluster if the region has changed to avoid out of bounds errors
+            cluster_order_index = 0
+
+        if not self.viewpoint_generation.results:
+            self.get_logger().warn("No results loaded.")
+            number_of_meshes = 0
+            selected_mesh = 0
+            number_of_regions = 0
+            selected_region = 0
+            number_of_clusters = 0
+            selected_cluster = 0
+        
+        else:
+
+            number_of_meshes = len(self.viewpoint_generation.results['meshes'])
+
+            if number_of_meshes == 0:
+                self.get_logger().warn("No meshes found in results. Cannot set selected region and viewpoint.")
+                selected_mesh = 0
+                number_of_regions = 0
+                selected_region = 0
+                number_of_clusters = 0
+                selected_cluster = 0
+            if mesh_order_index >= number_of_meshes:
+                self.get_logger().warn(f"Selected mesh index {mesh_order_index} is out of bounds for results.")
+                selected_mesh = 0
+                number_of_regions = 0
+                selected_region = 0
+                number_of_clusters = 0
+                selected_cluster = 0
+            else:
+                selected_mesh = mesh_order_index
+
+                number_of_regions = len(self.viewpoint_generation.results['meshes'][selected_mesh]['order'])
+
+                if number_of_regions == 0:
+                    self.get_logger().warn("No mesh order found in results. Cannot set selected region and viewpoint.")
+                    selected_region = 0
+                    number_of_clusters = 0
+                    selected_cluster = 0
+                elif region_order_index >= number_of_regions:
+                    self.get_logger().warn(f"Selected region index {region_order_index} is out of bounds for mesh {mesh_order_index}.")
+                    selected_region = 0
+                    number_of_clusters = 0
+                    selected_cluster = 0
+                else:
+
+                    selected_region = self.viewpoint_generation.results['meshes'][selected_mesh]['order'][region_order_index]
+
+                    number_of_clusters = len(self.viewpoint_generation.results['meshes'][selected_mesh]['regions'][selected_region]['order'])
+
+                    if number_of_clusters == 0:
+                        self.get_logger().warn(f"No clusters found for region {selected_region}. Cannot set selected viewpoint.")
+                        selected_cluster = 0
+                    elif cluster_order_index >= number_of_clusters:
+                        self.get_logger().warn(f"Selected cluster index {cluster_order_index} is out of bounds for region {selected_region}.")
+                        selected_cluster = 0
+                    else:
+                        selected_cluster = self.viewpoint_generation.results['meshes'][selected_mesh]['regions'][selected_region]['order'][cluster_order_index]
+
+        selected_mesh_param = rclpy.parameter.Parameter(
+            'results.selected_mesh',
+            rclpy.Parameter.Type.INTEGER,
+            mesh_order_index
+        )
+        selected_region_param = rclpy.parameter.Parameter(
+            'results.selected_region',
+            rclpy.Parameter.Type.INTEGER,
+            region_order_index 
+        )
+        selected_cluster_param = rclpy.parameter.Parameter(
+            'results.selected_cluster',
+            rclpy.Parameter.Type.INTEGER,
+            cluster_order_index
+        )
+        selected_mesh_descriptor = ParameterDescriptor()
+        selected_mesh_descriptor.type = ParameterType.PARAMETER_INTEGER
+        selected_mesh_descriptor.description = f"Index of the selected mesh"
+        selected_mesh_descriptor.additional_constraints = "slider"
+        mesh_ir = IntegerRange()
+        mesh_ir.from_value = int(0)
+        mesh_ir.to_value = max(0, int(number_of_meshes - 1))
+        mesh_ir.step = 1
+        selected_mesh_descriptor.integer_range = [mesh_ir]
+
+        selected_region_descriptor = ParameterDescriptor()
+        selected_region_descriptor.type = ParameterType.PARAMETER_INTEGER
+        selected_region_descriptor.description = f"Index of the selected region for the selected mesh"
+        selected_region_descriptor.additional_constraints = "slider"
+        region_ir = IntegerRange()
+        region_ir.from_value = int(0)
+        region_ir.to_value = max(0, int(number_of_regions - 1))
+        region_ir.step = 1
+        selected_region_descriptor.integer_range = [region_ir]
+
+        selected_cluster_descriptor = ParameterDescriptor()
+        selected_cluster_descriptor.type = ParameterType.PARAMETER_INTEGER
+        selected_cluster_descriptor.description = f"Index of the selected viewpoint"
+        selected_cluster_descriptor.additional_constraints = "slider"
+        cluster_ir = IntegerRange()
+        cluster_ir.from_value = int(0)
+        cluster_ir.to_value = max(0, int(number_of_clusters - 1))
+        cluster_ir.step = 1
+        selected_cluster_descriptor.integer_range = [cluster_ir]
+
+        self.set_parameters_blocked([selected_mesh_param, selected_region_param, selected_cluster_param])
+        self.set_descriptor('results.selected_mesh', selected_mesh_descriptor) 
+        self.set_descriptor('results.selected_region', selected_region_descriptor) 
+        self.set_descriptor('results.selected_cluster', selected_cluster_descriptor) 
+
+        self.mesh_order_index = mesh_order_index
+        self.region_order_index = region_order_index
+        self.cluster_order_index = cluster_order_index
+
+
     def parameter_callback(self, params):
         """ Callback for parameter changes.
         :param params: List of parameters that have changed.
@@ -949,22 +1067,26 @@ class ViewpointGenerationNode(rclpy.node.Node):
                                              self.get_parameter(
                                                  'model.mesh.units').get_parameter_value().string_value)
             elif param.name == 'model.mesh.units':
-                success = self.set_mesh_file(
-                    self.get_parameter(
-                        'model.mesh.file').get_parameter_value().string_value,
-                    param.value)
+                mesh_file = self.get_parameter(
+                    'model.mesh.file').get_parameter_value().string_value
+                if mesh_file == '':
+                    # No mesh loaded yet — accept the units preference as-is
+                    success = True
+                else:
+                    success = self.set_mesh_file(mesh_file, param.value)
             elif param.name == 'model.point_cloud.file':
                 success = self.set_point_cloud_file(param.value, self.get_parameter(
                     'model.point_cloud.units').get_parameter_value().string_value)
             elif param.name == 'model.point_cloud.units':
-                success = self.set_point_cloud_file(
-                    self.get_parameter(
-                        'model.point_cloud.file').get_parameter_value().string_value,
-                    param.value)
+                pcd_file = self.get_parameter(
+                    'model.point_cloud.file').get_parameter_value().string_value
+                if pcd_file == '':
+                    # No point cloud loaded yet — accept the units preference as-is
+                    success = True
+                else:
+                    success = self.set_point_cloud_file(pcd_file, param.value)
             elif param.name == 'model.point_cloud.sampling.number_of_points':
                 success = self.set_sampling_number_of_points(param.value)
-            elif param.name == 'results.file':
-                success = self.set_results_file(param.value)
             elif param.name == 'model.point_cloud.curvature.file':
                 success = self.set_curvature_file(param.value)
             elif (param.name.startswith('regions.region_growth.') or
@@ -979,10 +1101,18 @@ class ViewpointGenerationNode(rclpy.node.Node):
                         self.set_curvature_file(curvature_file='')
                 else:
                     self.get_logger().error(message)
+            elif param.name == 'results.file':
+                success = self.set_results_file(param.value)
+            elif param.name == 'results.selected_mesh':
+                self.set_selected_mesh_region_and_cluster(param.value, self.region_order_index, self.cluster_order_index)
+            elif param.name == 'results.selected_region':
+                self.set_selected_mesh_region_and_cluster(self.mesh_order_index, param.value, self.cluster_order_index)
+            elif param.name == 'results.selected_cluster':
+                self.set_selected_mesh_region_and_cluster(self.mesh_order_index, self.region_order_index, param.value)
             elif param.name == 'settings.data_path':
                 self.set_data_path(param.value)
-            elif param.name == 'settings.planning_volume_opacity':
-                self.planning_volume_opacity = param.value
+            elif param.name == 'settings.pv_opacity':
+                self.pv_opacity = param.value
 
             print(f'{param.name}: {success}')
 

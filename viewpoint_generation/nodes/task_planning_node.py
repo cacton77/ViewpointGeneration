@@ -88,15 +88,15 @@ class TaskPlanningNode(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('servo_controllers', ['ur5e_forward_position_controller',
+                ('servo_controllers', ['ur5e_forward_velocity_controller',
                                        'turntable_forward_position_controller']),
                 ('trajectory_controllers', ['inspection_cell_controller']),
                 ('servo_node_name', 'servo_node'),
                 ('controller_manager_name', '/controller_manager'),
-                ('viewpoints_file', '/turbine_blade_point_cloud/turbine_blade_mm_point_cloud_100000points_0.1_100_100000_0.1_0.1_0.5235987755982988_2025-08-19_14-14-00_viewpoints_optimized2025-08-19_16-17-34.json'),
+                ('viewpoints_file', ''),
                 ('selected_region', 0),
                 ('selected_viewpoint', 0),
-                ('data_path', '/tmp')
+                ('settings.data_path', '/tmp')
             ]
         )
 
@@ -113,7 +113,7 @@ class TaskPlanningNode(Node):
 
         # Set data path
         self.set_data_path(self.get_parameter(
-            'data_path').get_parameter_value().string_value)
+            'settings.data_path').get_parameter_value().string_value)
 
         self.load_viewpoints(self.get_parameter(
             'viewpoints_file').get_parameter_value().string_value)

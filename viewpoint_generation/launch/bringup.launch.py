@@ -12,7 +12,7 @@ def generate_launch_description():
     declared_arguments = [
         DeclareLaunchArgument("cell", default_value="false"),
         DeclareLaunchArgument("sim", default_value="false"),
-        DeclareLaunchArgument("object", default_value="default.yaml",
+        DeclareLaunchArgument("object", default_value="new.yaml",
                               description="Configuration file for viewpoint generation."),
         DeclareLaunchArgument("data_path", default_value="/data/ViewpointGenerationData",
                               description="Path to the data directory."),
@@ -71,7 +71,6 @@ def generate_launch_description():
                 allow_substs=True
             )
         ],
-        # condition=IfCondition(cell_enabled)
     )
 
     viewpoint_traversal_launch = IncludeLaunchDescription(

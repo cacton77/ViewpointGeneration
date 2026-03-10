@@ -492,7 +492,7 @@ class Visualizer:
         for region_data in self.geometries_dict.values():
             if 'clusters' not in region_data:
                 continue
-            for cluster_name, cluster_data in region_data['clusters'].items():
+            for cluster_name, cluster_data in enumerate(region_data['clusters']):
                 # Remove old scene geometry
                 self.scene.remove_geometry(cluster_name)
                 self.scene.remove_geometry(f"{cluster_name}_viewpoint")
@@ -517,6 +517,26 @@ class Visualizer:
                         self.add_geometry(f"{cluster_name}_viewpoint", geo, mat)
 
     # ── Core scene helper ────────────────────────────────────────────────────
+
+    def _reset_camera_to_bbox(self, bbox: o3d.geometry.AxisAlignedBoundingBox):
+        """Reset the turntable camera so the mesh fills the view.
+
+        All geometry is stored in the scene after a -90° X rotation
+        ([x,y,z] → [x, z, -y]), so the camera center must be derived from
+        the *rotated* bounding-box centre rather than the raw bbox centre.
+        The eye is placed one bounding-box diagonal away in the [1,1,1]
+        direction of the rotated frame, which keeps the camera well outside
+        the mesh regardless of its position or size.
+        """
+        # -90° X rotation: [x, y, z] → [x, z, -y]
+        raw_center = bbox.get_center()
+        rotated_center = np.array([raw_center[0], raw_center[2], -raw_center[1]])
+
+        diagonal = np.linalg.norm(bbox.get_max_bound() - bbox.get_min_bound())
+        offset_dir = np.array([1., 1., 1.]) / np.sqrt(3)
+        eye = rotated_center + offset_dir * diagonal * 1.5
+
+        self.camera.reset_camera(rotated_center, eye)
 
     def add_geometry(self, name: str, geometry, material):
         """Deep-copy geometry, apply -90° X-axis rotation, then add to scene."""
@@ -750,6 +770,10 @@ class Visualizer:
 
         if self.point_cloud is None:
             print("No point cloud loaded; cannot import regions.")
+            if bbox is not None:
+                self._reset_camera_to_bbox(bbox)
+                self.add_xy_plane(bbox)
+            self.show_mesh(True)
             return {'bbox': bbox, 'show_viewpoints': False}
 
         self.point_cloud.paint_uniform_color((1, 1, 1))
@@ -766,7 +790,7 @@ class Visualizer:
 
         for region_id in region_order:
             region_name = f"region_{region_id}"
-            region_dict = results_dict['meshes'][0]['regions'][str(region_id)]
+            region_dict = results_dict['meshes'][0]['regions'][region_id]
 
             region_indices     = region_dict['points']
             region_point_cloud = self.point_cloud.select_by_index(region_indices)
@@ -783,7 +807,7 @@ class Visualizer:
             path_points        : list = []
             path_line = o3d.geometry.LineSet()
 
-            if 'clusters' in region_dict:
+            if region_dict.get('clusters'):
                 show_clusters = True
                 cluster_order = region_dict['order']
                 traversal_order.append(cluster_order)
@@ -791,7 +815,7 @@ class Visualizer:
 
                 for i, cluster_id in enumerate(cluster_order):
                     cluster_name = f"{region_name}_cluster_{i}"
-                    cluster_dict = region_dict['clusters'][str(cluster_id)]
+                    cluster_dict = region_dict['clusters'][cluster_id]
 
                     cluster_color = region_color + 0.1 * (np.random.rand(3) - 0.5)
                     cluster_color = np.clip(cluster_color, 0, 1)
@@ -919,7 +943,7 @@ class Visualizer:
 
         # ── Camera + XY plane setup ───────────────────────────────────────────
         if bbox is not None:
-            self.camera.reset_camera(bbox.get_center(), bbox.get_max_bound() * 1.5)
+            self._reset_camera_to_bbox(bbox)
             self.add_xy_plane(bbox)
 
         # ── Initial visibility ────────────────────────────────────────────────
