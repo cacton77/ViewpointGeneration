@@ -48,6 +48,11 @@ class Materials:
     point_cloud_material.point_size = 7.0
     point_cloud_material.base_color = [1.0, 1.0, 1.0, 1.0]
 
+    selected_point_cloud_material = rendering.MaterialRecord()
+    selected_point_cloud_material.shader = "defaultUnlit"
+    selected_point_cloud_material.point_size = 7.0
+    selected_point_cloud_material.base_color = [0.0, 1.0, 0.0, 1.0]
+
     curvature_colormap = 'plasma'
     regions_colormap = 'BuPu'
     regions_colormap = 'cubehelix'

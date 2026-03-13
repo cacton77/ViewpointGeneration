@@ -1174,12 +1174,19 @@ class GUIClient():
 
         # self._refresh_file_tree()
 
+    def select_mesh(self, mesh_idx):
+        self.viz.select_mesh(mesh_idx)
+
     def select_region(self, region_number):
         if self.viz.select_region(region_number):
             self.viewpoint_slider.int_value = 0
 
+    def select_cluster(self, cluster_number):
+        if self.viz.select_cluster(cluster_number):
+            self.viewpoint_slider.int_value = cluster_number
+
     def select_viewpoint(self, cluster_number):
-        if self.viz.select_viewpoint(cluster_number):
+        if self.viz.select_cluster(cluster_number):
             self.viewpoint_slider.int_value = cluster_number
 
     def update_scene(self):
@@ -1322,12 +1329,12 @@ class GUIClient():
                             
                             if 'results.file' in param_name:
                                 self.visualize_results(param_value)
+                            elif 'selected_mesh' in param_name:
+                                self.select_mesh(param_value)
                             elif 'selected_region' in param_name:
-                                # self.select_region(param_value)
-                                pass
-                            elif 'selected_viewpoint' in param_name:
-                                # self.select_viewpoint(param_value)
-                                pass
+                                self.select_region(param_value)
+                            elif 'selected_cluster' in param_name:
+                                self.select_cluster(param_value)
                             elif 'model.camera.fov.height' in param_name:
                                 self.camera_fov_height = param_value
                                 self.camera_updated = True

@@ -456,6 +456,7 @@ class Visualizer:
         self.point_cloud      = None
 
         # Region / cluster state
+        self.mesh_names      : list[str]        = []
         self.region_names    : list[str]        = []
         self.cluster_names   : list[str]        = []
         self.traversal_order : list[list[int]]  = [[0]]
@@ -463,6 +464,11 @@ class Visualizer:
         self.results_dict    : dict             = {}
         self.region_number   : int              = 0
         self.cluster_number  : int              = 0
+
+        # Selection state
+        self.selected_mesh_idx    : int = -1
+        self.selected_region_name : str = ''
+        self.selected_cluster_name: str = ''
 
         # Show flags
         self.show_mesh_flag                  = True
@@ -492,7 +498,7 @@ class Visualizer:
         for region_data in self.geometries_dict.values():
             if 'clusters' not in region_data:
                 continue
-            for cluster_name, cluster_data in enumerate(region_data['clusters']):
+            for cluster_name, cluster_data in region_data['clusters'].items():
                 # Remove old scene geometry
                 self.scene.remove_geometry(cluster_name)
                 self.scene.remove_geometry(f"{cluster_name}_viewpoint")
@@ -753,20 +759,45 @@ class Visualizer:
 
         # ── Load mesh and point cloud from the results dict ───────────────────
         bbox = None
-        mesh_entry = results_dict.get('meshes', [{}])[0]
+        scale_map = {'mm': 1.0, 'cm': 10.0, 'm': 1000.0, 'in': 25.4, 'ft': 304.8}
 
-        mesh_file  = mesh_entry.get('file', '')
-        mesh_units = mesh_entry.get('units', 'mm')
-        if mesh_file:
-            mesh_result = self.import_mesh(mesh_file, mesh_units)
-            if mesh_result:
-                bbox = mesh_result['bbox']
+        # Clear previous mesh geometries (including legacy "mesh")
+        self.scene.remove_geometry("mesh")
+        for name in self.mesh_names:
+            self.scene.remove_geometry(name)
 
-        pcd_entry = mesh_entry.get('point_cloud', {})
-        pcd_file  = pcd_entry.get('file', '')
-        pcd_units = pcd_entry.get('units', 'mm')
-        if pcd_file:
-            self.import_point_cloud(pcd_file, pcd_units)
+        new_mesh_names = []
+        for mesh_idx, mesh_entry in enumerate(results_dict.get('meshes', [])):
+            mesh_file  = mesh_entry.get('file', '')
+            mesh_units = mesh_entry.get('units', 'mm')
+            mesh_name  = f"mesh_{mesh_idx}"
+
+            if mesh_file:
+                try:
+                    mesh = o3d.io.read_triangle_mesh(mesh_file)
+                    if not mesh.is_empty():
+                        mesh.scale(scale_map.get(mesh_units, 1.0), center=(0, 0, 0))
+                        if mesh_idx == 0:
+                            bbox = mesh.get_axis_aligned_bounding_box()
+                            self.mesh_name  = mesh_file.rsplit('/', 1)[-1].rsplit('.', 1)[0]
+                            self.mesh_units = mesh_units
+                            self.ray_casting_scene = o3d.t.geometry.RaycastingScene()
+                            self.ray_casting_scene.add_triangles(
+                                o3d.t.geometry.TriangleMesh.from_legacy(mesh))
+                            self.scene.remove_geometry("model_bounding_box")
+                            self.add_geometry("model_bounding_box", bbox,
+                                              Materials.bounding_box_material)
+                        self.add_geometry(mesh_name, mesh, Materials.mesh_material)
+                        new_mesh_names.append(mesh_name)
+                except Exception as e:
+                    print(f"Error loading mesh {mesh_file}: {e}")
+
+            if mesh_idx == 0:
+                pcd_entry = mesh_entry.get('point_cloud', {})
+                pcd_file  = pcd_entry.get('file', '')
+                pcd_units = pcd_entry.get('units', 'mm')
+                if pcd_file:
+                    self.import_point_cloud(pcd_file, pcd_units)
 
         if self.point_cloud is None:
             print("No point cloud loaded; cannot import regions.")
@@ -785,104 +816,107 @@ class Visualizer:
         show_clusters   = False
         show_viewpoints = False
         show_path       = False
-        region_order    = results_dict['meshes'][0].get('order', [])
         traversal_order: list[list[int]] = []
+        all_noise_points: list = []
 
-        for region_id in region_order:
-            region_name = f"region_{region_id}"
-            region_dict = results_dict['meshes'][0]['regions'][region_id]
+        for mesh_idx, mesh_entry_data in enumerate(results_dict['meshes']):
+            region_order = mesh_entry_data.get('order', [])
+            all_noise_points.extend(mesh_entry_data.get('noise_points', []))
 
-            region_indices     = region_dict['points']
-            region_point_cloud = self.point_cloud.select_by_index(region_indices)
-            region_color       = np.array(list(cmap(np.random.rand())))[0:3]
+            for region_id in region_order:
+                region_name = f"mesh_{mesh_idx}_region_{region_id}"
+                region_dict = mesh_entry_data['regions'][region_id]
 
-            region_point_cloud.paint_uniform_color(region_color)
-            new_geometries_dict[region_name] = {
-                'cloud': region_point_cloud,
-                'color': region_color,
-            }
+                region_indices     = region_dict['points']
+                region_point_cloud = self.point_cloud.select_by_index(region_indices)
+                region_color       = np.array(list(cmap(np.random.rand())))[0:3]
 
-            region_view_points : list = []
-            region_view_normals: list = []
-            path_points        : list = []
-            path_line = o3d.geometry.LineSet()
+                region_point_cloud.paint_uniform_color(region_color)
+                new_geometries_dict[region_name] = {
+                    'cloud': region_point_cloud,
+                    'color': region_color,
+                }
 
-            if region_dict.get('clusters'):
-                show_clusters = True
-                cluster_order = region_dict['order']
-                traversal_order.append(cluster_order)
-                new_geometries_dict[region_name]['clusters'] = {}
+                region_view_points : list = []
+                region_view_normals: list = []
+                path_points        : list = []
+                path_line = o3d.geometry.LineSet()
 
-                for i, cluster_id in enumerate(cluster_order):
-                    cluster_name = f"{region_name}_cluster_{i}"
-                    cluster_dict = region_dict['clusters'][cluster_id]
+                if region_dict.get('clusters'):
+                    show_clusters = True
+                    cluster_order = region_dict['order']
+                    traversal_order.append(cluster_order)
+                    new_geometries_dict[region_name]['clusters'] = {}
 
-                    cluster_color = region_color + 0.1 * (np.random.rand(3) - 0.5)
-                    cluster_color = np.clip(cluster_color, 0, 1)
+                    for i, cluster_id in enumerate(cluster_order):
+                        cluster_name = f"{region_name}_cluster_{i}"
+                        cluster_dict = region_dict['clusters'][cluster_id]
 
-                    cluster_pcd = region_point_cloud.select_by_index(
-                        cluster_dict['points'])
+                        cluster_color = region_color + 0.1 * (np.random.rand(3) - 0.5)
+                        cluster_color = np.clip(cluster_color, 0, 1)
 
-                    vp_data = None
-                    if 'viewpoint' in cluster_dict:
-                        show_viewpoints = True
-                        vp_raw = cluster_dict['viewpoint']
-                        # Store centroid for LinesRenderer
-                        centroid = np.mean(np.asarray(cluster_pcd.points), axis=0)
-                        vp_data = {
-                            'origin':           vp_raw['origin'],
-                            'position':         vp_raw['position'],
-                            'direction':        vp_raw['direction'],
-                            'orientation':      vp_raw['orientation'],
-                            'cluster_centroid': centroid.tolist(),
-                            'cluster_color':    cluster_color.tolist(),
+                        cluster_pcd = region_point_cloud.select_by_index(
+                            cluster_dict['points'])
+
+                        vp_data = None
+                        if 'viewpoint' in cluster_dict:
+                            show_viewpoints = True
+                            vp_raw = cluster_dict['viewpoint']
+                            # Store centroid for LinesRenderer
+                            centroid = np.mean(np.asarray(cluster_pcd.points), axis=0)
+                            vp_data = {
+                                'origin':           vp_raw['origin'],
+                                'position':         vp_raw['position'],
+                                'direction':        vp_raw['direction'],
+                                'orientation':      vp_raw['orientation'],
+                                'cluster_centroid': centroid.tolist(),
+                                'cluster_color':    cluster_color.tolist(),
+                            }
+
+                            position  = 1000.0 * np.array(vp_raw['position'])
+                            direction = np.array(vp_raw['direction'])
+                            region_view_points.append(position.tolist())
+                            region_view_normals.append(direction.tolist())
+                            path_points.append(position)
+
+                            if i != cluster_id:
+                                show_path = True
+
+                        new_geometries_dict[region_name]['clusters'][cluster_name] = {
+                            'pcd':           cluster_pcd,
+                            'color':         cluster_color,
+                            'viewpoint_data': vp_data,
                         }
 
-                        position  = 1000.0 * np.array(vp_raw['position'])
-                        direction = np.array(vp_raw['direction'])
-                        region_view_points.append(position.tolist())
-                        region_view_normals.append(direction.tolist())
-                        path_points.append(position)
+                # Region view surface (convex hull of viewpoint positions)
+                if show_viewpoints and region_view_points:
+                    region_view_cloud = o3d.geometry.PointCloud()
+                    region_view_cloud.points = o3d.utility.Vector3dVector(
+                        np.array(region_view_points))
+                    region_view_cloud.normals = o3d.utility.Vector3dVector(
+                        np.array(region_view_normals))
 
-                        if i != cluster_id:
-                            show_path = True
+                    if len(region_view_points) > 4:
+                        view_mesh = region_view_cloud.compute_convex_hull(
+                            joggle_inputs=True)[0]
+                        view_mesh = filter_large_triangles(
+                            view_mesh, method='iqr', threshold_multiplier=5.0)
+                        view_mesh.compute_vertex_normals()
+                        new_geometries_dict[region_name]['view_mesh'] = view_mesh
+                    else:
+                        new_geometries_dict[region_name]['view_mesh'] = None
 
-                    new_geometries_dict[region_name]['clusters'][cluster_name] = {
-                        'pcd':           cluster_pcd,
-                        'color':         cluster_color,
-                        'viewpoint_data': vp_data,
-                    }
-
-            # Region view surface (convex hull of viewpoint positions)
-            if show_viewpoints and region_view_points:
-                region_view_cloud = o3d.geometry.PointCloud()
-                region_view_cloud.points = o3d.utility.Vector3dVector(
-                    np.array(region_view_points))
-                region_view_cloud.normals = o3d.utility.Vector3dVector(
-                    np.array(region_view_normals))
-
-                if len(region_view_points) > 4:
-                    view_mesh = region_view_cloud.compute_convex_hull(
-                        joggle_inputs=True)[0]
-                    view_mesh = filter_large_triangles(
-                        view_mesh, method='iqr', threshold_multiplier=5.0)
-                    view_mesh.compute_vertex_normals()
-                    new_geometries_dict[region_name]['view_mesh'] = view_mesh
-                else:
-                    new_geometries_dict[region_name]['view_mesh'] = None
-
-                if len(path_points) > 1:
-                    path_line.points = o3d.utility.Vector3dVector(
-                        np.array(path_points))
-                    path_line.lines = o3d.utility.Vector2iVector(
-                        [[i, i + 1] for i in range(len(path_points) - 1)])
-                    new_geometries_dict[region_name]['path'] = path_line
-                else:
-                    new_geometries_dict[region_name]['path'] = None
+                    if len(path_points) > 1:
+                        path_line.points = o3d.utility.Vector3dVector(
+                            np.array(path_points))
+                        path_line.lines = o3d.utility.Vector2iVector(
+                            [[i, i + 1] for i in range(len(path_points) - 1)])
+                        new_geometries_dict[region_name]['path'] = path_line
+                    else:
+                        new_geometries_dict[region_name]['path'] = None
 
         # ── Tear down old scene geometry ──────────────────────────────────────
-        noise_points = results_dict['meshes'][0].get('noise_points', [])
-        noise_pcd = self.point_cloud.select_by_index(noise_points)
+        noise_pcd = self.point_cloud.select_by_index(all_noise_points)
         noise_pcd.paint_uniform_color([1.0, 0.0, 0.0])
 
         self.clear_regions()
@@ -892,12 +926,16 @@ class Visualizer:
         self.clear_region_view_manifolds()
         self.clear_paths()
 
+        self.mesh_names      = new_mesh_names
         self.region_names    = []
         self.cluster_names   = []
         self.traversal_order = traversal_order
         self.geometries_dict = new_geometries_dict
         self.region_number   = 0
         self.cluster_number  = 0
+        self.selected_mesh_idx     = -1
+        self.selected_region_name  = ''
+        self.selected_cluster_name = ''
 
         # ── Add noise points ─────────────────────────────────────────────────
         self.add_geometry("noise_points", noise_pcd,
@@ -1000,7 +1038,8 @@ class Visualizer:
 
     def show_mesh(self, show: bool):
         self.show_mesh_flag = show
-        self.scene.show_geometry('mesh', show)
+        for name in self.mesh_names:
+            self.scene.show_geometry(name, show)
 
     def show_point_cloud(self, show: bool):
         self.show_point_cloud_flag = show
@@ -1028,11 +1067,13 @@ class Visualizer:
             self.show_curvatures(False)
             self.show_noise_points(True)
             self.show_fov_clusters(False)
-            self.scene_widget.scene.modify_geometry_material(
-                "mesh", Materials.mesh_material_transparent)
+            for name in self.mesh_names:
+                self.scene_widget.scene.modify_geometry_material(
+                    name, Materials.mesh_material_transparent)
         else:
-            self.scene_widget.scene.modify_geometry_material(
-                "mesh", Materials.mesh_material)
+            for name in self.mesh_names:
+                self.scene_widget.scene.modify_geometry_material(
+                    name, Materials.mesh_material)
 
     def show_fov_clusters(self, show: bool):
         """Toggle cluster geometry visibility. Mesh material NOT touched here."""
@@ -1043,11 +1084,13 @@ class Visualizer:
             self.show_point_cloud(False)
             self.show_curvatures(False)
             self.show_regions(False)
-            self.scene_widget.scene.modify_geometry_material(
-                "mesh", Materials.mesh_material_transparent)
+            for name in self.mesh_names:
+                self.scene_widget.scene.modify_geometry_material(
+                    name, Materials.mesh_material_transparent)
         else:
-            self.scene_widget.scene.modify_geometry_material(
-                "mesh", Materials.mesh_material)
+            for name in self.mesh_names:
+                self.scene_widget.scene.modify_geometry_material(
+                    name, Materials.mesh_material)
 
     def show_viewpoints(self, show: bool):
         self.show_viewpoints_flag = show
@@ -1066,79 +1109,79 @@ class Visualizer:
 
     # ── Selection ─────────────────────────────────────────────────────────────
 
-    def select_region(self, region_number: int) -> bool:
-        """Highlight the given region; reset cluster selection to 0.
-        Returns False if region_number is out of range."""
-        if not self.region_names or not self.geometries_dict:
+    def _region_names_for_mesh(self, mesh_idx: int) -> list[str]:
+        prefix = f"mesh_{mesh_idx}_"
+        return [n for n in self.region_names if n.startswith(prefix)]
+
+    def _cluster_names_for_region(self, region_name: str) -> list[str]:
+        prefix = f"{region_name}_cluster_"
+        return [n for n in self.cluster_names if n.startswith(prefix)]
+
+    def _get_cluster_data(self, cluster_name: str) -> dict | None:
+        for region_data in self.geometries_dict.values():
+            clusters = region_data.get('clusters', {})
+            if cluster_name in clusters:
+                return clusters[cluster_name]
+        return None
+
+    def select_mesh(self, mesh_idx: int) -> bool:
+        """Highlight the selected mesh; dim and hide geometry for all others."""
+        if not self.mesh_names:
             return False
-        if region_number < 0 or region_number >= len(self.region_names):
-            return False
-
-        renderer = self._renderer
-
-        # Restore previous cluster / viewpoint materials
-        prev_cluster = (f"region_{self.region_number}"
-                        f"_cluster_{self.cluster_number}")
-        self.scene.modify_geometry_material(
-            prev_cluster, renderer.cluster_material())
-        self.scene.modify_geometry_material(
-            f"{prev_cluster}_viewpoint", renderer.viewpoint_material())
-
-        # Restore previous region view mesh / path
-        prev_region = self.region_names[self.region_number]
-        self.scene.modify_geometry_material(
-            f"{prev_region}_view_mesh", Materials.region_view_material)
-        self.scene.modify_geometry_material(
-            f"{prev_region}_path", Materials.path_material)
-
-        self.region_number = region_number
-
-        # Highlight new region view mesh / path
-        new_region = self.region_names[self.region_number]
-        self.scene.modify_geometry_material(
-            f"{new_region}_view_mesh", Materials.selected_region_view_material)
-
-        selected_path_mat = Materials.selected_path_material
-        selected_path_mat.base_color = np.append(
-            self.geometries_dict[new_region]['color'], 1)
-        self.scene.modify_geometry_material(
-            f"{new_region}_path", selected_path_mat)
-
-        # Reset cluster selection
-        self.select_viewpoint(0)
+        self.selected_mesh_idx = mesh_idx
+        selected_name = f"mesh_{mesh_idx}"
+        for name in self.mesh_names:
+            mat = Materials.mesh_material if name == selected_name else Materials.mesh_material_transparent
+            self.scene_widget.scene.modify_geometry_material(name, mat)
+        for region_name in self.region_names:
+            is_selected = region_name.startswith(f"mesh_{mesh_idx}_")
+            self.scene.show_geometry(region_name, is_selected and self.show_regions_flag)
+            for cluster_name in self._cluster_names_for_region(region_name):
+                show_c = is_selected and self.show_clusters_flag
+                self.scene.show_geometry(cluster_name, show_c)
+                self.scene.show_geometry(f"{cluster_name}_viewpoint",
+                                         show_c and self.show_viewpoints_flag)
         return True
 
-    def select_viewpoint(self, cluster_number: int) -> bool:
-        """Highlight the given cluster/viewpoint pair.
-        Returns False if cluster_number is out of range."""
-        if not self.region_names:
+    def select_region(self, region_idx: int) -> bool:
+        """Highlight the selected region; hide others and show its clusters."""
+        if region_idx < 0 or region_idx >= len(self.region_names):
             return False
-        if not self.traversal_order:
+        # Reset previous region material
+        if self.selected_region_name in self.region_names:
+            self.scene_widget.scene.modify_geometry_material(
+                self.selected_region_name, Materials.point_cloud_material)
+        selected_region_name = self.region_names[region_idx]
+        self.selected_region_name = selected_region_name
+        self.scene_widget.scene.modify_geometry_material(
+            selected_region_name, Materials.selected_point_cloud_material)
+        for region_name in self.region_names:
+            is_selected = (region_name == selected_region_name)
+            self.scene.show_geometry(region_name, is_selected)
+            for cluster_name in self._cluster_names_for_region(region_name):
+                self.scene.show_geometry(cluster_name, is_selected and self.show_clusters_flag)
+                self.scene.show_geometry(f"{cluster_name}_viewpoint",
+                                         is_selected and self.show_viewpoints_flag)
+        return True
+
+    def select_cluster(self, cluster_idx: int) -> bool:
+        """Highlight the selected cluster and its viewpoint."""
+        if cluster_idx < 0 or cluster_idx >= len(self.cluster_names):
             return False
-        region_clusters = self.traversal_order[self.region_number]
-        if cluster_number < 0 or cluster_number >= len(region_clusters):
-            return False
-
-        renderer = self._renderer
-
-        # Restore previous selection
-        prev = (f"region_{self.region_number}"
-                f"_cluster_{self.cluster_number}")
-        self.scene.modify_geometry_material(
-            prev, renderer.cluster_material())
-        self.scene.modify_geometry_material(
-            f"{prev}_viewpoint", renderer.viewpoint_material())
-
-        self.cluster_number = cluster_number
-
-        # Highlight new selection
-        cur = (f"region_{self.region_number}"
-               f"_cluster_{self.cluster_number}")
-        self.scene.modify_geometry_material(
-            cur, renderer.selected_cluster_material())
-        self.scene.modify_geometry_material(
-            f"{cur}_viewpoint", renderer.selected_viewpoint_material())
-
+        # Reset previous cluster material
+        if self.selected_cluster_name in self.cluster_names:
+            self.scene_widget.scene.modify_geometry_material(
+                self.selected_cluster_name, Materials.cluster_material)
+            self.scene_widget.scene.modify_geometry_material(
+                f"{self.selected_cluster_name}_viewpoint", Materials.viewpoint_material)
+        selected_cluster_name = self.cluster_names[cluster_idx]
+        self.selected_cluster_name = selected_cluster_name
+        self.scene_widget.scene.modify_geometry_material(
+            selected_cluster_name, Materials.selected_cluster_material)
+        cluster_data = self._get_cluster_data(selected_cluster_name)
+        if cluster_data and cluster_data.get('viewpoint_data'):
+            self.scene_widget.scene.modify_geometry_material(
+                f"{selected_cluster_name}_viewpoint", Materials.selected_viewpoint_material)
         return True
 
     # ── Ray casting ───────────────────────────────────────────────────────────
