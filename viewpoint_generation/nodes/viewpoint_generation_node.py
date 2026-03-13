@@ -133,6 +133,15 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.planning_scene_diff_publisher = self.create_publisher(
             PlanningScene, '/planning_scene', 10)
         self.get_logger().info('Planning scene publisher created.')
+
+        # Latest pose estimate from the particle filter (object_frame-relative)
+        self._filtered_pose = Pose()
+        self.create_subscription(
+            PoseStamped,
+            '/particle_filter/pose',
+            self._filtered_pose_cb,
+            10)
+
         # Update planning scene timer
         self.create_timer(1.0, self.update_planning_scene)
 
@@ -348,15 +357,17 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         self.planning_volume_mesh = planning_volume_mesh
 
+    def _filtered_pose_cb(self, msg: PoseStamped):
+        self._filtered_pose = msg.pose
+
     def update_planning_scene(self):
         if not self.mesh:
             self.get_logger().warning(
                 'No mesh loaded. Cannot update planning scene.')
             return False
 
-        # Pose of object relative to 'object_frame'
-        # Will be changed by Yusen's point cloud registration
-        pose = Pose()
+        # Pose of object relative to 'object_frame', updated by particle filter
+        pose = self._filtered_pose
 
         # Update planning scene with the new mesh
         attached_object = AttachedCollisionObject()
