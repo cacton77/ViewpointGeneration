@@ -15,7 +15,12 @@ geometry_msgs/Point        surface_centroid  # smoothed centroid (EMA)
 geometry_msgs/Vector3      surface_normal    # smoothed normal (+Z goal)
 geometry_msgs/PoseStamped  current_pose      # Current EOAT pose
 geometry_msgs/TwistStamped current_twist     # Current EOAT twist
+geometry_msgs/TwistStamped jacobian_twist
+geometry_msgs/AccelStamped current_accel    # Current EOAT accel (linear m/s^2, angular rad/s^2)
 geometry_msgs/PoseStamped  goal_pose         # EOAT desired pose (its own header)
+
+# Simulated / real IMU measurement
+sensor_msgs/Imu imu
 
 # Control data - separate pitch (X-axis) and yaw (Y-axis) control
 # Pitch: rotation about camera X-axis
@@ -46,6 +51,17 @@ float32                k_i
 float32                pitch_torque_command   # torque command about X-axis (Nm)
 float32                yaw_torque_command     # torque command about Y-axis (Nm)
 float32                roll_torque_command    # torque command about Z-axis (Nm)
+
+string kalman_model   # "PLANT" or "CA"
+float32 kalman_r
+float32 kalman_q_angle
+float32 kalman_q_dangle
+float32 kalman_q_ddangle    # CA-only; 0 in PLANT mode
+
+# CA-only state (angular acceleration)
+float32 ddpitch_error       # rad/s^2
+float32 ddyaw_error         # rad/s^2
+
 
 # Frames
 geometry_msgs/TransformStamped camera_transform  # Transform from object_frame to camera_frame
