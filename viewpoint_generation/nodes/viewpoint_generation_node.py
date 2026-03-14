@@ -46,8 +46,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('model.point_cloud.file', ''),
                 ('model.point_cloud.units', 'm'),
                 ('model.point_cloud.sampling.number_of_points', 100000),
-                ('model.point_cloud.curvature.file', ''),
-                
             ]
         )
 
@@ -152,9 +150,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Sample PCD Service
         self.create_service(Trigger, node_name + '/sample_point_cloud',
                             self.sample_point_cloud_callback, callback_group=services_cb_group)
-        # Estimate Curvature Service
-        self.create_service(Trigger, node_name + '/estimate_curvature',
-                            self.estimate_curvature_callback, callback_group=services_cb_group)
         # Region Growth Service
         self.create_service(Trigger, node_name + '/region_growth',
                             self.region_growth_callback, callback_group=services_cb_group)
@@ -189,8 +184,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.set_sampling_number_of_points(
             self.get_parameter(
                 'model.point_cloud.sampling.number_of_points').get_parameter_value().integer_value)
-        self.set_curvature_file(self.get_parameter(
-            'model.point_cloud.curvature.file').get_parameter_value().string_value)
         self.pv_opacity = self.get_parameter(
             'settings.pv_opacity').get_parameter_value().double_value
         
@@ -458,49 +451,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     'results.file', rclpy.Parameter.Type.STRING, saved or ''))
             self.set_parameters_blocked(params)
 
-            if self.initialized:
-                # Clear the curvature file parameter
-                self.set_curvature_file(curvature_file='')
-
             return True
-
-    def set_curvature_file(self, curvature_file):
-        """
-        Helper function to set the curvature file for the partitioner.
-        :param curvature_file: The path to the curvature file.
-        :return: None
-        """
-
-        # If file doesn't exist, look in data path
-        if not curvature_file == '' and not os.path.exists(curvature_file):
-            curvature_file = os.path.join(self.data_path, curvature_file)
-
-        success, message = self.viewpoint_generation.set_curvature_file(
-            curvature_file)
-
-        if not success:
-            self.get_logger().error(message)
-
-            curvature_file_param = rclpy.parameter.Parameter(
-                'model.point_cloud.curvature.file',
-                rclpy.Parameter.Type.STRING,
-                ''
-            )
-
-            self.set_parameters_blocked([curvature_file_param])
-
-            return False
-        else:
-            self.get_logger().info(message)
-
-            curvature_file_param = rclpy.parameter.Parameter(
-                'model.point_cloud.curvature.file',
-                rclpy.Parameter.Type.STRING,
-                curvature_file
-            )
-            self.set_parameters_blocked([curvature_file_param])
-
-        return True
 
     def set_results_file(self, results_file):
         """
@@ -655,30 +606,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         return response
 
-    def set_knn_neighbors(self, number_of_neighbors):
-        """
-        Helper function to set the number of neighbors for curvature estimation.
-        :param number_of_neighbors: The number of neighbors to use for curvature estimation.
-        :return: True if successful, False otherwise.
-        """
-
-        success, message = self.viewpoint_generation.set_knn_neighbors(
-            number_of_neighbors)
-
-        if not success:
-            self.get_logger().error(message)
-            return False
-        else:
-            self.get_logger().info(message)
-            curvature_file_param = rclpy.parameter.Parameter(
-                'model.point_cloud.curvature.file',
-                rclpy.Parameter.Type.STRING,
-                ''
-            )
-            self.set_parameters([curvature_file_param])
-
-        return True
-
     def set_seed_threshold(self, seed_threshold):
         """
         Helper function to set the seed threshold for region growth.
@@ -763,37 +690,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
         else:
             self.get_logger().info(message)
             return True
-
-    def estimate_curvature_callback(self, request, response):
-        """
-        Callback for the estimate curvature service.
-        :param request: The request object.
-        :param response: The response object.
-        :return: The response object.
-            success (bool): True if curvature estimation was successful, False otherwise.
-            message (str): Returns the file path of the estimated curvature file if successful, or an error message if not.
-        """
-        self.get_logger().info('Estimating curvature...')
-
-        success, message = self.viewpoint_generation.estimate_curvature()
-
-        if success:
-            self.get_logger().info(
-                f"Curvature estimation completed successfully. Curvature file: {message}")
-            # Set the curvature file parameter with the estimated curvature file
-            curvature_file_param = rclpy.parameter.Parameter(
-                'model.point_cloud.curvature.file',
-                rclpy.Parameter.Type.STRING,
-                message
-            )
-            self.set_parameters([curvature_file_param])
-        else:
-            self.get_logger().error("Curvature estimation failed.")
-
-        response.success = success
-        response.message = message
-
-        return response
 
     def region_growth_callback(self, request, response):
         """
@@ -1100,8 +996,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     success = self.set_point_cloud_file(pcd_file, param.value)
             elif param.name == 'model.point_cloud.sampling.number_of_points':
                 success = self.set_sampling_number_of_points(param.value)
-            elif param.name == 'model.point_cloud.curvature.file':
-                success = self.set_curvature_file(param.value)
             elif (param.name.startswith('regions.region_growth.') or
                   param.name.startswith('regions.fov_clustering.') or
                   param.name.startswith('viewpoints.projection.')):
@@ -1110,8 +1004,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     field_name, param.value)
                 if success:
                     self.get_logger().info(message)
-                    if field_name == 'knn_neighbors':
-                        self.set_curvature_file(curvature_file='')
                 else:
                     self.get_logger().error(message)
             elif param.name == 'results.file':

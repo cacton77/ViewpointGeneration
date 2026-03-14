@@ -586,6 +586,7 @@ class GUIClient():
     def init_main_layout(self):
         """Initialize the Open3D GUI with fixed tabs"""
         self.parameter_widgets = {}
+        self._companion_widgets = {}
         # Get theme for consistent styling
         theme = self.window.theme
         em = theme.font_size
@@ -690,11 +691,6 @@ class GUIClient():
             button.background_color = Materials.button_background_color
             button.set_on_clicked(lambda: self.ros_thread.sample_point_cloud())
             content.add_child(button)
-        elif section_name == 'curvature':
-            button = gui.Button("Compute Curvature")
-            button.background_color = Materials.button_background_color
-            button.set_on_clicked(lambda: self.ros_thread.estimate_curvature())
-            content.add_child(button)
         elif section_name == 'region_growth':
             button = gui.Button("Run Region Growth")
             button.background_color = Materials.button_background_color
@@ -794,14 +790,44 @@ class GUIClient():
 
         elif param_type == 'integer':
             if param_control == 'slider':
-                print(f"Creating slider for {param_name} with value {param_value}")
-                # Special case for selected_region and selected_cluster - create a slider to select index
-                widget = gui.Slider(gui.Slider.INT)  
+                widget = gui.Slider(gui.Slider.INT)
                 widget.set_limits(param_range[0], param_range[1])
                 widget.int_value = int(param_value)
-                widget.set_on_value_changed(
-                    lambda value, name=param_name: self.on_parameter_changed(node_name, name, value))
-                row.add_child(widget)  # ADD HERE
+
+                number_edit = gui.NumberEdit(gui.NumberEdit.INT)
+                number_edit.int_value = int(param_value)
+                number_edit.set_limits(param_range[0], param_range[1])
+                number_edit.set_preferred_width(4 * em)
+
+                syncing = [False]
+
+                def _slider_changed_int(value, name=param_name, ne=number_edit, s=syncing):
+                    if s[0]:
+                        return
+                    s[0] = True
+                    ne.int_value = int(value)
+                    self.on_parameter_changed(node_name, name, value)
+                    s[0] = False
+
+                def _numedit_changed_int(value, name=param_name, sl=widget, s=syncing):
+                    if s[0]:
+                        return
+                    s[0] = True
+                    sl.int_value = int(value)
+                    self.on_parameter_changed(node_name, name, value)
+                    s[0] = False
+
+                widget.set_on_value_changed(_slider_changed_int)
+                number_edit.set_on_value_changed(_numedit_changed_int)
+
+                slider_container = gui.Vert()
+                slider_container.preferred_width = 10 * em
+                slider_container.add_child(widget)
+                row.add_child(slider_container)
+                row.add_fixed(0.25 * em)
+                row.add_child(number_edit)
+
+                self._companion_widgets[f"{node_name}/{param_name}"] = number_edit
             else:
                 widget = gui.NumberEdit(gui.NumberEdit.INT)
                 widget.int_value = int(param_value)
@@ -813,13 +839,48 @@ class GUIClient():
             if param_control == 'slider':
                 widget = gui.Slider(gui.Slider.DOUBLE)
                 widget.set_limits(param_range[0], param_range[1])
+                widget.double_value = float(param_value)
+
+                number_edit = gui.NumberEdit(gui.NumberEdit.DOUBLE)
+                number_edit.double_value = float(param_value)
+                number_edit.set_limits(param_range[0], param_range[1])
+                number_edit.set_preferred_width(4 * em)
+
+                syncing = [False]
+
+                def _slider_changed_dbl(value, name=param_name, ne=number_edit, s=syncing):
+                    if s[0]:
+                        return
+                    s[0] = True
+                    ne.double_value = float(value)
+                    self.on_parameter_changed(node_name, name, value)
+                    s[0] = False
+
+                def _numedit_changed_dbl(value, name=param_name, sl=widget, s=syncing):
+                    if s[0]:
+                        return
+                    s[0] = True
+                    sl.double_value = float(value)
+                    self.on_parameter_changed(node_name, name, value)
+                    s[0] = False
+
+                widget.set_on_value_changed(_slider_changed_dbl)
+                number_edit.set_on_value_changed(_numedit_changed_dbl)
+
+                slider_container = gui.Vert()
+                slider_container.preferred_width = 10 * em
+                slider_container.add_child(widget)
+                row.add_child(slider_container)
+                row.add_fixed(0.25 * em)
+                row.add_child(number_edit)
+
+                self._companion_widgets[f"{node_name}/{param_name}"] = number_edit
             else:
                 widget = gui.NumberEdit(gui.NumberEdit.DOUBLE)
                 widget.double_value = float(param_value)
-
-            widget.set_on_value_changed(
-                lambda value, name=param_name: self.on_parameter_changed(node_name, name, value))
-            row.add_child(widget)  # ADD HERE
+                widget.set_on_value_changed(
+                    lambda value, name=param_name: self.on_parameter_changed(node_name, name, value))
+                row.add_child(widget)
 
         elif param_type == 'string':
             if 'file' in param_name.lower() or 'path' in param_name.lower():
@@ -1065,89 +1126,6 @@ class GUIClient():
         """Handle sample point cloud button click"""
         self.ros_thread.sample_point_cloud()
 
-    def init_viewpoint_traversal_layout(self):
-        """Initialize the region tabs"""
-        # Disable the previous layout
-        self.viewpoint_traversal_layout.enabled = False
-        self.viewpoint_traversal_layout.visible = False
-
-        em = self.window.theme.font_size
-        # Viewpoint Traversal Layout
-        self.viewpoint_traversal_layout = gui.Vert(
-            0.5 * em, gui.Margins(0.5 * em))
-        self.viewpoint_traversal_layout.background_color = Materials.panel_color
-
-        horiz = gui.Horiz(0.25 * em, gui.Margins(0.25 * em,
-                          0.25 * em, 0.25 * em, 0.25 * em))
-
-        # Add region tabs
-        self.region_tabs = gui.TabControl()
-        self.region_tabs.background_color = Materials.panel_color
-
-        for region_name in self.viz.region_names:
-            formatted_name = region_name.replace("_", " ").capitalize()
-            formatted_name = formatted_name.replace("Region", "").strip()
-            self.region_tabs.add_tab(
-                formatted_name, gui.Vert(0.5*em, gui.Margins(0.25*em)))
-
-        def _on_region_tab_changed(value):
-            """Handle region tab change"""
-            max_value = (len(self.viz.traversal_order[value]) - 1
-                         if self.viz.traversal_order else 0)
-            self.viewpoint_slider.set_limits(0, max_value)
-            self.viewpoint_slider.int_value = 0
-            self.ros_thread.select_cluster(0)
-            self.ros_thread.select_region(value)
-
-        self.region_tabs.set_on_selected_tab_changed(_on_region_tab_changed)
-
-        self.viewpoint_traversal_layout.add_child(self.region_tabs)
-
-        # Create a UI slider for selection of Viewpoints with 3 buttons to its right
-        self.viewpoint_slider = gui.Slider(gui.Slider.INT)
-        max_value = (len(self.viz.traversal_order[
-            self.region_tabs.selected_tab_index]) - 1
-            if self.viz.traversal_order else 0)
-        self.viewpoint_slider.set_limits(0, max_value)  # Example range
-
-        def _on_viewpoint_slider_changed(value):
-            """Handle viewpoint slider change"""
-            # cluster_index = self.traversal_order[
-            # int(self.region_tabs.selected_tab_index)][int(value)]
-            cluster_index = int(value)
-            self.ros_thread.select_cluster(cluster_index)
-
-            return gui.Widget.EventCallbackResult.HANDLED
-
-        self.viewpoint_slider.set_on_value_changed(
-            _on_viewpoint_slider_changed)
-        horiz.add_child(self.viewpoint_slider)
-
-        # Add "Move to Viewpoint" button
-        move_button = gui.Button("Move to Viewpoint")
-        move_button.background_color = Materials.button_background_color
-        move_button.set_on_clicked(self.ros_thread.move_to_viewpoint)
-
-        go_button = gui.Button("Go")
-        go_button.background_color = Materials.go_button_background_color
-
-        def _on_go_button_clicked():
-            self.ros_thread.inspect_region()
-
-        go_button.set_on_clicked(_on_go_button_clicked)
-
-        optimize_button = gui.Button("Optimize Traversal")
-        optimize_button.background_color = Materials.button_background_color
-        optimize_button.set_on_clicked(self.ros_thread.optimize_traversal)
-
-        horiz.add_child(optimize_button)
-        horiz.add_child(move_button)
-        horiz.add_child(go_button)
-
-        self.viewpoint_traversal_layout.add_child(horiz)
-
-        self.window.add_child(self.viewpoint_traversal_layout)
-
     # -----------------------------------------------------------------------------------#
 
     def load_config(self, file_path):
@@ -1155,12 +1133,7 @@ class GUIClient():
 
     def visualize_results(self, file_path):
         print(f"Visualizing results from: {file_path}")
-        result = self.viz.visualize_results(file_path)
-
-        # ROS interaction: notify task_planning when viewpoints are present
-        if result['show_viewpoints']:
-            self.ros_thread.set_target_node_parameter(
-                'task_planning', 'viewpoints_file', file_path)
+        self.viz.visualize_results(file_path)
 
         # Sync menu checkmarks with the visibility flags set by the Visualizer
         self._refresh_view_menu()
@@ -1178,16 +1151,13 @@ class GUIClient():
         self.viz.select_mesh(mesh_idx)
 
     def select_region(self, region_number):
-        if self.viz.select_region(region_number):
-            self.viewpoint_slider.int_value = 0
+        self.viz.select_region(region_number)
 
     def select_cluster(self, cluster_number):
-        if self.viz.select_cluster(cluster_number):
-            self.viewpoint_slider.int_value = cluster_number
+        self.viz.select_cluster(cluster_number)
 
     def select_viewpoint(self, cluster_number):
-        if self.viz.select_cluster(cluster_number):
-            self.viewpoint_slider.int_value = cluster_number
+        self.viz.select_cluster(cluster_number)
 
     def update_scene(self):
 
@@ -1326,7 +1296,12 @@ class GUIClient():
                             param_value = parameters_dict[node_name][param_name]['value']
                             param_range = parameters_dict[node_name][param_name].get('range')
                             self.set_widget_value(widget, param_value, limits=param_range)
-                            
+                            companion_key = f"{node_name}/{param_name}"
+                            if companion_key in self._companion_widgets:
+                                self.set_widget_value(
+                                    self._companion_widgets[companion_key],
+                                    param_value, limits=param_range)
+
                             if 'results.file' in param_name:
                                 self.visualize_results(param_value)
                             elif 'selected_mesh' in param_name:

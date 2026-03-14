@@ -166,10 +166,6 @@ class ROSThread(Node):
                                                   f'{self.viewpoint_generation_node_name}/sample_point_cloud',
                                                   callback_group=services_cb_group
                                                   )
-        self.estimate_curvature_client = self.create_client(Trigger,
-                                                            f'{self.viewpoint_generation_node_name}/estimate_curvature',
-                                                            callback_group=services_cb_group
-                                                            )
         self.region_growth_client = self.create_client(Trigger,
                                                        f'{self.viewpoint_generation_node_name}/region_growth',
                                                        callback_group=services_cb_group
@@ -207,9 +203,6 @@ class ROSThread(Node):
         while not self.sampling_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
                 f'Waiting for {self.viewpoint_generation_node_name}/sample_point_cloud service...')
-        while not self.estimate_curvature_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().info(
-                f'Waiting for {self.viewpoint_generation_node_name}/estimate_curvature service...')
         while not self.region_growth_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
                 f'Waiting for {self.viewpoint_generation_node_name}/region_growth service...')
@@ -301,26 +294,6 @@ class ROSThread(Node):
             return True
         else:
             self.get_logger().error('Failed to trigger point cloud sampling')
-            return False
-
-    def estimate_curvature(self):
-        """Trigger the curvature estimation service"""
-        if not self.estimate_curvature_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error('Curvature estimation service not available')
-            return False
-
-        request = Trigger.Request()
-        future = self.estimate_curvature_client.call_async(request)
-        future.add_done_callback(self.estimate_curvature_future_callback)
-
-    def estimate_curvature_future_callback(self, future):
-        """Callback for the curvature estimation service future"""
-        if future.result() is not None:
-            self.get_logger().info('Curvature estimation triggered successfully')
-            self.get_all_parameters()
-            return True
-        else:
-            self.get_logger().error('Failed to trigger curvature estimation')
             return False
 
     def region_growth(self):

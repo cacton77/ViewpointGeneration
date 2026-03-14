@@ -13,7 +13,6 @@ import open3d.visualization.rendering as rendering
 from matplotlib import colormaps
 from open3d.geometry import PointCloud, TriangleMesh
 
-from viewpoint_generation.curvature import *
 from viewpoint_generation.region_growth import *
 from viewpoint_generation.fov_clustering import *
 from viewpoint_generation.viewpoint_projection import *
@@ -196,11 +195,21 @@ class ViewpointGeneration():
             }
             self.results_file = None
         else:
-            # Same file but units changed — update metadata and mark for re-save
-            # so the front end and results file reflect the new scale.
-            self.results['meshes'][0]['units'] = units
-            self.results['meshes'][0]['dimensions'] = dimensions_str
-            self.results['meshes'][0]['surface_area'] = surface_area_str
+            # Same file but units changed — derived data is invalid, reset results
+            self.results = {'meshes': [
+                    {
+                    'file': mesh_file,
+                    'units': units,
+                    'material': 'unknown',
+                    'dimensions': dimensions_str,
+                    'surface_area': surface_area_str,
+                    'point_cloud': {},
+                    'regions': [],
+                    'order': [],
+                    'noise_points': []
+                    }
+                ]
+            }
             self.results_file = None
 
         if self.visualize:

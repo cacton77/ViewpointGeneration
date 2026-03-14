@@ -832,19 +832,17 @@ class Visualizer:
             print(f"Error loading curvature data from {file_path}: {e}")
             return False
 
-    def visualize_results(self, file_path: str) -> dict:
+    def visualize_results(self, file_path: str) -> None:
         """Parse a regions JSON file and populate the scene.
 
         Loads the mesh and point cloud referenced in the JSON before building
         region/cluster/viewpoint geometry.
 
         Sets scene visibility and camera position internally.
-        Returns ``{'bbox': AxisAlignedBoundingBox | None, 'show_viewpoints': bool}``
-        so the caller can handle any ROS interactions that depend on viewpoint state.
         """
         if not file_path:
             print("Regions file path is empty.")
-            return {'bbox': None, 'show_viewpoints': False}
+            return
 
         print(f"Importing regions from {file_path}")
 
@@ -861,6 +859,16 @@ class Visualizer:
             self.scene.remove_geometry(name)
 
         new_mesh_names = []
+        new_geometries_dict: dict = {}
+        show_clusters   = False
+        show_viewpoints = False
+        show_path       = False
+        traversal_order: list[list[int]] = []
+        all_noise_points: list = []
+
+        cmap = colormaps[Materials.regions_colormap]
+        np.random.seed(1)
+
         for mesh_idx, mesh_entry in enumerate(results_dict.get('meshes', [])):
             mesh_file  = mesh_entry.get('file', '')
             mesh_units = mesh_entry.get('units', 'mm')
@@ -886,40 +894,23 @@ class Visualizer:
                 except Exception as e:
                     print(f"Error loading mesh {mesh_file}: {e}")
 
-            if mesh_idx == 0:
-                pcd_entry = mesh_entry.get('point_cloud', {})
-                pcd_file  = pcd_entry.get('file', '')
-                pcd_units = pcd_entry.get('units', 'mm')
-                if pcd_file:
-                    self.import_point_cloud(pcd_file, pcd_units)
+            pcd_entry = mesh_entry.get('point_cloud', {})
+            pcd_file  = pcd_entry.get('file', '')
+            pcd_units = pcd_entry.get('units', 'mm')
+            if pcd_file:
+                self.import_point_cloud(pcd_file, pcd_units)
 
-        if self.point_cloud is None:
-            print("No point cloud loaded; cannot import regions.")
-            if bbox is not None:
-                self._reset_camera_to_bbox(bbox)
-                self.add_xy_plane(bbox)
-            self.show_mesh(True)
-            return {'bbox': bbox, 'show_viewpoints': False}
+            if self.point_cloud is None:
+                continue
 
-        self.point_cloud.paint_uniform_color((1, 1, 1))
+            self.point_cloud.paint_uniform_color((1, 1, 1))
 
-        cmap = colormaps[Materials.regions_colormap]
-        np.random.seed(1)
-
-        new_geometries_dict: dict = {}
-        show_clusters   = False
-        show_viewpoints = False
-        show_path       = False
-        traversal_order: list[list[int]] = []
-        all_noise_points: list = []
-
-        for mesh_idx, mesh_entry_data in enumerate(results_dict['meshes']):
-            region_order = mesh_entry_data.get('order', [])
-            all_noise_points.extend(mesh_entry_data.get('noise_points', []))
+            region_order = mesh_entry.get('order', [])
+            all_noise_points.extend(mesh_entry.get('noise_points', []))
 
             for region_id in region_order:
                 region_name = f"mesh_{mesh_idx}_region_{region_id}"
-                region_dict = mesh_entry_data['regions'][region_id]
+                region_dict = mesh_entry['regions'][region_id]
 
                 region_indices     = region_dict['points']
                 region_point_cloud = self.point_cloud.select_by_index(region_indices)
@@ -1008,6 +999,14 @@ class Visualizer:
                         new_geometries_dict[region_name]['path'] = path_line
                     else:
                         new_geometries_dict[region_name]['path'] = None
+
+        if self.point_cloud is None:
+            print("No point cloud loaded; cannot import regions.")
+            if bbox is not None:
+                self._reset_camera_to_bbox(bbox)
+                self.add_xy_plane(bbox)
+            self.show_mesh(True)
+            return
 
         # ── Tear down old scene geometry ──────────────────────────────────────
         noise_pcd = self.point_cloud.select_by_index(all_noise_points)
@@ -1104,7 +1103,6 @@ class Visualizer:
             self.show_regions(False)
             self.show_fov_clusters(False)
 
-        return {'bbox': bbox, 'show_viewpoints': show_viewpoints}
 
     # ── Clear helpers ─────────────────────────────────────────────────────────
 
@@ -1260,7 +1258,13 @@ class Visualizer:
 
     def select_cluster(self, cluster_idx: int) -> bool:
         """Highlight the selected cluster and its viewpoint."""
-        if cluster_idx < 0 or cluster_idx >= len(self.cluster_names):
+        # Scope lookup to the currently selected region so the index is
+        # relative to that region rather than the flat list of all clusters.
+        if self.selected_region_name:
+            region_clusters = self._cluster_names_for_region(self.selected_region_name)
+        else:
+            region_clusters = self.cluster_names
+        if cluster_idx < 0 or cluster_idx >= len(region_clusters):
             return False
         # Reset previous cluster material
         if self.selected_cluster_name in self.cluster_names:
@@ -1268,7 +1272,7 @@ class Visualizer:
                 self.selected_cluster_name, Materials.cluster_material)
             self.scene_widget.scene.modify_geometry_material(
                 f"{self.selected_cluster_name}_viewpoint", Materials.viewpoint_material)
-        selected_cluster_name = self.cluster_names[cluster_idx]
+        selected_cluster_name = region_clusters[cluster_idx]
         self.selected_cluster_name = selected_cluster_name
         self.scene_widget.scene.modify_geometry_material(
             selected_cluster_name, Materials.selected_cluster_material)
