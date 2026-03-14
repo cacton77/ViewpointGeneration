@@ -11,6 +11,7 @@ from rcl_interfaces.msg import (
     SetParametersResult, ParameterDescriptor, ParameterType,
     FloatingPointRange, IntegerRange,
 )
+from importlib import resources as importlib_resources
 from ament_index_python.packages import get_package_prefix
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
@@ -333,8 +334,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
             return True
 
     def create_planning_volume_mesh(self, radius=0.5, height=0.75):
-        planning_volume_mesh_path = get_package_prefix(
-            'viewpoint_generation') + '/share/viewpoint_generation/meshes/planning_volume.stl'
+        planning_volume_mesh_path = str(
+            importlib_resources.files('viewpoint_generation.assets')
+            .joinpath('planning_volume.stl'))
         planning_volume_mesh_o3d = o3d.io.read_triangle_mesh(
             planning_volume_mesh_path)
         vertices = np.asarray(planning_volume_mesh_o3d.vertices)

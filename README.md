@@ -29,24 +29,20 @@ viewpoint_generation/
 │   ├── region_growth.py            # Region growing segmentation
 │   ├── fov_clustering.py           # Field-of-view clustering
 │   ├── viewpoint_projection.py     # Viewpoint pose computation
-│   ├── curvature.py                # Curvature estimation
-│   ├── geometry_helpers.py         # Mesh filtering utilities
-│   ├── mesh_planning_scene_manager.py
 │   ├── visualizer.py               # Open3D visualization
 │   ├── gui_node.py                 # GUI node implementation
-│   └── assets/materials.py         # Visualization materials
+│   └── assets/
+│       ├── materials.py            # Visualization materials
+│       └── planning_volume.stl     # Planning volume mesh
 ├── nodes/                          # ROS 2 node executables
 │   ├── viewpoint_generation_node.py
 │   ├── task_planning_node.py
 │   ├── viewpoint_traversal_node.py
-│   ├── gui.py
-│   └── position_constraint_publisher.py
+│   └── gui.py
 ├── launch/
 │   ├── bringup.launch.py           # Full system bringup
 │   ├── viewpoint_generation.launch.py
 │   └── viewpoint_traversal.launch.py
-├── meshes/                         # Mesh assets (planning volume)
-├── config/
 ├── package.xml
 ├── setup.py
 └── requirements.txt
