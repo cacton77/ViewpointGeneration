@@ -59,7 +59,7 @@ class ViewpointGeneration():
     fc_config = FOVClusteringConfig(
         fov_diameter=0.03,
         dof=0.02,
-        ppsqmm=10.0,
+        point_density=10.0,
         lambda_weight=1.0,
         beta_weight=1.0,
         max_point_out_percentage=0.001,
@@ -303,8 +303,8 @@ class ViewpointGeneration():
         self.N_sampling_points = N_points
 
         area = self.mesh.get_surface_area()
-        ppsqmm = N_points / (area * 1e6)
-        self.fc_config.ppsqmm = ppsqmm
+        point_density = N_points / (area * 1e6)
+        self.fc_config.point_density = point_density
         msg = f'Points to sample set to {N_points}.'
         return True, N_points
 
@@ -886,7 +886,7 @@ class ViewpointGeneration():
 # Utility functions
 
 
-def create_sample_mesh(k: int = 3, ppsqmm: float = 1000) -> o3d.geometry.PointCloud:
+def create_sample_mesh(k: int = 3, point_density: float = 1000) -> o3d.geometry.PointCloud:
     """Create a sample point cloud for testing."""
 
     # Randomly create k primitive shapes
@@ -925,11 +925,11 @@ if __name__ == "__main__":
     exit()
 
     pc = mesh.sample_points_uniformly(
-        int(mesh.get_surface_area() * ppsqmm * 1e6), use_triangle_normal=True)
+        int(mesh.get_surface_area() * point_density * 1e6), use_triangle_normal=True)
 
     # Configure region growing
     config = FOVClusteringConfig()
-    config.ppsqmm = ppsqmm  # Points per square millimeter
+    config.point_density = point_density  # Points per square millimeter
     config.fov_width = 50*2*0.001*np.sqrt(1/np.pi)
     config.fov_height = 50*2*0.001*np.sqrt(1/np.pi)
     config.dof = 1

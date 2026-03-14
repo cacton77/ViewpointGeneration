@@ -26,7 +26,7 @@ class FOVClusteringConfig:
     dof: float = 0.02  # Depth of field in m
 
     # Cost function parameters
-    ppsqmm: float = 10.0  # Points per square millimeter for evaluation
+    point_density: float = 10.0  # Points per square millimeter for evaluation
     lambda_weight: float = 1.0  # Weight for point out percentage in cost function
     beta_weight: float = 1.0  # Weight for packing efficiency in cost function
     # Maximum allowed point out percentage for a valid cluster
@@ -54,8 +54,8 @@ class FOVClusteringConfig:
                 "control": "slider",
                 "range": [0.001, 0.1],
             },
-            "ppsqmm": {
-                "value": self.ppsqmm,
+            "point_density": {
+                "value": self.point_density,
                 "type": "float",
                 "description": "Points per square millimeter for cluster evaluation",
                 "control": "slider",
@@ -166,7 +166,7 @@ class FOVClustering:
         normals = np.asarray(point_cloud.normals)
 
         # Convert to square millimeters
-        max_points_in = (np.pi * camera_radius**2) * (self.config.ppsqmm * 1e6)
+        max_points_in = (np.pi * camera_radius**2) * (self.config.point_density * 1e6)
 
         # Get height and radial coordinates
         height_coords = points[:, 2]
@@ -401,7 +401,7 @@ class FOVClustering:
 
 
 # Utility functions
-def create_sample_mesh(k: int = 3, ppsqmm: float = 1000) -> o3d.geometry.PointCloud:
+def create_sample_mesh(k: int = 3, point_density: float = 1000) -> o3d.geometry.PointCloud:
     """Create a sample point cloud for testing."""
 
     # Randomly create k primitive shapes
@@ -436,15 +436,15 @@ if __name__ == "__main__":
     # Create sample point cloud
     print("Creating sample point cloud...")
     k = 5
-    ppsqmm = 0.5
+    point_density = 0.5
     mesh = create_sample_mesh(k)
 
     pc = mesh.sample_points_uniformly(
-        int(mesh.get_surface_area() * ppsqmm * 1e6), use_triangle_normal=True)
+        int(mesh.get_surface_area() * point_density * 1e6), use_triangle_normal=True)
 
     # Configure region growing
     config = FOVClusteringConfig()
-    config.ppsqmm = ppsqmm  # Points per square millimeter
+    config.point_density = point_density  # Points per square millimeter
     config.fov_diameter = 50*2*0.001*np.sqrt(1/np.pi)
     config.dof = 1
 

@@ -115,7 +115,7 @@ All algorithm parameters are exposed as dataclass configs with sensible defaults
 |---|---|---|
 | `fov_diameter` | 0.03 m | Camera field of view diameter at focal distance |
 | `dof` | 0.02 m | Depth of field |
-| `ppsqmm` | 10.0 | Target points per square millimeter |
+| `point_density` | 10.0 | Target points per square millimeter |
 | `lambda_weight` | 1.0 | Weight for out-of-FOV penalty in cost function |
 | `beta_weight` | 1.0 | Weight for packing efficiency in cost function |
 | `point_weight` | 1.0 | Weight for point positions in K-means |
