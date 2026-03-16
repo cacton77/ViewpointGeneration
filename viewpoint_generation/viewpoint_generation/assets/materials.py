@@ -34,6 +34,14 @@ class Materials:
     mesh_material_transparent.shader = "defaultLitTransparency"
     mesh_material_transparent.base_color = [0.8, 0.8, 0.8, 0.8]
 
+    mesh_material_vertex_colors = rendering.MaterialRecord()
+    mesh_material_vertex_colors.shader = "defaultLit"
+    mesh_material_vertex_colors.base_color = [1.0, 1.0, 1.0, 1.0]
+
+    mesh_material_vertex_colors_transparent = rendering.MaterialRecord()
+    mesh_material_vertex_colors_transparent.shader = "defaultLitTransparency"
+    mesh_material_vertex_colors_transparent.base_color = [1.0, 1.0, 1.0, 0.8]
+
     bounding_box_material = rendering.MaterialRecord()
     bounding_box_material.shader = "defaultLit"
     bounding_box_material.base_color = [0.8, 0.8, 0.8, 1.0]

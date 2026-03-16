@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import enum
 import json
+import math
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -559,6 +560,11 @@ class Visualizer:
         self.region_number   : int              = 0
         self.cluster_number  : int              = 0
 
+        # Mesh vertex coloring state
+        self.meshes             : dict = {}
+        self.mesh_vertex_to_pcd : dict = {}
+        self.noise_indices      : list = []
+
         # Selection state
         self.selected_mesh_idx    : int = -1
         self.selected_region_name : str = ''
@@ -574,6 +580,7 @@ class Visualizer:
         self.show_viewpoints_flag            = False
         self.show_region_view_manifolds_flag = False
         self.show_path_flag                  = False
+        self.mesh_has_vertex_colors          = False
 
     def on_mouse(self, event) -> gui.Widget.EventCallbackResult:
         """Delegate mouse events to the turntable camera controller."""
@@ -588,21 +595,13 @@ class Visualizer:
         self._rerender_clusters()
 
     def _rerender_clusters(self):
-        """Rebuild every cluster and viewpoint geometry using the current renderer."""
+        """Rebuild viewpoint geometry using the current renderer and repaint mesh."""
         for region_data in self.geometries_dict.values():
             if 'clusters' not in region_data:
                 continue
             for cluster_name, cluster_data in region_data['clusters'].items():
-                # Remove old scene geometry
-                self.scene.remove_geometry(cluster_name)
+                # Remove old viewpoint geometry
                 self.scene.remove_geometry(f"{cluster_name}_viewpoint")
-
-                # Build cluster footprint
-                result = self._renderer.build_cluster(
-                    cluster_data['pcd'], cluster_data['color'])
-                if result:
-                    geo, mat = result
-                    self.add_geometry(cluster_name, geo, mat)
 
                 # Build viewpoint marker
                 vp_data = cluster_data.get('viewpoint_data')
@@ -615,6 +614,9 @@ class Visualizer:
                     if result:
                         geo, mat = result
                         self.add_geometry(f"{cluster_name}_viewpoint", geo, mat)
+        # Repaint mesh if clusters are currently shown
+        if self.show_clusters_flag:
+            self.show_fov_clusters(True)
 
     # ── Core scene helper ────────────────────────────────────────────────────
 
@@ -744,7 +746,7 @@ class Visualizer:
             self.scene.remove_geometry("mesh")
             self.scene.remove_geometry("point_cloud")
             self.scene.remove_geometry("curvatures")
-            self.scene.remove_geometry("noise_points")
+
             self.clear_regions()
             self.clear_clusters()
             self.clear_viewpoints()
@@ -784,7 +786,7 @@ class Visualizer:
 
             self.scene.remove_geometry("point_cloud")
             self.scene.remove_geometry("curvatures")
-            self.scene.remove_geometry("noise_points")
+
             self.clear_regions()
             self.clear_clusters()
             self.clear_viewpoints()
@@ -817,7 +819,7 @@ class Visualizer:
 
             self.scene.remove_geometry("curvatures")
             self.scene.remove_geometry("regions")
-            self.scene.remove_geometry("noise_points")
+
             self.clear_regions()
             self.clear_clusters()
             self.clear_viewpoints()
@@ -859,6 +861,7 @@ class Visualizer:
             self.scene.remove_geometry(name)
 
         new_mesh_names = []
+        new_meshes     = {}
         new_geometries_dict: dict = {}
         show_clusters   = False
         show_viewpoints = False
@@ -889,8 +892,8 @@ class Visualizer:
                             self.scene.remove_geometry("model_bounding_box")
                             self.add_geometry("model_bounding_box", bbox,
                                               Materials.bounding_box_material)
-                        self.add_geometry(mesh_name, mesh, Materials.mesh_material)
                         new_mesh_names.append(mesh_name)
+                        new_meshes[mesh_name] = mesh
                 except Exception as e:
                     print(f"Error loading mesh {mesh_file}: {e}")
 
@@ -913,12 +916,14 @@ class Visualizer:
                 region_dict = mesh_entry['regions'][region_id]
 
                 region_indices     = region_dict['points']
-                region_point_cloud = self.point_cloud.select_by_index(region_indices)
                 region_color       = np.array(list(cmap(np.random.rand())))[0:3]
 
-                region_point_cloud.paint_uniform_color(region_color)
+                # Paint these indices on the single point cloud
+                pcd_colors = np.asarray(self.point_cloud.colors)
+                pcd_colors[region_indices] = region_color
+
                 new_geometries_dict[region_name] = {
-                    'cloud': region_point_cloud,
+                    'indices': region_indices,
                     'color': region_color,
                 }
 
@@ -940,8 +945,12 @@ class Visualizer:
                         cluster_color = region_color + 0.1 * (np.random.rand(3) - 0.5)
                         cluster_color = np.clip(cluster_color, 0, 1)
 
-                        cluster_pcd = region_point_cloud.select_by_index(
-                            cluster_dict['points'])
+                        # Convert cluster sub-indices (relative to region) to global indices.
+                        # select_by_index returns points sorted by original index,
+                        # so the cluster indices reference the sorted region indices.
+                        region_indices_sorted = np.sort(np.array(region_indices))
+                        global_cluster_indices = region_indices_sorted[cluster_dict['points']]
+                        cluster_pcd = self.point_cloud.select_by_index(global_cluster_indices)
 
                         vp_data = None
                         if 'viewpoint' in cluster_dict:
@@ -968,8 +977,9 @@ class Visualizer:
                                 show_path = True
 
                         new_geometries_dict[region_name]['clusters'][cluster_name] = {
-                            'pcd':           cluster_pcd,
-                            'color':         cluster_color,
+                            'pcd':            cluster_pcd,
+                            'indices':        global_cluster_indices,
+                            'color':          cluster_color,
                             'viewpoint_data': vp_data,
                         }
 
@@ -1002,18 +1012,22 @@ class Visualizer:
 
         if self.point_cloud is None:
             print("No point cloud loaded; cannot import regions.")
+            for mesh_name, mesh in new_meshes.items():
+                self.add_geometry(mesh_name, mesh, Materials.mesh_material)
+            self.mesh_names = new_mesh_names
             if bbox is not None:
                 self._reset_camera_to_bbox(bbox)
                 self.add_xy_plane(bbox)
             self.show_mesh(True)
             return
 
-        # ── Tear down old scene geometry ──────────────────────────────────────
-        noise_pcd = self.point_cloud.select_by_index(all_noise_points)
-        noise_pcd.paint_uniform_color([1.0, 0.0, 0.0])
+        # ── Paint noise points red on the single point cloud ────────────────
+        self.noise_indices = all_noise_points
+        if all_noise_points:
+            pcd_colors = np.asarray(self.point_cloud.colors)
+            pcd_colors[all_noise_points] = [1.0, 0.0, 0.0]
 
         self.clear_regions()
-        self.scene.remove_geometry("noise_points")
         self.clear_clusters()
         self.clear_viewpoints()
         self.clear_region_view_manifolds()
@@ -1030,25 +1044,54 @@ class Visualizer:
         self.selected_region_name  = ''
         self.selected_cluster_name = ''
 
-        # ── Add noise points ─────────────────────────────────────────────────
-        self.add_geometry("noise_points", noise_pcd,
-                          Materials.point_cloud_material)
+        # ── Add meshes (deferred so vertex colors can be applied) ─────────
+        if new_geometries_dict and len(self.point_cloud.points) > 0:
+            avg_pcd_spacing = np.mean(
+                self.point_cloud.compute_nearest_neighbor_distance())
 
-        # ── Add region / cluster geometry ────────────────────────────────────
+            for mesh_name, mesh in new_meshes.items():
+                # Subdivide until mesh edge length ≈ point cloud spacing
+                triangles = np.asarray(mesh.triangles)
+                vertices = np.asarray(mesh.vertices)
+                edges = np.array([[tri[j], tri[(j + 1) % 3]]
+                                  for tri in triangles for j in range(3)])
+                avg_edge_length = np.mean(
+                    np.linalg.norm(vertices[edges[:, 0]] - vertices[edges[:, 1]],
+                                   axis=1))
+                iterations = max(
+                    0, math.ceil(math.log2(avg_edge_length / avg_pcd_spacing)))
+                if iterations > 0:
+                    print(f"{mesh_name}: subdividing {iterations}x "
+                          f"(edge {avg_edge_length:.2f} → ~{avg_pcd_spacing:.2f})")
+                    mesh = mesh.subdivide_midpoint(iterations)
+                    mesh.compute_vertex_normals()
+                    new_meshes[mesh_name] = mesh
+
+            pcd_tree = o3d.geometry.KDTreeFlann(self.point_cloud)
+            for mesh_name, mesh in new_meshes.items():
+                mesh_vertices = np.asarray(mesh.vertices)
+                vertex_to_pcd = np.zeros(len(mesh_vertices), dtype=int)
+                for i, vertex in enumerate(mesh_vertices):
+                    [_, idx, _] = pcd_tree.search_knn_vector_3d(vertex, 1)
+                    vertex_to_pcd[i] = idx[0]
+                self.mesh_vertex_to_pcd[mesh_name] = vertex_to_pcd
+                self.meshes[mesh_name] = mesh
+            self._recolor_meshes()
+            self.mesh_has_vertex_colors = True
+        else:
+            for mesh_name, mesh in new_meshes.items():
+                self.add_geometry(mesh_name, mesh, Materials.mesh_material)
+
+        # ── Update single point cloud with region colors ──────────────────
+        self._update_point_cloud_scene()
+
+        # ── Add region / cluster geometry ────────────────────────────────
         for region_name, region_data in self.geometries_dict.items():
             self.region_names.append(region_name)
-            self.add_geometry(region_name, region_data['cloud'],
-                              Materials.point_cloud_material)
 
             if show_clusters:
                 for cluster_name, cluster_data in region_data['clusters'].items():
                     self.cluster_names.append(cluster_name)
-
-                    result = self._renderer.build_cluster(
-                        cluster_data['pcd'], cluster_data['color'])
-                    if result:
-                        geo, mat = result
-                        self.add_geometry(cluster_name, geo, mat)
 
                     if show_viewpoints and cluster_data['viewpoint_data']:
                         result = self._renderer.build_viewpoint(
@@ -1107,16 +1150,14 @@ class Visualizer:
     # ── Clear helpers ─────────────────────────────────────────────────────────
 
     def clear_regions(self):
-        for name in self.region_names:
-            self.scene.remove_geometry(name)
+        self.region_names = []
 
     def clear_region_view_manifolds(self):
         for name in self.region_names:
             self.scene.remove_geometry(f"{name}_view_mesh")
 
     def clear_clusters(self):
-        for name in self.cluster_names:
-            self.scene.remove_geometry(name)
+        self.cluster_names = []
 
     def clear_viewpoints(self):
         for name in self.cluster_names:
@@ -1134,6 +1175,9 @@ class Visualizer:
             self.scene.show_geometry(name, show)
 
     def show_point_cloud(self, show: bool):
+        # Never show the point cloud once regions have been generated
+        if show and self.region_names:
+            show = False
         self.show_point_cloud_flag = show
         self.scene.show_geometry('point_cloud', show)
 
@@ -1147,42 +1191,65 @@ class Visualizer:
 
     def show_noise_points(self, show: bool):
         self.show_noise_points_flag = show
-        self.scene.show_geometry('noise_points', show)
+
+    def _update_point_cloud_scene(self):
+        """Remove and re-add the point cloud geometry to reflect color changes."""
+        self.scene.remove_geometry("point_cloud")
+        self.add_geometry("point_cloud", self.point_cloud, Materials.point_cloud_material)
+        # Keep point cloud hidden if regions have been generated
+        if self.region_names:
+            self.scene.show_geometry('point_cloud', False)
+
+    def _recolor_meshes(self):
+        """Recolor all meshes from current PCD colors using the stored vertex mapping."""
+        pcd_colors = np.asarray(self.point_cloud.colors)
+        if self.noise_indices:
+            pcd_colors[self.noise_indices] = [1.0, 0.0, 0.0]
+        for mesh_name, mesh in self.meshes.items():
+            mapping = self.mesh_vertex_to_pcd.get(mesh_name)
+            if mapping is None:
+                continue
+            mesh.vertex_colors = o3d.utility.Vector3dVector(pcd_colors[mapping])
+            self.scene.remove_geometry(mesh_name)
+            self.add_geometry(mesh_name, mesh, Materials.mesh_material_vertex_colors)
 
     def show_regions(self, show: bool):
-        """Toggle region point-cloud visibility. Mesh material NOT touched here."""
+        """Toggle region visibility on the vertex-colored mesh."""
         self.show_regions_flag = show
-        for name in self.region_names:
-            self.scene.show_geometry(name, show)
         if show:
             self.show_point_cloud(False)
             self.show_curvatures(False)
-            self.show_noise_points(True)
+            self.show_noise_points(False)
             self.show_fov_clusters(False)
-            for name in self.mesh_names:
-                self.scene_widget.scene.modify_geometry_material(
-                    name, Materials.mesh_material_transparent)
+            # Paint PCD with region colors
+            pcd_colors = np.asarray(self.point_cloud.colors)
+            pcd_colors[:] = [0.8, 0.8, 0.8]  # base gray
+            for region_data in self.geometries_dict.values():
+                pcd_colors[region_data['indices']] = region_data['color']
+            self._recolor_meshes()
         else:
+            mesh_mat = Materials.mesh_material_vertex_colors if self.mesh_has_vertex_colors else Materials.mesh_material
             for name in self.mesh_names:
-                self.scene_widget.scene.modify_geometry_material(
-                    name, Materials.mesh_material)
+                self.scene_widget.scene.modify_geometry_material(name, mesh_mat)
 
     def show_fov_clusters(self, show: bool):
-        """Toggle cluster geometry visibility. Mesh material NOT touched here."""
+        """Toggle cluster visibility via mesh vertex coloring."""
         self.show_clusters_flag = show
-        for name in self.cluster_names:
-            self.scene.show_geometry(name, show)
         if show:
             self.show_point_cloud(False)
             self.show_curvatures(False)
             self.show_regions(False)
-            for name in self.mesh_names:
-                self.scene_widget.scene.modify_geometry_material(
-                    name, Materials.mesh_material_transparent)
+            # Paint PCD with cluster colors
+            pcd_colors = np.asarray(self.point_cloud.colors)
+            pcd_colors[:] = [0.8, 0.8, 0.8]  # base gray
+            for region_data in self.geometries_dict.values():
+                for cluster_data in region_data.get('clusters', {}).values():
+                    pcd_colors[cluster_data['indices']] = cluster_data['color']
+            self._recolor_meshes()
         else:
+            mesh_mat = Materials.mesh_material_vertex_colors if self.mesh_has_vertex_colors else Materials.mesh_material
             for name in self.mesh_names:
-                self.scene_widget.scene.modify_geometry_material(
-                    name, Materials.mesh_material)
+                self.scene_widget.scene.modify_geometry_material(name, mesh_mat)
 
     def show_viewpoints(self, show: bool):
         self.show_viewpoints_flag = show
@@ -1222,42 +1289,49 @@ class Visualizer:
             return False
         self.selected_mesh_idx = mesh_idx
         selected_name = f"mesh_{mesh_idx}"
+        opaque_mat = Materials.mesh_material_vertex_colors if self.mesh_has_vertex_colors else Materials.mesh_material
+        transparent_mat = Materials.mesh_material_vertex_colors_transparent if self.mesh_has_vertex_colors else Materials.mesh_material_transparent
         for name in self.mesh_names:
-            mat = Materials.mesh_material if name == selected_name else Materials.mesh_material_transparent
+            mat = opaque_mat if name == selected_name else transparent_mat
             self.scene_widget.scene.modify_geometry_material(name, mat)
         for region_name in self.region_names:
             is_selected = region_name.startswith(f"mesh_{mesh_idx}_")
-            self.scene.show_geometry(region_name, is_selected and self.show_regions_flag)
             for cluster_name in self._cluster_names_for_region(region_name):
-                show_c = is_selected and self.show_clusters_flag
-                self.scene.show_geometry(cluster_name, show_c)
                 self.scene.show_geometry(f"{cluster_name}_viewpoint",
-                                         show_c and self.show_viewpoints_flag)
+                                         is_selected and self.show_clusters_flag
+                                         and self.show_viewpoints_flag)
         return True
 
     def select_region(self, region_idx: int) -> bool:
-        """Highlight the selected region; hide others and show its clusters."""
+        """Highlight the selected region; others keep their colors but dimmed."""
         if region_idx < 0 or region_idx >= len(self.region_names):
             return False
-        # Reset previous region material
-        if self.selected_region_name in self.region_names:
-            self.scene_widget.scene.modify_geometry_material(
-                self.selected_region_name, Materials.point_cloud_material)
         selected_region_name = self.region_names[region_idx]
         self.selected_region_name = selected_region_name
-        self.scene_widget.scene.modify_geometry_material(
-            selected_region_name, Materials.selected_point_cloud_material)
+
+        # Paint all regions; dim non-selected, brighten selected
+        pcd_colors = np.asarray(self.point_cloud.colors)
+        pcd_colors[:] = [0.8, 0.8, 0.8]  # base gray
+        for region_name, region_data in self.geometries_dict.items():
+            if region_name == selected_region_name:
+                # Brighten selected region
+                color = np.clip(np.array(region_data['color']) * 1.3, 0, 1)
+            else:
+                # Dim non-selected regions
+                color = np.array(region_data['color']) * 0.4
+            pcd_colors[region_data['indices']] = color
+        self._recolor_meshes()
+
+        # Show/hide viewpoints for selected region
         for region_name in self.region_names:
             is_selected = (region_name == selected_region_name)
-            self.scene.show_geometry(region_name, is_selected)
             for cluster_name in self._cluster_names_for_region(region_name):
-                self.scene.show_geometry(cluster_name, is_selected and self.show_clusters_flag)
                 self.scene.show_geometry(f"{cluster_name}_viewpoint",
                                          is_selected and self.show_viewpoints_flag)
         return True
 
     def select_cluster(self, cluster_idx: int) -> bool:
-        """Highlight the selected cluster and its viewpoint."""
+        """Highlight the selected cluster and its viewpoint via mesh vertex coloring."""
         # Scope lookup to the currently selected region so the index is
         # relative to that region rather than the flat list of all clusters.
         if self.selected_region_name:
@@ -1266,16 +1340,26 @@ class Visualizer:
             region_clusters = self.cluster_names
         if cluster_idx < 0 or cluster_idx >= len(region_clusters):
             return False
-        # Reset previous cluster material
+        # Reset previous viewpoint material
         if self.selected_cluster_name in self.cluster_names:
-            self.scene_widget.scene.modify_geometry_material(
-                self.selected_cluster_name, Materials.cluster_material)
             self.scene_widget.scene.modify_geometry_material(
                 f"{self.selected_cluster_name}_viewpoint", Materials.viewpoint_material)
         selected_cluster_name = region_clusters[cluster_idx]
         self.selected_cluster_name = selected_cluster_name
-        self.scene_widget.scene.modify_geometry_material(
-            selected_cluster_name, Materials.selected_cluster_material)
+
+        # Paint all clusters; dim non-selected, brighten selected
+        pcd_colors = np.asarray(self.point_cloud.colors)
+        pcd_colors[:] = [0.8, 0.8, 0.8]  # base gray
+        for region_data in self.geometries_dict.values():
+            for cname, cdata in region_data.get('clusters', {}).items():
+                if cname == selected_cluster_name:
+                    color = np.clip(np.array(cdata['color']) * 1.3, 0, 1)
+                else:
+                    color = np.array(cdata['color']) * 0.4
+                pcd_colors[cdata['indices']] = color
+        self._recolor_meshes()
+
+        # Highlight selected viewpoint marker
         cluster_data = self._get_cluster_data(selected_cluster_name)
         if cluster_data and cluster_data.get('viewpoint_data'):
             self.scene_widget.scene.modify_geometry_material(
