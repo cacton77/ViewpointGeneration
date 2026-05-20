@@ -124,7 +124,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
             ]
         )
 
-
         # Planning Volume Marker Publisher
         self.create_planning_volume_mesh()
 
@@ -169,7 +168,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.optimize_traversal_client = self.create_client(
             OptimizeViewpointTraversal, f'{viewpoint_traversal_node_name}/optimize_traversal', callback_group=services_cb_group)
 
-
         self.set_data_path(self.get_parameter(
             'settings.data_path').get_parameter_value().string_value)
         # Load results FIRST so that set_mesh_file / set_point_cloud_file can
@@ -186,10 +184,11 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 'model.point_cloud.sampling.number_of_points').get_parameter_value().integer_value)
         self.pv_opacity = self.get_parameter(
             'settings.pv_opacity').get_parameter_value().double_value
-        
+
         self.set_selected_mesh_region_and_cluster(self.get_parameter('results.selected_mesh').get_parameter_value().integer_value,
-                                                 self.get_parameter('results.selected_region').get_parameter_value().integer_value,
-                                                 self.get_parameter('results.selected_cluster').get_parameter_value().integer_value)
+                                                  self.get_parameter(
+                                                      'results.selected_region').get_parameter_value().integer_value,
+                                                  self.get_parameter('results.selected_cluster').get_parameter_value().integer_value)
 
         self.add_on_set_parameters_callback(self.parameter_callback)
 
@@ -238,7 +237,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
         success, message = self.viewpoint_generation.set_mesh_file(
             mesh_file, mesh_units)
 
-
         if not success:
             mesh_file_param = rclpy.parameter.Parameter(
                 'model.mesh.file',
@@ -278,7 +276,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 self.set_point_cloud_file(
                     point_cloud_file='', point_cloud_units='mm')
 
-            # Create Bounding Box 
+            # Create Bounding Box
 
             min_x, min_y, min_z, max_x, max_y, max_z = self.viewpoint_generation.get_mesh_bounds()
 
@@ -357,8 +355,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
     def update_planning_scene(self):
         if not self.mesh:
-            self.get_logger().warning(
-                'No mesh loaded. Cannot update planning scene.')
+            # self.get_logger().warning(
+            #     'No mesh loaded. Cannot update planning scene.')
             return False
 
         # Pose of object relative to 'object_frame', updated by particle filter
@@ -851,20 +849,22 @@ class ViewpointGenerationNode(rclpy.node.Node):
             selected_region = 0
             number_of_clusters = 0
             selected_cluster = 0
-        
+
         else:
 
             number_of_meshes = len(self.viewpoint_generation.results['meshes'])
 
             if number_of_meshes == 0:
-                self.get_logger().warn("No meshes found in results. Cannot set selected region and viewpoint.")
+                self.get_logger().warn(
+                    "No meshes found in results. Cannot set selected region and viewpoint.")
                 selected_mesh = 0
                 number_of_regions = 0
                 selected_region = 0
                 number_of_clusters = 0
                 selected_cluster = 0
             if mesh_order_index >= number_of_meshes:
-                self.get_logger().warn(f"Selected mesh index {mesh_order_index} is out of bounds for results.")
+                self.get_logger().warn(
+                    f"Selected mesh index {mesh_order_index} is out of bounds for results.")
                 selected_mesh = 0
                 number_of_regions = 0
                 selected_region = 0
@@ -873,32 +873,40 @@ class ViewpointGenerationNode(rclpy.node.Node):
             else:
                 selected_mesh = mesh_order_index
 
-                number_of_regions = len(self.viewpoint_generation.results['meshes'][selected_mesh]['order'])
+                number_of_regions = len(
+                    self.viewpoint_generation.results['meshes'][selected_mesh]['order'])
 
                 if number_of_regions == 0:
-                    self.get_logger().warn("No mesh order found in results. Cannot set selected region and viewpoint.")
+                    self.get_logger().warn(
+                        "No mesh order found in results. Cannot set selected region and viewpoint.")
                     selected_region = 0
                     number_of_clusters = 0
                     selected_cluster = 0
                 elif region_order_index >= number_of_regions:
-                    self.get_logger().warn(f"Selected region index {region_order_index} is out of bounds for mesh {mesh_order_index}.")
+                    self.get_logger().warn(
+                        f"Selected region index {region_order_index} is out of bounds for mesh {mesh_order_index}.")
                     selected_region = 0
                     number_of_clusters = 0
                     selected_cluster = 0
                 else:
 
-                    selected_region = self.viewpoint_generation.results['meshes'][selected_mesh]['order'][region_order_index]
+                    selected_region = self.viewpoint_generation.results[
+                        'meshes'][selected_mesh]['order'][region_order_index]
 
-                    number_of_clusters = len(self.viewpoint_generation.results['meshes'][selected_mesh]['regions'][selected_region]['order'])
+                    number_of_clusters = len(
+                        self.viewpoint_generation.results['meshes'][selected_mesh]['regions'][selected_region]['order'])
 
                     if number_of_clusters == 0:
-                        self.get_logger().warn(f"No clusters found for region {selected_region}. Cannot set selected viewpoint.")
+                        self.get_logger().warn(
+                            f"No clusters found for region {selected_region}. Cannot set selected viewpoint.")
                         selected_cluster = 0
                     elif cluster_order_index >= number_of_clusters:
-                        self.get_logger().warn(f"Selected cluster index {cluster_order_index} is out of bounds for region {selected_region}.")
+                        self.get_logger().warn(
+                            f"Selected cluster index {cluster_order_index} is out of bounds for region {selected_region}.")
                         selected_cluster = 0
                     else:
-                        selected_cluster = self.viewpoint_generation.results['meshes'][selected_mesh]['regions'][selected_region]['order'][cluster_order_index]
+                        selected_cluster = self.viewpoint_generation.results['meshes'][
+                            selected_mesh]['regions'][selected_region]['order'][cluster_order_index]
 
         selected_mesh_param = rclpy.parameter.Parameter(
             'results.selected_mesh',
@@ -908,7 +916,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         selected_region_param = rclpy.parameter.Parameter(
             'results.selected_region',
             rclpy.Parameter.Type.INTEGER,
-            region_order_index 
+            region_order_index
         )
         selected_cluster_param = rclpy.parameter.Parameter(
             'results.selected_cluster',
@@ -945,15 +953,17 @@ class ViewpointGenerationNode(rclpy.node.Node):
         cluster_ir.step = 1
         selected_cluster_descriptor.integer_range = [cluster_ir]
 
-        self.set_parameters_blocked([selected_mesh_param, selected_region_param, selected_cluster_param])
-        self.set_descriptor('results.selected_mesh', selected_mesh_descriptor) 
-        self.set_descriptor('results.selected_region', selected_region_descriptor) 
-        self.set_descriptor('results.selected_cluster', selected_cluster_descriptor) 
+        self.set_parameters_blocked(
+            [selected_mesh_param, selected_region_param, selected_cluster_param])
+        self.set_descriptor('results.selected_mesh', selected_mesh_descriptor)
+        self.set_descriptor('results.selected_region',
+                            selected_region_descriptor)
+        self.set_descriptor('results.selected_cluster',
+                            selected_cluster_descriptor)
 
         self.mesh_order_index = mesh_order_index
         self.region_order_index = region_order_index
         self.cluster_order_index = cluster_order_index
-
 
     def parameter_callback(self, params):
         """ Callback for parameter changes.
@@ -1009,11 +1019,14 @@ class ViewpointGenerationNode(rclpy.node.Node):
             elif param.name == 'results.file':
                 success = self.set_results_file(param.value)
             elif param.name == 'results.selected_mesh':
-                self.set_selected_mesh_region_and_cluster(param.value, self.region_order_index, self.cluster_order_index)
+                self.set_selected_mesh_region_and_cluster(
+                    param.value, self.region_order_index, self.cluster_order_index)
             elif param.name == 'results.selected_region':
-                self.set_selected_mesh_region_and_cluster(self.mesh_order_index, param.value, self.cluster_order_index)
+                self.set_selected_mesh_region_and_cluster(
+                    self.mesh_order_index, param.value, self.cluster_order_index)
             elif param.name == 'results.selected_cluster':
-                self.set_selected_mesh_region_and_cluster(self.mesh_order_index, self.region_order_index, param.value)
+                self.set_selected_mesh_region_and_cluster(
+                    self.mesh_order_index, self.region_order_index, param.value)
             elif param.name == 'settings.data_path':
                 self.set_data_path(param.value)
             elif param.name == 'settings.pv_opacity':

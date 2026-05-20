@@ -16,13 +16,14 @@ def generate_launch_description():
                               description="Configuration file for viewpoint generation."),
         DeclareLaunchArgument("data_path", default_value="/data/ViewpointGenerationData",
                               description="Path to the data directory."),
-        DeclareLaunchArgument("teleop_config_file", default_value="xbox_controller.yaml",
+        DeclareLaunchArgument("controller", default_value="xbox_controller.yaml",
                               description="Controller configuration file for teleoperation."),
         DeclareLaunchArgument("admittance_config_file", default_value="admittance_control.yaml",
                               description="Configuration file for admittance control."),
     ]
 
-    cell_enabled = PythonExpression(["'", LaunchConfiguration("cell"), "' != 'false'"])
+    cell_enabled = PythonExpression(
+        ["'", LaunchConfiguration("cell"), "' != 'false'"])
 
     macro_camera_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -97,7 +98,7 @@ def generate_launch_description():
             ])
         ]),
         launch_arguments={
-            "teleop_config_file": LaunchConfiguration("teleop_config_file"),
+            "controller_config_file": LaunchConfiguration("controller"),
             "admittance_config_file": LaunchConfiguration("admittance_config_file")
         }.items(),
         condition=IfCondition(cell_enabled)
@@ -119,7 +120,7 @@ def generate_launch_description():
 
     return LaunchDescription(declared_arguments + [
         viewpoint_generation_launch,
-        macro_camera_launch,
+        # macro_camera_launch,
         task_planning_node,
         control_moveit_launch,
         viewpoint_traversal_launch,
