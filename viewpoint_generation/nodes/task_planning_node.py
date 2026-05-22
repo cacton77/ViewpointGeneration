@@ -22,6 +22,7 @@ from geometry_msgs.msg import PoseStamped
 from std_srvs.srv import Trigger, SetBool
 from controller_manager_msgs.srv import SwitchController
 from moveit_msgs.srv import ServoCommandType
+from moveit_msgs.msg import ServoStatus
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 from viewpoint_generation_interfaces.action import InspectRegion
 
@@ -191,7 +192,30 @@ class TaskPlanningNode(Node):
             callback_group=timer_callback_group
         )
 
+        # Gate the first switch_command_type call on Servo being ready.
+        # Servo publishes /servo_node/status only after its internal state
+        # machine has a valid robot state to seed the target pose from.
+        # Switching command type before that point latches a stale target
+        # (FK of initial_positions), causing the robot to drive to a fixed
+        # pose on startup regardless of joystick input.
+        self._initial_command_type_set = False
+        self._servo_status_sub = self.create_subscription(
+            ServoStatus,
+            f'{self.servo_node_name}/status',
+            self._on_servo_status_ready,
+            10,
+            callback_group=subscriber_callback_group,
+        )
+
+    def _on_servo_status_ready(self, _msg: ServoStatus):
+        if self._initial_command_type_set:
+            return
+        self._initial_command_type_set = True
+        self.get_logger().info(
+            'Servo status received; issuing initial switch_command_type(TWIST).')
         self.set_servo_command_type(command_type='TWIST')
+        self.destroy_subscription(self._servo_status_sub)
+        self._servo_status_sub = None
 
     # ============================================================================
     # INITIALIZATION AND PARAMETER HANDLING

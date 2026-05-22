@@ -398,7 +398,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         planning_scene.robot_state.is_diff = True
         planning_scene.is_diff = True
         planning_scene.object_colors.append(ObjectColor(
-            id='object', color=ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.5)))
+            id='object', color=ColorRGBA(r=1.0, g=0.0, b=0.0, a=0.25)))
         planning_scene.object_colors.append(ObjectColor(
             id='planning_volume', color=ColorRGBA(r=0.0, g=1.0, b=1.0, a=self.pv_opacity)))
 
