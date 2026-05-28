@@ -136,7 +136,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self._filtered_pose = Pose()
         self.create_subscription(
             PoseStamped,
-            '/particle_filter/pose',
+            '/tsdf_pose/pose',
             self._filtered_pose_cb,
             10)
 
