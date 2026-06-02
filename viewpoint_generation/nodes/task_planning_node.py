@@ -222,15 +222,19 @@ class TaskPlanningNode(Node):
     # ============================================================================
 
     def wait_for_services(self):
-        if not self.controller_manager_client.wait_for_service(timeout_sec=5.0):
+        # Timeout must comfortably exceed any TimerAction-delayed servo
+        # startup in move_group.launch.py; otherwise __init__ returns
+        # before the /servo_node/status gate is created and
+        # switch_command_type is never issued.
+        if not self.controller_manager_client.wait_for_service(timeout_sec=60.0):
             self.get_logger().error(
                 'Controller manager service not available, cannot switch controllers')
             return False
-        if not self.pause_servo_client.wait_for_service(timeout_sec=5.0):
+        if not self.pause_servo_client.wait_for_service(timeout_sec=60.0):
             self.get_logger().error(
                 'Start servo service not available, cannot start servo')
             return False
-        if not self.pause_servo_client.wait_for_service(timeout_sec=5.0):
+        if not self.pause_servo_client.wait_for_service(timeout_sec=60.0):
             self.get_logger().error(
                 'Pause servo service not available, cannot pause servo')
             return False
