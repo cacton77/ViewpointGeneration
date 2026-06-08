@@ -18,6 +18,7 @@ geometry_msgs/TwistStamped current_twist     # Current EOAT twist
 geometry_msgs/TwistStamped jacobian_twist
 geometry_msgs/AccelStamped current_accel    # Current EOAT accel (linear m/s^2, angular rad/s^2)
 geometry_msgs/PoseStamped  goal_pose         # EOAT desired pose (its own header)
+geometry_msgs/AccelStamped commanded_accel
 
 # Simulated / real IMU measurement
 sensor_msgs/Imu imu
