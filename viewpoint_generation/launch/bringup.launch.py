@@ -20,6 +20,11 @@ def generate_launch_description():
                               description="Controller configuration file for teleoperation."),
         DeclareLaunchArgument("admittance_config_file", default_value="admittance_control.yaml",
                               description="Configuration file for admittance control."),
+        DeclareLaunchArgument("rviz_config",
+                              default_value="/config/rviz/inspection_cell.rviz",
+                              description="Absolute path to an RViz config file for the whole "
+                              "inspection cell. Defaults to the file mounted into the container "
+                              "at /config/rviz/inspection_cell.rviz."),
     ]
 
     cell_enabled = PythonExpression(
@@ -54,6 +59,7 @@ def generate_launch_description():
         launch_arguments={
             "cell": LaunchConfiguration("cell"),
             "use_fake_hardware": LaunchConfiguration("sim"),
+            "rviz_config": LaunchConfiguration("rviz_config"),
         }.items(),
         condition=IfCondition(cell_enabled)
     )
