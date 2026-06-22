@@ -1309,16 +1309,15 @@ class Visualizer:
         selected_region_name = self.region_names[region_idx]
         self.selected_region_name = selected_region_name
 
-        # Paint all regions; dim non-selected, brighten selected
+        # Selected region keeps its full color; all others are significantly
+        # dimmed so the selection clearly stands out.
         pcd_colors = np.asarray(self.point_cloud.colors)
         pcd_colors[:] = [0.8, 0.8, 0.8]  # base gray
         for region_name, region_data in self.geometries_dict.items():
             if region_name == selected_region_name:
-                # Brighten selected region
-                color = np.clip(np.array(region_data['color']) * 1.3, 0, 1)
+                color = np.array(region_data['color'])
             else:
-                # Dim non-selected regions
-                color = np.array(region_data['color']) * 0.4
+                color = np.array(region_data['color']) * 0.15
             pcd_colors[region_data['indices']] = color
         self._recolor_meshes()
 
@@ -1347,15 +1346,18 @@ class Visualizer:
         selected_cluster_name = region_clusters[cluster_idx]
         self.selected_cluster_name = selected_cluster_name
 
-        # Paint all clusters; dim non-selected, brighten selected
+        # Color only the clusters within the selected region; leave every
+        # other region gray. The selected cluster keeps its full color and the
+        # region's other clusters are significantly dimmed.
         pcd_colors = np.asarray(self.point_cloud.colors)
         pcd_colors[:] = [0.8, 0.8, 0.8]  # base gray
-        for region_data in self.geometries_dict.values():
-            for cname, cdata in region_data.get('clusters', {}).items():
+        selected_region_data = self.geometries_dict.get(self.selected_region_name)
+        if selected_region_data is not None:
+            for cname, cdata in selected_region_data.get('clusters', {}).items():
                 if cname == selected_cluster_name:
-                    color = np.clip(np.array(cdata['color']) * 1.3, 0, 1)
+                    color = np.array(cdata['color'])
                 else:
-                    color = np.array(cdata['color']) * 0.4
+                    color = np.array(cdata['color']) * 0.15
                 pcd_colors[cdata['indices']] = color
         self._recolor_meshes()
 
