@@ -14,6 +14,7 @@ from matplotlib import colormaps
 from open3d.geometry import PointCloud, TriangleMesh
 
 from viewpoint_generation.region_growth import *
+from viewpoint_generation.partfield_segmentation import *
 from viewpoint_generation.fov_clustering import *
 from viewpoint_generation.viewpoint_projection import *
 
@@ -47,6 +48,10 @@ class ViewpointGeneration():
     viewer = o3d.visualization.Visualizer()
     is_running = False
 
+    # Segmentation algorithm used to partition the surface into regions.
+    # One of: 'region_growth' (curvature-based) or 'partfield' (PartField parts).
+    segmentation_algorithm = 'region_growth'
+
     region_growing_config = RegionGrowingConfig(
         seed_threshold=0.1,
         region_threshold=0.2,
@@ -54,6 +59,9 @@ class ViewpointGeneration():
         normal_angle_threshold=np.pi / 3,
         curvature_threshold=0.1,
         knn_neighbors=30
+    )
+    partfield_config = PartFieldSegmentationConfig(
+        num_parts=12,
     )
     fc_config = FOVClusteringConfig(
         fov_diameter=0.03,
@@ -73,6 +81,7 @@ class ViewpointGeneration():
     )
 
     rg = RegionGrowing(region_growing_config)
+    pf = PartFieldSegmentation(partfield_config)
     fc = FOVClustering(fc_config)
     vp = ViewpointProjection(vp_config)
 
@@ -287,6 +296,12 @@ class ViewpointGeneration():
                 'units': point_cloud_units,
                 'points': len(point_cloud.points)
             }
+            # A different point cloud invalidates any existing segmentation —
+            # regions/clusters/noise index into the previous cloud. Drop them
+            # so a later save can't pair the new cloud with stale indices.
+            self.results['meshes'][0]['regions'] = []
+            self.results['meshes'][0]['order'] = []
+            self.results['meshes'][0]['noise_points'] = []
             self.results_file = None
 
         if self.visualize:
@@ -352,6 +367,15 @@ class ViewpointGeneration():
             o3d.io.write_point_cloud(point_cloud_file, point_cloud)
         else:
             point_cloud = o3d.io.read_point_cloud(point_cloud_file)
+
+        # Resampling invalidates any existing segmentation: regions/clusters/
+        # noise index into the previously loaded point cloud. Clear the results
+        # so stale data is never re-saved or visualized against the new cloud.
+        self.results_file = None
+        for mesh in self.results.get('meshes', []):
+            mesh['regions'] = []
+            mesh['order'] = []
+            mesh['noise_points'] = []
 
         # # Update pcd state directly without re-initializing results
         # self.point_cloud = point_cloud
@@ -452,6 +476,9 @@ class ViewpointGeneration():
         if field_name in self.region_growing_config.to_dict():
             return self._set_config_param(
                 self.region_growing_config, self.rg, field_name, value)
+        if field_name in self.partfield_config.to_dict():
+            return self._set_config_param(
+                self.partfield_config, self.pf, field_name, value)
         if field_name in self.fc_config.to_dict():
             return self._set_config_param(
                 self.fc_config, self.fc, field_name, value)
@@ -459,6 +486,20 @@ class ViewpointGeneration():
             return self._set_config_param(
                 self.vp_config, self.vp, field_name, value)
         return False, f'Unknown algorithm config field: \'{field_name}\'.'
+
+    def set_segmentation_algorithm(self, algorithm):
+        """
+        Select the algorithm used by region_growth() to partition the surface.
+        Args:
+            algorithm (str): 'region_growth' or 'partfield'.
+        Returns:
+            tuple: (bool, str) success flag and message.
+        """
+        valid = ('region_growth', 'partfield')
+        if algorithm not in valid:
+            return False, f'Unknown segmentation algorithm: \'{algorithm}\'. Valid: {valid}.'
+        self.segmentation_algorithm = algorithm
+        return True, f'Segmentation algorithm set to \'{algorithm}\'.'
 
     def set_camera_parameters(self, fov_height, fov_width, dof, focal_distance):
         """
@@ -634,9 +675,24 @@ class ViewpointGeneration():
 
         return max_x, max_y, max_z
     
+    def _segment_surface(self):
+        """
+        Partition the surface into regions using the selected algorithm.
+        Returns:
+            tuple: (regions, noise_points). Each region is a list of point
+            indices into self.point_cloud; noise_points is a list of unassigned
+            point indices.
+        """
+        if self.segmentation_algorithm == 'partfield':
+            if self.mesh is None:
+                raise ValueError('PartField segmentation requires a loaded mesh.')
+            return self.pf.segment(self.point_cloud, self.mesh)
+        return self.rg.segment(self.point_cloud)
+
     def region_growth(self):
 
-        if self.curvatures_file is None:
+        # Curvature is only needed by the curvature-based region-growth algorithm.
+        if self.segmentation_algorithm != 'partfield' and self.curvatures_file is None:
             success, msg = self.estimate_curvature()
             if not success:
                 return False, msg
@@ -647,7 +703,7 @@ class ViewpointGeneration():
 
             self.results['meshes'][i]['regions'] = []
 
-            regions, noise_points = self.rg.segment(self.point_cloud)
+            regions, noise_points = self._segment_surface()
 
             for j, region in enumerate(regions):
                 self.results['meshes'][i]['regions'].append({'points': region,

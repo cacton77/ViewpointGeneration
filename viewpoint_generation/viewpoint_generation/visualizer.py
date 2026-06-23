@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import colorsys
 import copy
 import enum
 import json
@@ -34,6 +35,24 @@ class ClusterViewpointMode(enum.Enum):
 # ─────────────────────────────────────────────────────────────────────────────
 # Geometry helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _resolve_order_indices(order, selected_algorithm=None):
+    """Resolve a region's traversal order into a flat list of cluster indices.
+
+    ``order`` may be a plain list (identity / pre-traversal order) or, after
+    traversal optimization, a dict keyed by TSP algorithm name. For a dict,
+    prefer ``selected_algorithm`` (the results file's
+    ``selected_traversal_algorithm``); otherwise fall back to the first
+    available algorithm's path.
+    """
+    if isinstance(order, dict):
+        if not order:
+            return []
+        if selected_algorithm in order:
+            return order[selected_algorithm]
+        return next(iter(order.values()))
+    return order
+
 
 def _filter_large_triangles(mesh, method='iqr', threshold_multiplier=1.5):
     """
@@ -747,11 +766,7 @@ class Visualizer:
             self.scene.remove_geometry("point_cloud")
             self.scene.remove_geometry("curvatures")
 
-            self.clear_regions()
-            self.clear_clusters()
-            self.clear_viewpoints()
-            self.clear_paths()
-            self.clear_region_view_manifolds()
+            self._clear_result_geometry()
 
             self.add_geometry("mesh", mesh, Materials.mesh_material)
 
@@ -787,11 +802,7 @@ class Visualizer:
             self.scene.remove_geometry("point_cloud")
             self.scene.remove_geometry("curvatures")
 
-            self.clear_regions()
-            self.clear_clusters()
-            self.clear_viewpoints()
-            self.clear_paths()
-            self.clear_region_view_manifolds()
+            self._clear_result_geometry()
 
             self.add_geometry("point_cloud", pcd, Materials.point_cloud_material)
             self.point_cloud = pcd
@@ -820,11 +831,7 @@ class Visualizer:
             self.scene.remove_geometry("curvatures")
             self.scene.remove_geometry("regions")
 
-            self.clear_regions()
-            self.clear_clusters()
-            self.clear_viewpoints()
-            self.clear_region_view_manifolds()
-            self.clear_paths()
+            self._clear_result_geometry()
 
             self.add_geometry("curvatures", curvatures_cloud,
                               Materials.point_cloud_material)
@@ -851,14 +858,34 @@ class Visualizer:
         results_dict = json.load(open(file_path, 'r'))
         self.results_dict = results_dict
 
+        # After traversal optimization each region's 'order' is a dict keyed by
+        # algorithm name; this selects which algorithm's path to render.
+        selected_algorithm = results_dict.get('selected_traversal_algorithm')
+
         # ── Load mesh and point cloud from the results dict ───────────────────
         bbox = None
         scale_map = {'mm': 1.0, 'cm': 10.0, 'm': 1000.0, 'in': 25.4, 'ft': 304.8}
 
-        # Clear previous mesh geometries (including legacy "mesh")
+        # Loading a new results file invalidates everything from the previous
+        # one, so remove all downstream geometry before rebuilding: meshes, the
+        # point cloud, curvatures, and every region/cluster/viewpoint/path/view
+        # manifold. Without this a stale point cloud (and viewpoints, paths,
+        # etc.) from the last file lingers when the new file has none of its own
+        # — e.g. when a bare mesh is loaded and its results file has no point
+        # cloud or regions yet. _clear_result_geometry must run while the name
+        # lists still hold the previous file's names so its removals take effect.
         self.scene.remove_geometry("mesh")
         for name in self.mesh_names:
             self.scene.remove_geometry(name)
+        self.scene.remove_geometry("point_cloud")
+        self.scene.remove_geometry("curvatures")
+        self._clear_result_geometry()
+        self.point_cloud            = None
+        self.noise_indices          = []
+        self.meshes                 = {}
+        self.mesh_vertex_to_pcd     = {}
+        self.mesh_has_vertex_colors = False
+        self.geometries_dict        = {}
 
         new_mesh_names = []
         new_meshes     = {}
@@ -909,7 +936,31 @@ class Visualizer:
             self.point_cloud.paint_uniform_color((1, 1, 1))
 
             region_order = mesh_entry.get('order', [])
-            all_noise_points.extend(mesh_entry.get('noise_points', []))
+
+            # Guard against a stale results file: the region/noise indices may
+            # reference a point cloud with a different number of points than the
+            # one currently loaded (e.g. the results were generated before the
+            # cloud was resampled to a smaller size). Indexing out of bounds
+            # would otherwise crash the GUI process.
+            n_points = len(self.point_cloud.points)
+            max_index = -1
+            for region_id in region_order:
+                region_points = mesh_entry['regions'][region_id].get('points', [])
+                if len(region_points) > 0:
+                    max_index = max(max_index, int(np.max(region_points)))
+            mesh_noise_points = mesh_entry.get('noise_points', [])
+            if len(mesh_noise_points) > 0:
+                max_index = max(max_index, int(np.max(mesh_noise_points)))
+            if max_index >= n_points:
+                print(
+                    f"Results file '{file_path}' references point index "
+                    f"{max_index} but the loaded point cloud '{pcd_file}' has "
+                    f"only {n_points} points. The results were likely generated "
+                    "from a different point cloud (e.g. before resampling). "
+                    "Skipping visualization.")
+                return
+
+            all_noise_points.extend(mesh_noise_points)
 
             for region_id in region_order:
                 region_name = f"mesh_{mesh_idx}_region_{region_id}"
@@ -934,7 +985,8 @@ class Visualizer:
 
                 if region_dict.get('clusters'):
                     show_clusters = True
-                    cluster_order = region_dict['order']
+                    cluster_order = _resolve_order_indices(
+                        region_dict['order'], selected_algorithm)
                     traversal_order.append(cluster_order)
                     new_geometries_dict[region_name]['clusters'] = {}
 
@@ -942,7 +994,20 @@ class Visualizer:
                         cluster_name = f"{region_name}_cluster_{i}"
                         cluster_dict = region_dict['clusters'][cluster_id]
 
-                        cluster_color = region_color + 0.1 * (np.random.rand(3) - 0.5)
+                        # Derive each cluster's color from the region hue but
+                        # spread brightness/saturation widely so clusters within
+                        # a region contrast strongly. The golden-ratio sequence
+                        # keeps consecutive (spatially adjacent) clusters far
+                        # apart in color rather than forming a smooth gradient.
+                        h, s, v = colorsys.rgb_to_hsv(*region_color)
+                        golden = 0.6180339887498949
+                        frac_v = (i * golden) % 1.0
+                        frac_h = (i * golden * 2.0) % 1.0
+                        h_var = (h + 0.15 * (frac_h - 0.5)) % 1.0   # hue ±0.075
+                        s_var = float(np.clip(max(s, 0.5), 0.0, 1.0))
+                        v_var = 0.45 + 0.5 * frac_v                 # value 0.45..0.95
+                        cluster_color = np.array(
+                            colorsys.hsv_to_rgb(h_var, s_var, v_var))
                         cluster_color = np.clip(cluster_color, 0, 1)
 
                         # Convert cluster sub-indices (relative to region) to global indices.
@@ -1026,12 +1091,6 @@ class Visualizer:
         if all_noise_points:
             pcd_colors = np.asarray(self.point_cloud.colors)
             pcd_colors[all_noise_points] = [1.0, 0.0, 0.0]
-
-        self.clear_regions()
-        self.clear_clusters()
-        self.clear_viewpoints()
-        self.clear_region_view_manifolds()
-        self.clear_paths()
 
         self.mesh_names      = new_mesh_names
         self.region_names    = []
@@ -1149,6 +1208,21 @@ class Visualizer:
 
     # ── Clear helpers ─────────────────────────────────────────────────────────
 
+    def _clear_result_geometry(self):
+        """Remove all region/cluster/viewpoint/path/view-manifold geometry and
+        reset the tracking lists.
+
+        The geometry-removing clears (viewpoints, paths, view manifolds) iterate
+        the cluster/region name lists, so they must run *before* clear_clusters
+        and clear_regions empty those lists — otherwise nothing is removed and
+        stale geometry from the previous file lingers in the scene.
+        """
+        self.clear_viewpoints()
+        self.clear_region_view_manifolds()
+        self.clear_paths()
+        self.clear_clusters()
+        self.clear_regions()
+
     def clear_regions(self):
         self.region_names = []
 
@@ -1259,12 +1333,14 @@ class Visualizer:
     def show_region_view_manifolds(self, show: bool):
         self.show_region_view_manifolds_flag = show
         for name in self.region_names:
-            self.scene.show_geometry(f"{name}_view_mesh", show)
+            is_selected = (name == self.selected_region_name)
+            self.scene.show_geometry(f"{name}_view_mesh", show and is_selected)
 
     def show_path(self, show: bool):
         self.show_path_flag = show
         for name in self.region_names:
-            self.scene.show_geometry(f"{name}_path", show)
+            is_selected = (name == self.selected_region_name)
+            self.scene.show_geometry(f"{name}_path", show and is_selected)
 
     # ── Selection ─────────────────────────────────────────────────────────────
 
@@ -1321,12 +1397,18 @@ class Visualizer:
             pcd_colors[region_data['indices']] = color
         self._recolor_meshes()
 
-        # Show/hide viewpoints for selected region
+        # Show/hide viewpoints, view manifold, and path for the selected region
         for region_name in self.region_names:
             is_selected = (region_name == selected_region_name)
             for cluster_name in self._cluster_names_for_region(region_name):
                 self.scene.show_geometry(f"{cluster_name}_viewpoint",
                                          is_selected and self.show_viewpoints_flag)
+            self.scene.show_geometry(
+                f"{region_name}_view_mesh",
+                is_selected and self.show_region_view_manifolds_flag)
+            self.scene.show_geometry(
+                f"{region_name}_path",
+                is_selected and self.show_path_flag)
         return True
 
     def select_cluster(self, cluster_idx: int) -> bool:

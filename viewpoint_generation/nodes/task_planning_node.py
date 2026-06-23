@@ -27,6 +27,23 @@ from viewpoint_generation_interfaces.srv import MoveToPoseStamped
 from viewpoint_generation_interfaces.action import InspectRegion
 
 
+def _resolve_order_indices(order, selected_algorithm=None):
+    """Resolve a region's traversal order into a flat list of cluster indices.
+
+    ``order`` is a plain list before traversal optimization and a dict keyed by
+    TSP algorithm name afterwards. For a dict, prefer ``selected_algorithm``
+    (the results file's ``selected_traversal_algorithm``); otherwise fall back
+    to the first available algorithm's path.
+    """
+    if isinstance(order, dict):
+        if not order:
+            return []
+        if selected_algorithm in order:
+            return order[selected_algorithm]
+        return next(iter(order.values()))
+    return order
+
+
 class State(Enum):
     INITIALIZING = 0
     ACTIVATING_SERVO_CONTROL = 1
@@ -274,17 +291,20 @@ class TaskPlanningNode(Node):
         filepath = os.path.expandvars(filepath)
 
         with open(filepath, 'r') as f:
-            regions_dict = json.load(f)
+            results_dict = json.load(f)
 
-        region_order = regions_dict['order']
+        mesh_dict = results_dict['meshes'][0]
+        region_order = mesh_dict['order']
+        selected_algorithm = results_dict.get('selected_traversal_algorithm')
 
         try:
             for region_id in region_order:
-                region_dict = regions_dict['meshes'][0]['regions'][str(region_id)]
-                cluster_order = region_dict['order']
+                region_dict = mesh_dict['regions'][region_id]
+                cluster_order = _resolve_order_indices(
+                    region_dict['order'], selected_algorithm)
                 region_viewpoints = []
                 for cluster_id in cluster_order:
-                    cluster_dict = region_dict['clusters'][str(cluster_id)]
+                    cluster_dict = region_dict['clusters'][cluster_id]
                     if not 'viewpoint' in cluster_dict:
                         self.get_logger().warning(
                             f'No viewpoint found in cluster {cluster_id}')

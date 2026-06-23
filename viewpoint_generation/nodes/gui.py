@@ -117,7 +117,7 @@ class GUIClient():
         def on_mouse(event):
             # Consume events that land on the side panels so they don't
             # reach the camera controller.
-            for layout in [self.main_layout, self.action_layout]:
+            for layout in [self.main_layout]:
                 frame = layout.frame
                 if (frame.get_left() <= event.x <= frame.get_right() and
                         frame.get_top()  <= event.y <= frame.get_bottom()):
@@ -623,17 +623,10 @@ class GUIClient():
         self.main_layout.background_color = Materials.tab_control_background_color
         self.main_layout = self.main_layout  # alias used by _on_layout and on_mouse
 
-        self.action_layout = gui.TabControl()
-        self.action_layout.background_color = Materials.tab_control_background_color
-
         # Create tabs for each top-level key
         for node_name, tab_data in self.parameters_dict.items():
             self.parameter_widgets[node_name] = {}
-            if node_name in ['viewpoint_traversal', 'task_planning']:
-                action_tab_panel = self.create_action_tab_panel(node_name, tab_data, em)
-                self.action_layout.add_tab(
-                    node_name.title().replace('_', ' '), action_tab_panel)
-            elif node_name == 'gui':
+            if node_name == 'gui':
                 continue
             else:
                 main_tab_panel = self.create_main_tab_panel(node_name, tab_data, em)
@@ -641,24 +634,7 @@ class GUIClient():
                     node_name.title().replace('_', ' '), main_tab_panel)
 
         self.window.add_child(self.main_layout)
-        self.window.add_child(self.action_layout)
     
-    def create_action_tab_panel(self, node_name, tab_data, em):
-        """Create a panel for action tabs - NO scrolling, just buttons"""
-        panel = gui.Vert(0.5 * em, gui.Margins(0.25 * em))
-        panel.background_color = Materials.panel_color
-
-        for section_name, section_data in tab_data.items():
-            if section_name in ['servo_controllers', 'trajectory_controllers', 'servo_node_name', 'controller_manager_name', 'viewpoints_file', 'data_path']:
-                continue
-            if isinstance(section_data, dict):
-                if section_name in ['selected_region', 'selected_cluster']:
-                    widget_grid = self.create_parameter_widget(node_name, section_data, em)
-                    panel.add_child(widget_grid)
-                    
-
-        return panel
-
     def create_main_tab_panel(self, node_name, tab_data, em):
         """Create a scrollable panel for a tab - ONLY scrolling here"""
         # Create scrollable area directly - no intermediate containers
@@ -670,6 +646,17 @@ class GUIClient():
         content = self.create_nested_content(
             node_name, node_name, tab_data, em)
         content.background_color = Materials.content_color
+
+        # The traversal optimization controls (tsp_algorithm, compare, etc.) are
+        # top-level params with no nested section to host a button, so attach the
+        # action button at the tab level — mirroring the FOV clustering and
+        # viewpoint projection buttons, which call their node's service.
+        if node_name == 'viewpoint_traversal':
+            button = gui.Button("Optimize Traversal")
+            button.background_color = Materials.button_background_color
+            button.set_on_clicked(lambda: self.ros_thread.optimize_traversal())
+            content.add_child(button)
+
         scroll_area.add_child(content)
 
         return scroll_area
@@ -947,7 +934,7 @@ class GUIClient():
 
             elif 'tsp_algorithm' in param_name.lower():
                 widget = gui.Combobox()
-                algorithms = ['greedy', '2opt', '3opt', 'LKH'] # TSP algorithms
+                algorithms = ['greedy', '2opt', '3opt', 'LKH', 'ILS'] # TSP algorithms
                 for algorithm in algorithms:
                     widget.add_item(algorithm)
                 widget.selected_index = algorithms.index(param_value)
@@ -958,7 +945,10 @@ class GUIClient():
 
             elif 'compare_algorithms' in param_name.lower():
                 widget = gui.Combobox()
-                algorithms = ['2opt', '3opt', 'LKH'] # compare TSP algorithms
+                # '-- none --' is the sentinel meaning "no comparison" (the
+                # parameter's default); it must be selectable or building the
+                # combo from that default value raises ValueError.
+                algorithms = ['-- none --', 'greedy', '2opt', '3opt', 'LKH', 'ILS'] # compare TSP algorithms
                 for algorithm in algorithms:
                     widget.add_item(algorithm)
                 widget.selected_index = algorithms.index(param_value)
@@ -981,6 +971,17 @@ class GUIClient():
             elif 'normal_estimation_algorithm' in param_name.lower():
                 widget = gui.Combobox()
                 algorithms = ['PCA', 'RANSAC']
+                for algorithm in algorithms:
+                    widget.add_item(algorithm)
+                widget.selected_index = algorithms.index(param_value)
+                widget.set_on_selection_changed(
+                    lambda selected_text, selected_index: self.on_parameter_changed(
+                        node_name, param_name, selected_text))
+                row.add_child(widget)  # ADD HERE
+
+            elif 'segmentation_algorithm' in param_name.lower():
+                widget = gui.Combobox()
+                algorithms = ['region_growth', 'partfield']
                 for algorithm in algorithms:
                     widget.add_item(algorithm)
                 widget.selected_index = algorithms.index(param_value)
@@ -1233,15 +1234,6 @@ class GUIClient():
             r.y + margin + main_height + margin,
             main_width,
             main_height)
-
-        vpt_height = self.action_layout.calc_preferred_size(
-            layout_context, gui.Widget.Constraints()).height
-        vpt_width = r.width - main_width - 3 * margin
-        self.action_layout.frame = gui.Rect(
-            margin,
-            r.y + r.height - vpt_height - margin,
-            vpt_width,
-            vpt_height)
 
         # Ensure a redraw follows every layout pass so frames set above are
         # actually rendered.  Without this the draw scheduled by the tick event

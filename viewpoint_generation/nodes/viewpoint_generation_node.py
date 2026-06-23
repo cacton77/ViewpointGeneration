@@ -26,6 +26,23 @@ from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObj
 from viewpoint_generation_interfaces.srv import OptimizeViewpointTraversal
 
 
+def _resolve_order_indices(order, selected_algorithm=None):
+    """Resolve a region's traversal order into a flat list of cluster indices.
+
+    ``order`` is a plain list before traversal optimization and a dict keyed by
+    TSP algorithm name afterwards. For a dict, prefer ``selected_algorithm``
+    (the results file's ``selected_traversal_algorithm``); otherwise fall back
+    to the first available algorithm's path.
+    """
+    if isinstance(order, dict):
+        if not order:
+            return []
+        if selected_algorithm in order:
+            return order[selected_algorithm]
+        return next(iter(order.values()))
+    return order
+
+
 class ViewpointGenerationNode(rclpy.node.Node):
 
     block_next_param_callback = False
@@ -96,9 +113,26 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     if not success:
                         self.get_logger().error(message)
 
+        # Segmentation algorithm selector: 'region_growth' or 'partfield'.
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('regions.segmentation_algorithm', 'region_growth'),
+            ]
+        )
+        success, message = self.viewpoint_generation.set_segmentation_algorithm(
+            self.get_parameter('regions.segmentation_algorithm').value)
+        if not success:
+            self.get_logger().error(message)
+
         _auto_declare_parameters(
             prefix='regions.region_growth.',
             config_dict=self.viewpoint_generation.region_growing_config.to_dict(),
+            excluded=set(),
+        )
+        _auto_declare_parameters(
+            prefix='regions.partfield.',
+            config_dict=self.viewpoint_generation.partfield_config.to_dict(),
             excluded=set(),
         )
         _auto_declare_parameters(
@@ -893,8 +927,10 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     selected_region = self.viewpoint_generation.results[
                         'meshes'][selected_mesh]['order'][region_order_index]
 
-                    number_of_clusters = len(
-                        self.viewpoint_generation.results['meshes'][selected_mesh]['regions'][selected_region]['order'])
+                    cluster_order = _resolve_order_indices(
+                        self.viewpoint_generation.results['meshes'][selected_mesh]['regions'][selected_region]['order'],
+                        self.viewpoint_generation.results.get('selected_traversal_algorithm'))
+                    number_of_clusters = len(cluster_order)
 
                     if number_of_clusters == 0:
                         self.get_logger().warn(
@@ -905,8 +941,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                             f"Selected cluster index {cluster_order_index} is out of bounds for region {selected_region}.")
                         selected_cluster = 0
                     else:
-                        selected_cluster = self.viewpoint_generation.results['meshes'][
-                            selected_mesh]['regions'][selected_region]['order'][cluster_order_index]
+                        selected_cluster = cluster_order[cluster_order_index]
 
         selected_mesh_param = rclpy.parameter.Parameter(
             'results.selected_mesh',
@@ -1006,7 +1041,15 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     success = self.set_point_cloud_file(pcd_file, param.value)
             elif param.name == 'model.point_cloud.sampling.number_of_points':
                 success = self.set_sampling_number_of_points(param.value)
+            elif param.name == 'regions.segmentation_algorithm':
+                success, message = self.viewpoint_generation.set_segmentation_algorithm(
+                    param.value)
+                if success:
+                    self.get_logger().info(message)
+                else:
+                    self.get_logger().error(message)
             elif (param.name.startswith('regions.region_growth.') or
+                  param.name.startswith('regions.partfield.') or
                   param.name.startswith('regions.fov_clustering.') or
                   param.name.startswith('viewpoints.projection.')):
                 field_name = param.name.split('.')[-1]

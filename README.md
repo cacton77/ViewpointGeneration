@@ -12,8 +12,10 @@ The pipeline follows these stages:
 
 1. **Load CAD Model** -- Import an STL/OBJ mesh with unit conversion
 2. **Sample Point Cloud** -- Poisson disk sampling of the mesh surface
-3. **Estimate Curvature** -- Per-point curvature via KNN covariance eigenvalues
-4. **Region Growing** -- Segment the point cloud into contiguous surface regions based on normal similarity and curvature
+3. **Estimate Curvature** -- Per-point curvature via KNN covariance eigenvalues (region-growth algorithm only)
+4. **Surface Segmentation** -- Segment the surface into regions. Two interchangeable algorithms (selected via `regions.segmentation_algorithm`):
+   - `region_growth` -- contiguous regions based on normal similarity and curvature
+   - `partfield` -- semantic parts from [PartField](https://github.com/nv-tlabs/PartField), mapped from per-face labels onto the sampled point cloud (requires GPU + PartField mounted at `/models/PartField`)
 5. **FOV Clustering** -- Subdivide each region into clusters that fit within the camera's field of view and depth of field, using K-means with Bayesian optimization for cluster count
 6. **Project Viewpoints** -- Compute a camera pose (position + orientation) for each cluster at the configured focal distance, with ray-cast occlusion checking
 7. **Optimize Traversal** -- Solve a TSP to order viewpoints for efficient robot motion
@@ -27,6 +29,7 @@ viewpoint_generation/
 ├── viewpoint_generation/           # Core Python library
 │   ├── viewpoint_generation.py     # Main ViewpointGeneration class
 │   ├── region_growth.py            # Region growing segmentation
+│   ├── partfield_segmentation.py   # PartField part segmentation (GPU, subprocess)
 │   ├── fov_clustering.py           # Field-of-view clustering
 │   ├── viewpoint_projection.py     # Viewpoint pose computation
 │   ├── visualizer.py               # Open3D visualization
@@ -63,6 +66,13 @@ Listed in `requirements.txt`:
 - matplotlib
 - requests
 
+For the optional `partfield` segmentation algorithm: a CUDA GPU and the
+[PartField](https://github.com/nv-tlabs/PartField) checkout mounted at
+`/models/PartField` (with its `model/model_objaverse.ckpt` checkpoint and
+PartField's own dependencies — torch, lightning, torch-scatter, etc.). In this
+repo's Docker image these are installed via `docker/requirements.txt` and the
+mount is provided by `docker-compose.yaml`.
+
 ### ROS 2
 
 - sensor_msgs
@@ -85,8 +95,9 @@ vg.set_mesh_file("part.stl", units="mm")
 # Configure and run pipeline
 vg.set_sampling_number_of_points(10000)
 vg.sample_point_cloud()
-vg.estimate_curvature()
-vg.region_growth()
+vg.estimate_curvature()        # skipped automatically when using PartField
+# vg.set_segmentation_algorithm("partfield")   # optional: use PartField instead
+vg.region_growth()             # runs the selected segmentation algorithm
 vg.fov_clustering()
 vg.project_viewpoints()
 
@@ -108,6 +119,21 @@ All algorithm parameters are exposed as dataclass configs with sensible defaults
 | `normal_angle_threshold` | pi/3 | Maximum normal deviation (radians) for region membership |
 | `curvature_threshold` | 0.1 | Maximum curvature difference for region membership |
 | `knn_neighbors` | 30 | K for nearest-neighbor queries |
+
+**PartFieldSegmentationConfig** (used when `segmentation_algorithm == 'partfield'`)
+
+| Parameter | Default | Description |
+|---|---|---|
+| `num_parts` | 12 | Number of parts to segment the mesh into |
+| `use_agglo` | True | Agglomerative clustering (spatially connected parts) instead of KMeans |
+| `option` | 0 | Face-adjacency graph for agglomerative clustering: 0=naive, 1=face-MST, 2=cc-MST |
+| `with_knn` | False | Augment the face-adjacency graph with kNN connections (agglomerative only) |
+
+PartField runs as a subprocess (`partfield_inference.py` then
+`run_part_clustering.py`) against an exported copy of the loaded mesh. Per-face
+part labels are mapped to the sampled point cloud by nearest triangle. Mesh
+preprocessing/remeshing is left disabled so face ordering is preserved. Note:
+PartField produces no noise points (every face is assigned a part).
 
 **FOVClusteringConfig**
 
@@ -147,8 +173,9 @@ Wraps the core library, exposing each pipeline stage as a ROS service and all co
 
 **Parameters:**
 
-All `RegionGrowingConfig`, `FOVClusteringConfig`, and `ViewpointProjectionConfig` fields are declared as ROS parameters with type information and valid ranges. Additional parameters:
+All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`, and `ViewpointProjectionConfig` fields are declared as ROS parameters with type information and valid ranges (prefixed `regions.region_growth.`, `regions.partfield.`, `regions.fov_clustering.`, and `viewpoints.projection.` respectively). Additional parameters:
 
+- `regions.segmentation_algorithm` -- Surface segmentation algorithm: `region_growth` (default) or `partfield`
 - `model.mesh.file` -- Path to the mesh file
 - `model.mesh.units` -- Mesh units (`m`, `cm`, `mm`, `in`)
 - `model.point_cloud.file` -- Path to a pre-sampled point cloud
@@ -221,6 +248,11 @@ Additional arguments:
 
 Results are saved with the naming convention `{N_regions}_regions_{N_clusters}_clusters_{timestamp}.json`:
 
+Each mesh holds a `regions` **list**; each region holds a `clusters` **list**.
+The `"0"`, `"1"` keys shown below are list indices. A region's `order` is a
+list of cluster indices (identity order) until traversal optimization runs, at
+which point it becomes a dict keyed by TSP algorithm name (see below).
+
 ```json
 {
   "meshes": [
@@ -235,11 +267,11 @@ Results are saved with the naming convention `{N_regions}_regions_{N_clusters}_c
         "units": "m",
         "num_points": 10000
       },
-      "regions": {
-        "0": {
+      "regions": [
+        {
           "points": [8994, 199, 2379],
-          "clusters": {
-            "0": {
+          "clusters": [
+            {
               "points": [1234, 5678],
               "viewpoint": {
                 "origin": [0.01, 0.02, 0.03],
@@ -248,10 +280,10 @@ Results are saved with the naming convention `{N_regions}_regions_{N_clusters}_c
                 "orientation": [0.0, 0.0, 0.0, 1.0]
               }
             }
-          },
-          "order": [0, 1, 2]
+          ],
+          "order": {"greedy": [0, 2, 1], "LKH": [0, 1, 2]}
         }
-      },
+      ],
       "order": [0, 1, 2],
       "noise_points": [100, 200],
       "camera_config": {
@@ -260,7 +292,8 @@ Results are saved with the naming convention `{N_regions}_regions_{N_clusters}_c
         "focal_distance": 0.3
       }
     }
-  ]
+  ],
+  "selected_traversal_algorithm": "LKH"
 }
 ```
 
@@ -269,4 +302,16 @@ Results are saved with the naming convention `{N_regions}_regions_{N_clusters}_c
 - `position` -- Camera position (centroid projected along normal by `focal_distance`)
 - `direction` -- Surface normal (unit vector, points outward from surface)
 - `orientation` -- Camera orientation as quaternion (xyzw)
-- `order` -- Optimized traversal order for regions and clusters
+
+**Traversal order:**
+- Mesh-level `order` -- Region visit order (a list of region indices).
+- Region-level `order` -- Cluster visit order *within* that region. Out of FOV
+  clustering this is a plain list (identity order). After `optimize_traversal`
+  runs it becomes a **dict keyed by TSP algorithm name**, with each value the
+  optimized list of cluster indices for that algorithm. Multiple algorithms
+  accumulate in the same dict across runs (e.g. `{"greedy": [...], "LKH": [...]}`),
+  so the different optimization results are stored together rather than in a
+  separate file.
+- `selected_traversal_algorithm` -- Top-level key naming which algorithm's path
+  the visualizer and motion consumers should follow when a region's `order` is a
+  dict. Readers fall back to the first available algorithm if it is absent.

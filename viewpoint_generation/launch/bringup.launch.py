@@ -118,7 +118,7 @@ def generate_launch_description():
         package="foxglove_bridge",
         executable="foxglove_bridge",
         name="foxglove_bridge",
-        output="screen",
+        # output="screen",
         parameters=[{
             "port": 8765,
             "address": "0.0.0.0",
@@ -141,10 +141,9 @@ def generate_launch_description():
 
     return LaunchDescription(declared_arguments + [
         viewpoint_generation_launch,
-        # macro_camera_launch,
-        foxglove_bridge_node,
-        task_planning_node,
+        # foxglove_bridge_node,
+        # task_planning_node,
         control_moveit_launch,
         viewpoint_traversal_launch,
-        admittance_control_launch,
+        # admittance_control_launch,
     ])
