@@ -41,6 +41,108 @@ class RegionGrowingConfig:
     outlier_nb_neighbors: int = 20
     outlier_std_ratio: float = 2.0
 
+    # New algo
+    radius: float = 0.1
+
+    def to_dict(self):
+        return {
+            "seed_threshold": {
+                "value": self.seed_threshold,
+                "type": "float",
+                "description": "Curvature threshold for seed point selection",
+                "control": "slider",
+                "range": [0.0, 1.0],
+            },
+            "region_threshold": {
+                "value": self.region_threshold,
+                "type": "float",
+                "description": "Curvature threshold for region growing",
+                "control": "slider",
+                "range": [0.0, 1.0],
+            },
+            "min_cluster_size": {
+                "value": self.min_cluster_size,
+                "type": "integer",
+                "description": "Minimum cluster size in points",
+                "control": "slider",
+                "range": [1, self.max_cluster_size],
+            },
+            "max_cluster_size": {
+                "value": self.max_cluster_size,
+                "type": "integer",
+                "description": "Maximum cluster size in points",
+                "control": "slider",
+                "range": [self.min_cluster_size, 1000000],
+            },
+            "knn_neighbors": {
+                "value": self.knn_neighbors,
+                "type": "integer",
+                "description": "Number of nearest neighbors to consider for normal estimation",
+                "control": "slider",
+                "range": [1, 1000],
+            },
+            "normal_angle_threshold": {
+                "value": self.normal_angle_threshold,
+                "type": "float",
+                "description": "Maximum angle difference in radians for normal-based region growing",
+                "control": "slider",
+                "range": [0, np.pi],
+            },
+            "curvature_threshold": {
+                "value": self.curvature_threshold,
+                "type": "float",
+                "description": "Curvature threshold for region growing",
+                "control": "slider",
+                "range": [0.0, 2*np.pi],
+            },
+            "use_spatial_hashing": {
+                "value": self.use_spatial_hashing,
+                "type": "boolean",
+                "description": "Whether to use spatial hashing for neighbor queries",
+                "control": "toggle",
+            },
+            "spatial_hash_resolution": {
+                "value": self.spatial_hash_resolution,
+                "type": "float",
+                "description": "Resolution of spatial hash grid in meters",
+                "control": "slider",
+                "range": [0.001, 1.0],
+            },
+            "batch_size": {
+                "value": self.batch_size,
+                "type": "integer",
+                "description": "Batch size for processing points in batches",
+                "control": "slider",
+                "range": [1, 10000],
+            },
+            "remove_statistical_outliers": {
+                "value": self.remove_statistical_outliers,
+                "type": "boolean",
+                "description": "Whether to remove statistical outliers before processing",
+                "control": "toggle",
+            },
+            "outlier_nb_neighbors": {
+                "value": self.outlier_nb_neighbors,
+                "type": "integer",
+                "description": "Number of neighbors to consider for statistical outlier removal",
+                "control": "slider",
+                "range": [1, 1000],
+            },
+            "outlier_std_ratio": {
+                "value": self.outlier_std_ratio,
+                "type": "float",
+                "description": "Standard deviation ratio for statistical outlier removal",
+                "control": "slider",
+                "range": [0.1, 10.0],
+            },
+            "radius": {
+                "value": self.radius,
+                "type": "float",
+                "description": "Radius for region growing",
+                "control": "slider",
+                "range": [0.01, 1.0],}
+        }
+
 
 class SpatialHashGrid:
     """Spatial hash grid for efficient nearest neighbor queries."""
@@ -296,7 +398,7 @@ class RegionGrowing:
         print(f"Found {len(seed_candidates)} seed candidates")
 
         # Region growing
-        clusters = []
+        regions = []
         processed = np.zeros(len(self.points), dtype=bool)
 
         growing_start = time.time()
@@ -306,8 +408,8 @@ class RegionGrowing:
 
             region = self.grow_region_from_seed(seed_idx, processed)
             if region:
-                clusters.append(region)
-                print(f"Cluster {len(clusters)}: {len(region)} points")
+                regions.append(region)
+                print(f"Cluster {len(regions)}: {len(region)} points")
 
         print(
             f"Region growing completed in {time.time() - growing_start:.2f}s")
@@ -317,9 +419,9 @@ class RegionGrowing:
 
         print(f"Total segmentation time: {time.time() - start_time:.2f}s")
         print(
-            f"Found {len(clusters)} clusters and {len(noise_points)} noise points")
+            f"Found {len(regions)} regions and {len(noise_points)} noise points")
 
-        return clusters, noise_points
+        return regions, noise_points
 
     def visualize_segmentation(self, clusters: List[List[int]], noise_points: List[int]):
         """Visualize the segmentation results with different colors for each cluster."""

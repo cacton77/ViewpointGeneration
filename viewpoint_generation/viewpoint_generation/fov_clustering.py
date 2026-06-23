@@ -22,12 +22,11 @@ from dataclasses import dataclass
 class FOVClusteringConfig:
     """Configuration parameters for region growing algorithms."""
 
-    fov_height: float = 0.02  # Field of view height in m
-    fov_width: float = 0.03  # Field of view width in m
+    fov_diameter: float = 0.02  # Field of view height in m
     dof: float = 0.02  # Depth of field in m
 
     # Cost function parameters
-    ppsqmm: float = 10.0  # Points per square millimeter for evaluation
+    point_density: float = 10.0  # Points per square millimeter for evaluation
     lambda_weight: float = 1.0  # Weight for point out percentage in cost function
     beta_weight: float = 1.0  # Weight for packing efficiency in cost function
     # Maximum allowed point out percentage for a valid cluster
@@ -38,6 +37,80 @@ class FOVClusteringConfig:
     normal_weight: float = 1.0  # Weight for normals in clustering
     number_of_runs: int = 10  # Number of runs for KMeans
     maximum_iterations: int = 100  # Maximum iterations for KMeans
+
+    def to_dict(self):
+        return {
+            "fov_diameter": {
+                "value": self.fov_diameter,
+                "type": "float",
+                "description": "Field of view diameter in meters",
+                "control": "slider",
+                "range": [0.01, 0.05],
+            },
+            "dof": {
+                "value": self.dof,
+                "type": "float",
+                "description": "Depth of field in meters",
+                "control": "slider",
+                "range": [0.001, 0.1],
+            },
+            "point_density": {
+                "value": self.point_density,
+                "type": "float",
+                "description": "Points per square millimeter for cluster evaluation",
+                "control": "slider",
+                "range": [0.1, 10000.0],
+            },
+            "lambda_weight": {
+                "value": self.lambda_weight,
+                "type": "float",
+                "description": "Weight for point-out percentage in the cost function",
+                "control": "slider",
+                "range": [0.0, 10.0],
+            },
+            "beta_weight": {
+                "value": self.beta_weight,
+                "type": "float",
+                "description": "Weight for packing efficiency in the cost function",
+                "control": "slider",
+                "range": [0.0, 10.0],
+            },
+            "max_point_out_percentage": {
+                "value": self.max_point_out_percentage,
+                "type": "float",
+                "description": "Maximum allowed point-out percentage for a valid cluster",
+                "control": "slider",
+                "range": [0.0, 1.0],
+            },
+            "point_weight": {
+                "value": self.point_weight,
+                "type": "float",
+                "description": "Weight for point locations in k-means clustering",
+                "control": "slider",
+                "range": [0.0, 10.0],
+            },
+            "normal_weight": {
+                "value": self.normal_weight,
+                "type": "float",
+                "description": "Weight for normals in k-means clustering",
+                "control": "slider",
+                "range": [0.0, 10.0],
+            },
+            "number_of_runs": {
+                "value": self.number_of_runs,
+                "type": "integer",
+                "description": "Number of k-means runs (best result is kept)",
+                "control": "slider",
+                "range": [1, 100],
+            },
+            "maximum_iterations": {
+                "value": self.maximum_iterations,
+                "type": "integer",
+                "description": "Maximum iterations per k-means run",
+                "control": "slider",
+                "range": [1, 1000],
+            },
+        }
 
 
 class FOVClustering:
@@ -69,7 +142,7 @@ class FOVClustering:
             (x_hat.reshape(3, 1), y_hat.reshape(3, 1), z_hat.reshape(3, 1)))
         t = point_cloud.get_center()
 
-        camera_radius = min(self.config.fov_width, self.config.fov_height) / 2
+        camera_radius = self.config.fov_diameter / 2
 
         # Visualize
         obb = point_cloud.get_minimal_oriented_bounding_box(robust=True)
@@ -93,7 +166,7 @@ class FOVClustering:
         normals = np.asarray(point_cloud.normals)
 
         # Convert to square millimeters
-        max_points_in = (np.pi * camera_radius**2) * (self.config.ppsqmm * 1e6)
+        max_points_in = (np.pi * camera_radius**2) * (self.config.point_density * 1e6)
 
         # Get height and radial coordinates
         height_coords = points[:, 2]
@@ -109,7 +182,8 @@ class FOVClustering:
             np.sqrt(radial_distances_sq)) if radial_distances_sq.size > 0 else 0
         radius_mask = radial_distances_sq <= camera_radius**2
 
-        points_in = np.sum(height_mask & radius_mask)
+        # TODO: figure out whether to use height mask or not points_in = np.sum(height_mask & radius_mask)
+        points_in = np.sum(radius_mask)
         points_in_xy = np.sum(radius_mask)
         points_out = points.shape[0] - points_in
 
@@ -180,7 +254,7 @@ class FOVClustering:
     def evaluate_k_cost(self, points, normals, k, eval_fun, tries=1):
         """ Evaluate the cost of a given k value for clustering. """
         # this is to make sure that k is always an integer and minimum value of k is 1
-        k = max(1, int(k))
+        k = max(1, min(int(k), len(points)))
 
         for i in range(tries):
             clusters = self.partition(points, normals, k)
@@ -246,22 +320,32 @@ class FOVClustering:
         greater_dimension = max(length, width)
         ratio = max(length, width)/min(length, width)
 
-        camera_width = self.config.fov_width
-        camera_height = self.config.fov_height
         # camera_area = camera_width*camera_height
-        camera_r = min(camera_width, camera_height)/2
+        camera_r = self.config.fov_diameter/2
         camera_area = np.pi*(camera_r**2)
         surface_area = temp_mesh.get_surface_area()/2
+
+        n_points = len(points)
 
         # Check for long and narrow regions.
         # If the ratio is greater than 100, we assume that the region is long and narrow.
         # It may be worth trying different cases for different bounds.
         if ratio > 100:
             k_min = greater_dimension/(2*camera_r)
-            pbounds = {"k": (k_min/2, 3*(k_min/2))}
+            k_lo = max(1.0, k_min / 2)
+            k_hi = min(3.0 * (k_min / 2), float(n_points))
         else:
             k_min = surface_area/camera_area
-            pbounds = {"k": (k_min, 3*k_min)}
+            k_lo = max(1.0, k_min)
+            k_hi = min(3.0 * k_min, float(n_points))
+
+        # Ensure valid bounds: both within [1, n_points] and lo < hi.
+        # k_hi can fall below 1.0 for very small regions relative to the FOV,
+        # causing inverted bounds that the Bayesian optimizer cannot handle.
+        k_lo = max(1.0, min(k_lo, float(n_points - 1)))
+        k_hi = max(k_lo + 1.0, min(k_hi, float(n_points)))
+
+        pbounds = {"k": (k_lo, k_hi)}
 
         def f(k): return self.evaluate_k_cost(
             points, normals, k=k, eval_fun=eval_fun)
@@ -301,7 +385,10 @@ class FOVClustering:
         return k_opt, valid_clusters
 
     def fov_clustering(self, point_cloud):
-        """ Partition a region of a point cloud into regions within camera fov and dof. """
+        """ Partition a region of a point cloud into regions within camera fov and dof. 
+        input: point cloud of a region (with normals) Open3D PointCloud
+        Returns a list of clusters, where each cluster is a list of point indices. """
+
         # Get the region point cloud
 
         points = np.asarray(point_cloud.points)
@@ -314,7 +401,7 @@ class FOVClustering:
 
 
 # Utility functions
-def create_sample_mesh(k: int = 3, ppsqmm: float = 1000) -> o3d.geometry.PointCloud:
+def create_sample_mesh(k: int = 3, point_density: float = 1000) -> o3d.geometry.PointCloud:
     """Create a sample point cloud for testing."""
 
     # Randomly create k primitive shapes
@@ -349,17 +436,16 @@ if __name__ == "__main__":
     # Create sample point cloud
     print("Creating sample point cloud...")
     k = 5
-    ppsqmm = 0.5
+    point_density = 0.5
     mesh = create_sample_mesh(k)
 
     pc = mesh.sample_points_uniformly(
-        int(mesh.get_surface_area() * ppsqmm * 1e6), use_triangle_normal=True)
+        int(mesh.get_surface_area() * point_density * 1e6), use_triangle_normal=True)
 
     # Configure region growing
     config = FOVClusteringConfig()
-    config.ppsqmm = ppsqmm  # Points per square millimeter
-    config.fov_width = 50*2*0.001*np.sqrt(1/np.pi)
-    config.fov_height = 50*2*0.001*np.sqrt(1/np.pi)
+    config.point_density = point_density  # Points per square millimeter
+    config.fov_diameter = 50*2*0.001*np.sqrt(1/np.pi)
     config.dof = 1
 
     # Perform segmentation

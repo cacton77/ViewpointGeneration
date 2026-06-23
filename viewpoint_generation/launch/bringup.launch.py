@@ -1,42 +1,54 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.substitutions import FindPackageShare
+from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterFile
 
 
 def generate_launch_description():
     declared_arguments = [
-        DeclareLaunchArgument("cell", default_value="alpha"),
-        DeclareLaunchArgument("sim", default_value="false",),
-        DeclareLaunchArgument("mock_sensor_commands", default_value="false",
-                              description="Enable fake command interfaces for sensors used for simple simulations. "
-                              "Used only if 'use_fake_hardware' parameter is true."),
-        DeclareLaunchArgument("headless_mode", default_value="false",
-                              description="Run in headless mode (without GUI)."),
-        DeclareLaunchArgument("safety_limits", default_value="true",
-                              description="Enable safety limits controller."),
-        DeclareLaunchArgument("safety_pos_margin", default_value="0.15",
-                              description="Safety margin for position limits."),
-        DeclareLaunchArgument("safety_k_position", default_value="20",
-                              description="k-position factor in safety controller."),
-        DeclareLaunchArgument("launch_rviz", default_value="true",
-                              description="Launch RViz for visualization."),
-        DeclareLaunchArgument("launch_moveit", default_value="true",
-                              description="Launch MoveIt for motion planning."),
-        DeclareLaunchArgument("use_tool_communication", default_value="false",
-                              description="Use tool communication for the robot."),
-        DeclareLaunchArgument("object", default_value="default.yaml",
+        DeclareLaunchArgument("cell", default_value="false"),
+        DeclareLaunchArgument("sim", default_value="false"),
+        DeclareLaunchArgument("object", default_value="new.yaml",
                               description="Configuration file for viewpoint generation."),
-        DeclareLaunchArgument("generation", default_value="true"),
-        DeclareLaunchArgument("teleop_config_file",
-                              default_value="xbox_controller.yaml", description="Controller configuration file for teleoperation."),
+        DeclareLaunchArgument("data_path", default_value="/data/ViewpointGenerationData",
+                              description="Path to the data directory."),
+        DeclareLaunchArgument("controller", default_value="xbox_controller.yaml",
+                              description="Controller configuration file for teleoperation."),
         DeclareLaunchArgument("admittance_config_file", default_value="admittance_control.yaml",
                               description="Configuration file for admittance control."),
+        DeclareLaunchArgument("rviz_config",
+                              default_value="/config/rviz/inspection_cell.rviz",
+                              description="Absolute path to an RViz config file for the whole "
+                              "inspection cell. Defaults to the file mounted into the container "
+                              "at /config/rviz/inspection_cell.rviz."),
     ]
 
-    simulation_launch = IncludeLaunchDescription(
+    cell_enabled = PythonExpression(
+        ["'", LaunchConfiguration("cell"), "' != 'false'"])
+
+    macro_camera_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare("http_image_publisher"),
+                "launch",
+                "http_image_publisher.launch.py"
+            ])
+        ]),
+        launch_arguments={
+            "stream_url": "http://192.168.0.92:5000/video_feed",
+            "base_topic": "camera",
+            "frame_id": "eoat_camera_link",
+            "publish_rate": "30.0",
+            "connection_timeout": "5.0"
+        }.items(),
+        condition=IfCondition(cell_enabled)
+    )
+
+    control_moveit_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             PathJoinSubstitution([
                 FindPackageShare("inspection_cell_moveit_config"),
@@ -47,28 +59,25 @@ def generate_launch_description():
         launch_arguments={
             "cell": LaunchConfiguration("cell"),
             "use_fake_hardware": LaunchConfiguration("sim"),
-            "mock_sensor_commands": LaunchConfiguration("mock_sensor_commands"),
-            "headless_mode": LaunchConfiguration("headless_mode"),
-            "safety_limits": LaunchConfiguration("safety_limits"),
-            "safety_pos_margin": LaunchConfiguration("safety_pos_margin"),
-            "safety_k_position": LaunchConfiguration("safety_k_position"),
-            "launch_rviz": LaunchConfiguration("launch_rviz"),
-            "launch_moveit": LaunchConfiguration("launch_moveit"),
-            "use_tool_communication": LaunchConfiguration("use_tool_communication"),
-        }.items()
+            "rviz_config": LaunchConfiguration("rviz_config"),
+        }.items(),
+        condition=IfCondition(cell_enabled)
     )
 
-    viewpoint_generation_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            PathJoinSubstitution([
-                FindPackageShare("viewpoint_generation"),
-                "launch",
-                "viewpoint_generation.launch.py"
-            ])
-        ]),
-        launch_arguments={
-            "object": LaunchConfiguration("object")
-        }.items()
+    task_planning_node = Node(
+        package="viewpoint_generation",
+        executable="task_planning_node",
+        name="task_planning",
+        output="screen",
+        parameters=[
+            ParameterFile(
+                PathJoinSubstitution([
+                    LaunchConfiguration("data_path"),
+                    LaunchConfiguration("object")
+                ]),
+                allow_substs=True
+            )
+        ],
     )
 
     viewpoint_traversal_launch = IncludeLaunchDescription(
@@ -82,9 +91,8 @@ def generate_launch_description():
         launch_arguments={
             "cell": LaunchConfiguration("cell"),
             "use_fake_hardware": LaunchConfiguration("sim"),
-            "mock_sensor_commands": LaunchConfiguration("mock_sensor_commands"),
-            "headless_mode": LaunchConfiguration("headless_mode"),
         }.items(),
+        condition=IfCondition(cell_enabled)
     )
 
     admittance_control_launch = IncludeLaunchDescription(
@@ -96,14 +104,46 @@ def generate_launch_description():
             ])
         ]),
         launch_arguments={
-            "teleop_config_file": LaunchConfiguration("teleop_config_file"),
+            "controller_config_file": LaunchConfiguration("controller"),
             "admittance_config_file": LaunchConfiguration("admittance_config_file")
+        }.items(),
+        condition=IfCondition(cell_enabled)
+    )
+
+    # Foxglove bridge: serves all topics over a WebSocket (ws://<host>:8765)
+    # for Foxglove Studio. Always-on (not gated on cell) so visualization is
+    # available regardless of cell hardware. Host networking makes 8765
+    # directly reachable on the host.
+    foxglove_bridge_node = Node(
+        package="foxglove_bridge",
+        executable="foxglove_bridge",
+        name="foxglove_bridge",
+        # output="screen",
+        parameters=[{
+            "port": 8765,
+            "address": "0.0.0.0",
+        }],
+    )
+
+    viewpoint_generation_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare("viewpoint_generation"),
+                "launch",
+                "viewpoint_generation.launch.py"
+            ])
+        ]),
+        launch_arguments={
+            "data_path": LaunchConfiguration("data_path"),
+            "object": LaunchConfiguration("object"),
         }.items()
     )
 
     return LaunchDescription(declared_arguments + [
-        simulation_launch,
         viewpoint_generation_launch,
+        # foxglove_bridge_node,
+        # task_planning_node,
+        control_moveit_launch,
         viewpoint_traversal_launch,
-        admittance_control_launch
+        # admittance_control_launch,
     ])

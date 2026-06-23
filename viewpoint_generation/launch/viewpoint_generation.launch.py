@@ -1,26 +1,38 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, RegisterEventHandler
+from launch.event_handlers import OnProcessStart
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
+from launch.conditions import IfCondition, UnlessCondition
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    ld = LaunchDescription()
 
-    object_arg = DeclareLaunchArgument(
-        'object',
-        default_value='default.yaml',
-        description='Name of the config file'
-    )
+    declared_arguments = [
+        DeclareLaunchArgument(
+            'object',
+            default_value='default.yaml',
+            description='Name of the config file'
+        ),
+        DeclareLaunchArgument(
+            'data_path',
+            default_value='/data/ViewpointGenerationData',
+            description='Path to the data directory.'
+        ),
+        DeclareLaunchArgument(
+            'headless_mode',
+            default_value='false',
+            description='Run in headless mode (without GUI).'
+        ),
+    ]
 
     # Use PathJoinSubstitution to build the path at launch time
     config = PathJoinSubstitution([
-        FindPackageShare('viewpoint_generation'),
-        'config',
-        LaunchConfiguration('object')
+        LaunchConfiguration("data_path"),
+        LaunchConfiguration("object")
     ])
 
     viewpoint_generation_node = Node(
@@ -32,15 +44,31 @@ def generate_launch_description():
         emulate_tty=True
     )
 
-    gui_client_node = Node(
+    gui_node = Node(
         package='viewpoint_generation',
-        executable='gui_client_node',
+        executable='gui_node',
         name='gui',
         parameters=[config],
-        output='screen',)
+        output='screen',
+        condition=UnlessCondition(LaunchConfiguration('headless_mode')),
+    )
 
-    ld.add_action(object_arg)  # Don't forget to add the argument!
-    ld.add_action(gui_client_node)
-    ld.add_action(viewpoint_generation_node)
+    rqt_node = Node(
+        package='rqt_gui',
+        executable='rqt_gui',
+        name='rqt_gui',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('headless_mode')),
+    )
 
-    return ld
+    register_event_handler = RegisterEventHandler(
+        OnProcessStart(
+            target_action=viewpoint_generation_node,
+            on_start=[gui_node]
+        )
+    )
+
+    return LaunchDescription(declared_arguments + [
+        viewpoint_generation_node,
+        register_event_handler
+    ])
