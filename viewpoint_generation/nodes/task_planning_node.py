@@ -31,16 +31,19 @@ def _resolve_order_indices(order, selected_algorithm=None):
     """Resolve a region's traversal order into a flat list of cluster indices.
 
     ``order`` is a plain list before traversal optimization and a dict keyed by
-    TSP algorithm name afterwards. For a dict, prefer ``selected_algorithm``
-    (the results file's ``selected_traversal_algorithm``); otherwise fall back
-    to the first available algorithm's path.
+    TSP algorithm name afterwards. Each algorithm maps to
+    ``{'order': [...], 'distance': ...}`` (older files stored the bare index
+    list — both are handled). For a dict, prefer ``selected_algorithm`` (this
+    node's ``selected_traversal_algorithm`` parameter, set via the GUI);
+    otherwise fall back to the first available algorithm's path.
     """
     if isinstance(order, dict):
         if not order:
             return []
-        if selected_algorithm in order:
-            return order[selected_algorithm]
-        return next(iter(order.values()))
+        entry = order.get(selected_algorithm, next(iter(order.values())))
+        if isinstance(entry, dict):
+            return entry.get('order', [])
+        return entry
     return order
 
 
@@ -114,6 +117,7 @@ class TaskPlanningNode(Node):
                 ('viewpoints_file', ''),
                 ('selected_region', 0),
                 ('selected_viewpoint', 0),
+                ('selected_traversal_algorithm', ''),
                 ('settings.data_path', '/tmp')
             ]
         )
@@ -132,6 +136,12 @@ class TaskPlanningNode(Node):
         # Set data path
         self.set_data_path(self.get_parameter(
             'settings.data_path').get_parameter_value().string_value)
+
+        # Which TSP algorithm's order to follow when a region's order is a
+        # per-algorithm dict. Source of truth (set via the GUI); replaces the
+        # old results-file 'selected_traversal_algorithm' field.
+        self.selected_traversal_algorithm = self.get_parameter(
+            'selected_traversal_algorithm').get_parameter_value().string_value
 
         self.load_viewpoints(self.get_parameter(
             'viewpoints_file').get_parameter_value().string_value)
@@ -295,7 +305,10 @@ class TaskPlanningNode(Node):
 
         mesh_dict = results_dict['meshes'][0]
         region_order = mesh_dict['order']
-        selected_algorithm = results_dict.get('selected_traversal_algorithm')
+        # The chosen algorithm comes from this node's parameter (set via the
+        # GUI), not the results file. Empty string falls back to the first
+        # available algorithm in _resolve_order_indices.
+        selected_algorithm = self.selected_traversal_algorithm or None
 
         try:
             for region_id in region_order:
@@ -717,6 +730,16 @@ class TaskPlanningNode(Node):
                 region_index = self.get_parameter(
                     'selected_region').get_parameter_value().integer_value
                 success = self.select_viewpoint(region_index, viewpoint_index)
+            # Traversal algorithm selection — record the preference and reload
+            # viewpoints so the execution order follows the newly chosen path.
+            # The parameter set itself always succeeds: an empty/unset
+            # viewpoints_file just means there is nothing to reload yet.
+            elif param.name == 'selected_traversal_algorithm':
+                self.selected_traversal_algorithm = param.value
+                viewpoints_file = self.get_parameter(
+                    'viewpoints_file').get_parameter_value().string_value
+                if viewpoints_file:
+                    self.load_viewpoints(viewpoints_file)
 
         result = SetParametersResult()
         result.successful = success

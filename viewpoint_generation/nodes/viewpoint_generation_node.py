@@ -30,16 +30,18 @@ def _resolve_order_indices(order, selected_algorithm=None):
     """Resolve a region's traversal order into a flat list of cluster indices.
 
     ``order`` is a plain list before traversal optimization and a dict keyed by
-    TSP algorithm name afterwards. For a dict, prefer ``selected_algorithm``
-    (the results file's ``selected_traversal_algorithm``); otherwise fall back
-    to the first available algorithm's path.
+    TSP algorithm name afterwards. Each algorithm maps to
+    ``{'order': [...], 'distance': ...}`` (older files stored the bare index
+    list — both are handled). For a dict, prefer ``selected_algorithm``;
+    otherwise fall back to the first available algorithm's path.
     """
     if isinstance(order, dict):
         if not order:
             return []
-        if selected_algorithm in order:
-            return order[selected_algorithm]
-        return next(iter(order.values()))
+        entry = order.get(selected_algorithm, next(iter(order.values())))
+        if isinstance(entry, dict):
+            return entry.get('order', [])
+        return entry
     return order
 
 

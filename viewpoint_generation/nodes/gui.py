@@ -132,6 +132,10 @@ class GUIClient():
         self.viz = Visualizer(self.scene_widget)
         self.viz.setup_multi_directional_lighting()
 
+        # Draw a default ground grid and frame the camera to it so the scene
+        # has a reference plane before any mesh/results are loaded.
+        self.viz.setup_default_scene()
+
         self.last_draw_time = time.time()
 
 
@@ -347,65 +351,93 @@ class GUIClient():
         self.file_list.selected_index = yaml_files.index(self.ros_thread.file_name) if self.ros_thread.file_name in yaml_files else 0
     
     def _refresh_file_tree(self):
-        """Refresh the file tree to show a summary of the loaded results.
+        """Rebuild the file-tree widget from viz's render-agnostic contents.
 
-        Parses self.viz.results_dict into the hierarchy:
+        The Visualizer owns the translation of results_dict (and selection
+        state) into a nested ``{'label', 'children'}`` structure via
+        ``get_file_tree_contents()``; this method only renders that structure
+        into an Open3D TreeView.
 
-            Meshes:
-              0:
-                File: ...
-                Units: ...
-                Material: ...
-                Dimensions: ...
-                Surface Area: ...
-                Point Cloud:
-                  File: ...
-                  Units: ...
-                  Points: ...
-                Regions: N
-                Clusters: N
+        Open3D's TreeView has no clear/remove API (and renders opaquely
+        regardless of background color), so on each call the old widget is
+        hidden and a fresh one is added directly to the window.
 
-        Open3D's TreeView has no clear/remove API, so on each call the old
-        widget is hidden and a fresh one is added directly to the window.
+        This runs every tick, but the widget is only rebuilt when the contents
+        actually change. Rebuilding every frame would replace the TreeView
+        continuously and discard the user's expand/collapse and selection state,
+        making the tree impossible to interact with.
         """
-        if not self.viz.results_dict:
+        contents = self.viz.get_file_tree_contents()
+        if not contents:
             return
+
+        # Skip the rebuild when nothing changed so the live widget (and its
+        # interaction state) is preserved between frames.
+        if contents == self._file_tree_contents:
+            return
+        self._file_tree_contents = contents
 
         # Hide the stale tree; Open3D treats visible=False as zero-height in layout
         self.file_tree.visible = False
 
         new_tree = gui.TreeView()
-        new_tree.background_color = Materials.panel_color
+        new_tree.background_color = Materials.tab_control_background_color
         new_tree.can_select_items_with_children = True
         new_tree.visible = True
 
-        root = new_tree.get_root_item()
-        meshes_id = new_tree.add_text_item(root, "Meshes")
-
-        for i, mesh_entry in enumerate(self.viz.results_dict.get('meshes', [])):
-            mesh_id = new_tree.add_text_item(meshes_id, str(i))
-
-            new_tree.add_text_item(mesh_id, f"File: {mesh_entry.get('file', '')}")
-            new_tree.add_text_item(mesh_id, f"Units: {mesh_entry.get('units', '')}")
-            new_tree.add_text_item(mesh_id, f"Material: {mesh_entry.get('material', '')}")
-            new_tree.add_text_item(mesh_id, f"Dimensions: {mesh_entry.get('dimensions', '')}")
-            new_tree.add_text_item(mesh_id, f"Surface Area: {mesh_entry.get('surface_area', '')}")
-
-            pcd = mesh_entry.get('point_cloud', {})
-            pcd_id = new_tree.add_text_item(mesh_id, "Point Cloud")
-            new_tree.add_text_item(pcd_id, f"File: {pcd.get('file', '')}")
-            new_tree.add_text_item(pcd_id, f"Units: {pcd.get('units', '')}")
-            new_tree.add_text_item(pcd_id, f"Points: {pcd.get('points', 0)}")
-            regions = mesh_entry.get('regions', {})
-            n_regions = len(regions)
-            n_clusters = sum(
-                len(r.get('clusters', {})) for r in regions
-            )
-            new_tree.add_text_item(mesh_id, f"Regions: {n_regions}")
-            new_tree.add_text_item(mesh_id, f"Clusters: {n_clusters}")
+        # Item id -> selection action, and item id -> deferred children for
+        # collapsed nodes. Both are rebuilt with the tree since item ids are
+        # only valid for this widget instance.
+        self._tree_item_actions = {}
+        self._tree_pending_children = {}
+        self._populate_tree(new_tree, new_tree.get_root_item(), contents)
+        new_tree.set_on_selection_changed(self._on_tree_item_selected)
 
         self.window.add_child(new_tree)
         self.file_tree = new_tree
+
+    def _populate_tree(self, tree, parent_id, nodes):
+        """Add nodes under parent_id, recording selection actions.
+
+        Open3D's TreeView auto-expands everything and offers no collapse API,
+        so a node flagged ``collapsed`` is added empty and its children stashed
+        in _tree_pending_children to be added on first click (lazy population).
+        """
+        for node in nodes:
+            node_id = tree.add_text_item(parent_id, node['label'])
+            if node.get('select'):
+                self._tree_item_actions[node_id] = node['select']
+            children = node.get('children', [])
+            if node.get('collapsed') and children:
+                self._tree_pending_children[node_id] = children
+            else:
+                self._populate_tree(tree, node_id, children)
+
+    def _on_tree_item_selected(self, item_id):
+        """Drive region/cluster selection from a file-tree click.
+
+        First reveals any deferred children (collapsed nodes start empty and are
+        populated on click). Then looks up the action attached to the selected
+        item and updates the visualizer. Selecting a cluster selects its region
+        first so the cluster index is scoped correctly (mirrors select_cluster).
+        """
+        pending = self._tree_pending_children.pop(item_id, None)
+        if pending is not None:
+            self._populate_tree(self.file_tree, item_id, pending)
+
+        action = self._tree_item_actions.get(item_id)
+        if not action:
+            return
+        if action['type'] == 'region':
+            self.viz.select_region(action['region'])
+        elif action['type'] == 'cluster':
+            self.viz.select_region(action['region'])
+            self.viz.select_cluster(action['cluster'])
+        elif action['type'] == 'algorithm':
+            # Update the drawn path immediately and set the parameter so the
+            # execution order follows the same algorithm.
+            self.viz.set_traversal_algorithm(action['algorithm'])
+            self.ros_thread.select_traversal_algorithm(action['algorithm'])
 
     def _update_save_menu(self):
         is_new = self.ros_thread.file_name == 'new'
@@ -601,12 +633,20 @@ class GUIClient():
         # Hidden until _on_layout sets its frame — same reason as file_tree.
         self.file_list.visible = False
 
-        # Regions tree — direct window child, sized by _on_layout.
-        # Kept separate from file_list so _refresh_file_tree can swap it out
-        # via visible=False without affecting any Vert layout.
+        # Regions tree — direct window child, sized by _on_layout. The TreeView
+        # renders opaquely regardless of background color (it can't be made
+        # transparent like the main layout). Kept separate from file_list so
+        # _refresh_file_tree can swap it out via visible=False.
         self.file_tree = gui.TreeView()
-        self.file_tree.background_color = Materials.panel_color
+        self.file_tree.background_color = Materials.tab_control_background_color
         self.file_tree.can_select_items_with_children = True
+        # Last-rendered tree contents; used to rebuild the widget only when the
+        # contents change (see _refresh_file_tree).
+        self._file_tree_contents = None
+        # Map of TreeView item id -> selection action for the current tree.
+        self._tree_item_actions = {}
+        # Map of TreeView item id -> deferred child nodes for collapsed nodes.
+        self._tree_pending_children = {}
         # Hidden until regions are loaded — prevents the empty widget from
         # occupying its full default frame and covering other panels before
         # _on_layout has had a chance to run.
@@ -655,6 +695,11 @@ class GUIClient():
             button = gui.Button("Optimize Traversal")
             button.background_color = Materials.button_background_color
             button.set_on_clicked(lambda: self.ros_thread.optimize_traversal())
+            content.add_child(button)
+        elif node_name == self.ros_thread.tsdf_node_name:
+            button = gui.Button("Reset Voxel Block Grid")
+            button.background_color = Materials.button_background_color
+            button.set_on_clicked(lambda: self.ros_thread.reset_tsdf())
             content.add_child(button)
 
         scroll_area.add_child(content)
@@ -943,20 +988,6 @@ class GUIClient():
                         node_name, param_name, selected_text))
                 row.add_child(widget)  # ADD HERE
 
-            elif 'compare_algorithms' in param_name.lower():
-                widget = gui.Combobox()
-                # '-- none --' is the sentinel meaning "no comparison" (the
-                # parameter's default); it must be selectable or building the
-                # combo from that default value raises ValueError.
-                algorithms = ['-- none --', 'greedy', '2opt', '3opt', 'LKH', 'ILS'] # compare TSP algorithms
-                for algorithm in algorithms:
-                    widget.add_item(algorithm)
-                widget.selected_index = algorithms.index(param_value)
-                widget.set_on_selection_changed(
-                    lambda selected_text, selected_index: self.on_parameter_changed(
-                        node_name, param_name, selected_text))
-                row.add_child(widget)  # ADD HERE  
-            
             elif 'controller_type' in param_name.lower():
                 widget = gui.Combobox()
                 controller_types = ['PD', 'PID']
@@ -1136,6 +1167,11 @@ class GUIClient():
         print(f"Visualizing results from: {file_path}")
         self.viz.visualize_results(file_path)
 
+        # Point task_planning at the same results file so its planning/execution
+        # uses these viewpoints. It loads from its own viewpoints_file param,
+        # which is otherwise never set by the current results-loading flow.
+        self.ros_thread.set_viewpoints_file(file_path)
+
         # Sync menu checkmarks with the visibility flags set by the Visualizer
         self._refresh_view_menu()
 
@@ -1211,7 +1247,7 @@ class GUIClient():
 
         panel_x = r.width - main_width - margin
 
-        # YAML file list — size to content, capped at 35 % of the panel
+        # YAML file list — top-right, size to content, capped at 35 % of panel
         file_list_h = min(
             self.file_list.calc_preferred_size(
                 layout_context, gui.Widget.Constraints()).height,
@@ -1220,20 +1256,23 @@ class GUIClient():
             panel_x, r.y + margin, main_width, file_list_h)
         self.file_list.visible = True
 
-        # Regions tree fills the rest of the top half
-        tree_h = main_height - file_list_h - margin * 0.5
-        self.file_tree.frame = gui.Rect(
-            panel_x,
-            r.y + margin + file_list_h + margin * 0.5,
-            main_width,
-            max(0, tree_h))
-
-        # Place main layout below file layout
+        # Main layout fills the right column below the file list, expanding up
+        # into the space the regions tree used to occupy.
+        main_top = r.y + margin + file_list_h + margin * 0.5
         self.main_layout.frame = gui.Rect(
-            r.width - main_width - margin,
-            r.y + margin + main_height + margin,
+            panel_x,
+            main_top,
             main_width,
-            main_height)
+            max(0, r.y + r.height - margin - main_top))
+
+        # Regions tree — full-height panel on the left side of the window,
+        # slightly narrower than the right-hand panels.
+        tree_width = 24 * em
+        self.file_tree.frame = gui.Rect(
+            r.x + margin,
+            r.y + margin,
+            tree_width,
+            max(0, r.height - 2 * margin))
 
         # Ensure a redraw follows every layout pass so frames set above are
         # actually rendered.  Without this the draw scheduled by the tick event
@@ -1302,6 +1341,8 @@ class GUIClient():
                                 self.select_region(param_value)
                             elif 'selected_cluster' in param_name:
                                 self.select_cluster(param_value)
+                            elif 'selected_traversal_algorithm' in param_name:
+                                self.viz.set_traversal_algorithm(param_value)
                             elif 'model.camera.fov.height' in param_name:
                                 self.camera_fov_height = param_value
                                 self.camera_updated = True

@@ -281,7 +281,10 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
               }
             }
           ],
-          "order": {"greedy": [0, 2, 1], "LKH": [0, 1, 2]}
+          "order": {
+            "greedy": {"order": [0, 2, 1], "distance": 0.84},
+            "LKH":    {"order": [0, 1, 2], "distance": 0.79}
+          }
         }
       ],
       "order": [0, 1, 2],
@@ -292,8 +295,7 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
         "focal_distance": 0.3
       }
     }
-  ],
-  "selected_traversal_algorithm": "LKH"
+  ]
 }
 ```
 
@@ -307,11 +309,16 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
 - Mesh-level `order` -- Region visit order (a list of region indices).
 - Region-level `order` -- Cluster visit order *within* that region. Out of FOV
   clustering this is a plain list (identity order). After `optimize_traversal`
-  runs it becomes a **dict keyed by TSP algorithm name**, with each value the
-  optimized list of cluster indices for that algorithm. Multiple algorithms
-  accumulate in the same dict across runs (e.g. `{"greedy": [...], "LKH": [...]}`),
-  so the different optimization results are stored together rather than in a
-  separate file.
-- `selected_traversal_algorithm` -- Top-level key naming which algorithm's path
-  the visualizer and motion consumers should follow when a region's `order` is a
-  dict. Readers fall back to the first available algorithm if it is absent.
+  runs it becomes a **dict keyed by TSP algorithm name**, where each value is an
+  object `{"order": [...], "distance": ...}` holding that algorithm's optimized
+  list of cluster indices plus its path metrics (e.g. `distance` in metres).
+  Multiple algorithms accumulate in the same dict across runs, so the different
+  optimization results — and their metrics — are stored together in the results
+  file rather than in node parameters or a separate file.
+- Selected algorithm -- Which algorithm's path the visualizer and motion
+  consumers follow when a region's `order` is a dict is **not** stored in the
+  results file. It is the `selected_traversal_algorithm` parameter on the
+  `task_planning` node (set via the GUI, e.g. by clicking an algorithm under a
+  region's *Paths* in the tree view), so the same choice drives both the
+  visualized path and the execution order. An empty value falls back to the
+  first available algorithm.

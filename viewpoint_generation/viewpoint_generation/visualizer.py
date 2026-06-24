@@ -40,17 +40,20 @@ def _resolve_order_indices(order, selected_algorithm=None):
     """Resolve a region's traversal order into a flat list of cluster indices.
 
     ``order`` may be a plain list (identity / pre-traversal order) or, after
-    traversal optimization, a dict keyed by TSP algorithm name. For a dict,
-    prefer ``selected_algorithm`` (the results file's
-    ``selected_traversal_algorithm``); otherwise fall back to the first
-    available algorithm's path.
+    traversal optimization, a dict keyed by TSP algorithm name. Each algorithm
+    maps to ``{'order': [...], 'distance': ...}`` (older files stored the bare
+    index list — both are handled). For a dict, prefer ``selected_algorithm``
+    (the ``selected_traversal_algorithm`` parameter on the task_planning node,
+    surfaced here via the GUI); otherwise fall back to the first available
+    algorithm's path.
     """
     if isinstance(order, dict):
         if not order:
             return []
-        if selected_algorithm in order:
-            return order[selected_algorithm]
-        return next(iter(order.values()))
+        entry = order.get(selected_algorithm, next(iter(order.values())))
+        if isinstance(entry, dict):
+            return entry.get('order', [])
+        return entry
     return order
 
 
@@ -576,6 +579,16 @@ class Visualizer:
         self.traversal_order : list[list[int]]  = [[0]]
         self.geometries_dict : dict             = {}
         self.results_dict    : dict             = {}
+        # Which TSP algorithm's path to draw when a region's order is a
+        # per-algorithm dict. Set by the GUI from the task_planning parameter
+        # (None → first available algorithm). Replaces the old
+        # results-dict 'selected_traversal_algorithm' field.
+        self.selected_traversal_algorithm = None
+        # The algorithm whose cluster order the scene's clusters were numbered
+        # in, frozen at load time. The file tree uses this (not the live
+        # selection) to order/number clusters so changing the algorithm only
+        # redraws the path — it does not renumber clusters or rebuild the tree.
+        self._cluster_order_algorithm = None
         self.region_number   : int              = 0
         self.cluster_number  : int              = 0
 
@@ -639,7 +652,11 @@ class Visualizer:
 
     # ── Core scene helper ────────────────────────────────────────────────────
 
-    def _reset_camera_to_bbox(self, bbox: o3d.geometry.AxisAlignedBoundingBox):
+    # Multiplier on the bounding-box diagonal that sets the camera's distance
+    # from the scene center. Larger pulls the camera back; smaller zooms in.
+    CAMERA_FRAMING_FACTOR = 1.0
+
+    def _reset_camera_to_bbox(self, bbox: o3d.geometry.AxisAlignedBoundingBox | None = None):
         """Reset the turntable camera so the mesh fills the view.
 
         All geometry is stored in the scene after a -90° X rotation
@@ -648,14 +665,20 @@ class Visualizer:
         The eye is placed one bounding-box diagonal away in the [1,1,1]
         direction of the rotated frame, which keeps the camera well outside
         the mesh regardless of its position or size.
+
+        When ``bbox`` is None (no mesh loaded yet) the default 30 cm bbox is
+        used so the camera framing matches the default ground grid.
         """
+        if bbox is None:
+            bbox = self._default_bbox()
+
         # -90° X rotation: [x, y, z] → [x, z, -y]
         raw_center = bbox.get_center()
         rotated_center = np.array([raw_center[0], raw_center[2], -raw_center[1]])
 
         diagonal = np.linalg.norm(bbox.get_max_bound() - bbox.get_min_bound())
         offset_dir = np.array([1., 1., 1.]) / np.sqrt(3)
-        eye = rotated_center + offset_dir * diagonal * 1.5
+        eye = rotated_center + offset_dir * diagonal * self.CAMERA_FRAMING_FACTOR
 
         self.camera.reset_camera(rotated_center, eye)
 
@@ -677,9 +700,33 @@ class Visualizer:
         self.scene.set_lighting(
             self.scene.LightingProfile.NO_SHADOWS, sun_direction)
 
-    def add_xy_plane(self, bbox):
+    # Default scene size (mm) used for both the ground grid and the camera
+    # framing when no mesh/bbox is present. A 300 mm (30 cm) square footprint
+    # is centred on the origin so the startup grid and camera distance agree.
+    DEFAULT_BBOX_SIZE = 300.0
+
+    def _default_bbox(self) -> o3d.geometry.AxisAlignedBoundingBox:
+        """A 30 cm × 30 cm bbox centred on the origin, used on startup before
+        any mesh is loaded. Drives both ``add_xy_plane`` and
+        ``_reset_camera_to_bbox`` so the grid and camera stay in sync."""
+        half = self.DEFAULT_BBOX_SIZE / 2.0
+        return o3d.geometry.AxisAlignedBoundingBox(
+            min_bound=np.array([-half, -half, 0.0]),
+            max_bound=np.array([half, half, 0.0]))
+
+    def setup_default_scene(self):
+        """Draw the default ground grid and frame the camera to it.
+
+        Used on startup before any mesh/results are loaded. Both the grid and
+        the camera derive from ``_default_bbox`` so they stay in sync."""
+        self.add_xy_plane()
+        self._reset_camera_to_bbox()
+
+    def add_xy_plane(self, bbox=None):
+        # No mesh loaded yet — fall back to the default bbox so the grid is
+        # sized identically to how the camera is framed.
         if bbox is None:
-            return
+            bbox = self._default_bbox()
 
         x0, y0, _ = bbox.get_min_bound()
         x1, y1, _ = bbox.get_max_bound()
@@ -859,8 +906,12 @@ class Visualizer:
         self.results_dict = results_dict
 
         # After traversal optimization each region's 'order' is a dict keyed by
-        # algorithm name; this selects which algorithm's path to render.
-        selected_algorithm = results_dict.get('selected_traversal_algorithm')
+        # algorithm name; this selects which algorithm's path to render. The
+        # choice comes from the GUI/task_planning parameter, not the file.
+        selected_algorithm = self.selected_traversal_algorithm
+        # Freeze the cluster-numbering algorithm for this load so the file tree
+        # stays stable when the path algorithm is later changed.
+        self._cluster_order_algorithm = selected_algorithm
 
         # ── Load mesh and point cloud from the results dict ───────────────────
         bbox = None
@@ -1192,11 +1243,17 @@ class Visualizer:
                 self.show_viewpoints(True)
                 self.show_region_view_manifolds(True)
                 self.show_path(show_path)
-                scene_bbox = self.scene_widget.scene.bounding_box
-                self.add_xy_plane(scene_bbox)
-                bb_size = np.linalg.norm(
-                    scene_bbox.get_max_bound() - scene_bbox.get_min_bound())
-                self.camera.set_center(scene_bbox.get_center(), distance=bb_size * 1.5)
+            # Frame the camera to the full built scene (mesh + clusters + any
+            # viewpoints/manifolds/paths) and rebuild the ground grid to match.
+            # This runs for the cluster-only case too — otherwise the freshly
+            # painted clusters are not framed/refreshed until a region is
+            # selected.
+            scene_bbox = self.scene_widget.scene.bounding_box
+            self.add_xy_plane(scene_bbox)
+            bb_size = np.linalg.norm(
+                scene_bbox.get_max_bound() - scene_bbox.get_min_bound())
+            self.camera.set_center(scene_bbox.get_center(),
+                                   distance=bb_size * self.CAMERA_FRAMING_FACTOR)
         elif self.region_names:
             self.show_regions(True)
             self.show_fov_clusters(False)
@@ -1332,15 +1389,71 @@ class Visualizer:
 
     def show_region_view_manifolds(self, show: bool):
         self.show_region_view_manifolds_flag = show
+        # When no region is explicitly selected (e.g. right after a results
+        # file loads) show every region's manifold; once a region is selected
+        # restrict visibility to that region.
         for name in self.region_names:
-            is_selected = (name == self.selected_region_name)
-            self.scene.show_geometry(f"{name}_view_mesh", show and is_selected)
+            visible = show and (
+                not self.selected_region_name or name == self.selected_region_name)
+            self.scene.show_geometry(f"{name}_view_mesh", visible)
 
     def show_path(self, show: bool):
         self.show_path_flag = show
+        # See show_region_view_manifolds: with no selection show all paths,
+        # otherwise only the selected region's path.
         for name in self.region_names:
-            is_selected = (name == self.selected_region_name)
-            self.scene.show_geometry(f"{name}_path", show and is_selected)
+            visible = show and (
+                not self.selected_region_name or name == self.selected_region_name)
+            self.scene.show_geometry(f"{name}_path", visible)
+
+    def _build_region_path(self, region: dict, algorithm) -> o3d.geometry.LineSet | None:
+        """Build a region's traversal path LineSet (viewpoint positions joined
+        in the chosen algorithm's cluster order), or None if too short."""
+        cluster_order = _resolve_order_indices(region.get('order', []), algorithm)
+        clusters = region.get('clusters', [])
+        pts = []
+        for cluster_id in cluster_order:
+            if not isinstance(cluster_id, int) or cluster_id < 0 or cluster_id >= len(clusters):
+                continue
+            viewpoint = clusters[cluster_id].get('viewpoint')
+            if not viewpoint:
+                continue
+            pts.append(1000.0 * np.array(viewpoint['position']))
+        if len(pts) < 2:
+            return None
+        path = o3d.geometry.LineSet()
+        path.points = o3d.utility.Vector3dVector(np.array(pts))
+        path.lines = o3d.utility.Vector2iVector(
+            [[i, i + 1] for i in range(len(pts) - 1)])
+        return path
+
+    def set_traversal_algorithm(self, algorithm):
+        """Switch the displayed traversal algorithm and rebuild each region's
+        path LineSet in place (no full reload). The GUI calls this when the
+        task_planning ``selected_traversal_algorithm`` parameter changes."""
+        self.selected_traversal_algorithm = algorithm or None
+        if not self.results_dict:
+            return
+
+        for mesh_idx, mesh_entry in enumerate(self.results_dict.get('meshes', [])):
+            regions = mesh_entry.get('regions', [])
+            region_order = mesh_entry.get('order', list(range(len(regions))))
+            for region_id in region_order:
+                if not isinstance(region_id, int) or region_id < 0 or region_id >= len(regions):
+                    continue
+                region_name = f"mesh_{mesh_idx}_region_{region_id}"
+                if region_name not in self.geometries_dict:
+                    continue
+                path = self._build_region_path(
+                    regions[region_id], self.selected_traversal_algorithm)
+                self.scene.remove_geometry(f"{region_name}_path")
+                self.geometries_dict[region_name]['path'] = path
+                if path is not None:
+                    self.add_geometry(f"{region_name}_path", path,
+                                      Materials.path_material)
+
+        # Reapply visibility (selection-gated) to the freshly added paths.
+        self.show_path(self.show_path_flag)
 
     # ── Selection ─────────────────────────────────────────────────────────────
 
@@ -1449,6 +1562,206 @@ class Visualizer:
             self.scene_widget.scene.modify_geometry_material(
                 f"{selected_cluster_name}_viewpoint", Materials.selected_viewpoint_material)
         return True
+
+    @property
+    def selected_region_index(self) -> int:
+        """Index of the currently selected region within ``region_names``.
+
+        Returns -1 when no region is selected."""
+        if self.selected_region_name in self.region_names:
+            return self.region_names.index(self.selected_region_name)
+        return -1
+
+    @property
+    def selected_cluster_index(self) -> int:
+        """Index of the currently selected cluster, relative to its region.
+
+        Mirrors how ``select_cluster`` scopes cluster indices to the selected
+        region. Returns -1 when no cluster is selected."""
+        if not self.selected_cluster_name:
+            return -1
+        if self.selected_region_name:
+            region_clusters = self._cluster_names_for_region(self.selected_region_name)
+        else:
+            region_clusters = self.cluster_names
+        if self.selected_cluster_name in region_clusters:
+            return region_clusters.index(self.selected_cluster_name)
+        return -1
+
+    # ── File-tree contents ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _tree_node(label: str, children: list | None = None,
+                   select: dict | None = None, collapsed: bool = False) -> dict:
+        """A single file-tree node.
+
+        ``label``    – display text.
+        ``children`` – list of child nodes.
+        ``select``   – optional action the GUI runs when this node is selected,
+                       e.g. ``{'type': 'region', 'region': i}`` or
+                       ``{'type': 'cluster', 'region': i, 'cluster': j}``. The
+                       indices match ``select_region`` / ``select_cluster``.
+        ``collapsed``– hint that this node should start closed. Open3D's
+                       TreeView has no collapse API and auto-expands everything,
+                       so the GUI honors this by deferring the node's children
+                       until it is clicked (lazy population).
+        """
+        return {
+            'label': label,
+            'children': children if children is not None else [],
+            'select': select,
+            'collapsed': collapsed,
+        }
+
+    @staticmethod
+    def _fmt_vec(vec, precision: int = 4) -> str:
+        """Format a numeric vector for display, or fall back to ``str``."""
+        if vec is None:
+            return ''
+        try:
+            return "[" + ", ".join(f"{float(v):.{precision}f}" for v in vec) + "]"
+        except (TypeError, ValueError):
+            return str(vec)
+
+    def _viewpoint_node(self, viewpoint: dict | None) -> dict | None:
+        """Build a 'Viewpoint' node from a cluster's viewpoint dict, or None."""
+        if not viewpoint:
+            return None
+        return self._tree_node("Viewpoint", [
+            self._tree_node(f"Origin: {self._fmt_vec(viewpoint.get('origin'))}"),
+            self._tree_node(f"Position: {self._fmt_vec(viewpoint.get('position'))}"),
+            self._tree_node(f"Direction: {self._fmt_vec(viewpoint.get('direction'))}"),
+            self._tree_node(f"Orientation: {self._fmt_vec(viewpoint.get('orientation'))}"),
+        ])
+
+    def get_file_tree_contents(self) -> list[dict]:
+        """Translate the loaded results into a render-agnostic tree.
+
+        Returns a list of top-level nodes, each a dict::
+
+            {'label': <str>, 'children': [<node>, ...], 'select': <dict|None>}
+
+        Regions are expanded into numbered, selectable dropdowns; each region
+        holds a 'Clusters' dropdown (numbered, selectable cluster nodes that
+        carry viewpoint info) and a 'Paths' dropdown (the traversal order).
+        Selecting a region/cluster node drives ``select_region`` /
+        ``select_cluster`` via the indices in each node's ``select`` action.
+
+        Point-index lists (region/cluster ``points``) are intentionally omitted.
+        The GUI only renders this structure; the results→text mapping lives
+        here. Returns an empty list when no results are loaded.
+        """
+        nodes: list[dict] = []
+
+        if not self.results_dict:
+            return nodes
+
+        # Order/number clusters by the load-time algorithm, not the live
+        # selection, so picking a different path algorithm doesn't change the
+        # tree contents (which would force a disruptive rebuild). Matches how
+        # the scene's clusters are numbered.
+        cluster_order_algorithm = self._cluster_order_algorithm
+
+        # ── Meshes ────────────────────────────────────────────────────────
+        mesh_children = []
+        for mesh_idx, mesh_entry in enumerate(self.results_dict.get('meshes', [])):
+            pcd = mesh_entry.get('point_cloud', {})
+            n_points = pcd.get('num_points', pcd.get('points', 0))
+
+            pcd_node = self._tree_node("Point Cloud", [
+                self._tree_node(f"File: {pcd.get('file', '')}"),
+                self._tree_node(f"Units: {pcd.get('units', '')}"),
+                self._tree_node(f"Points: {n_points}"),
+            ])
+
+            mesh_children.append(self._tree_node(str(mesh_idx), [
+                self._tree_node(f"File: {mesh_entry.get('file', '')}"),
+                self._tree_node(f"Units: {mesh_entry.get('units', '')}"),
+                self._tree_node(f"Material: {mesh_entry.get('material', '')}"),
+                self._tree_node(f"Dimensions: {mesh_entry.get('dimensions', '')}"),
+                self._tree_node(f"Surface Area: {mesh_entry.get('surface_area', '')}"),
+                pcd_node,
+                self._build_regions_node(mesh_idx, mesh_entry, cluster_order_algorithm),
+            ]))
+
+        nodes.append(self._tree_node("Meshes", mesh_children))
+        return nodes
+
+    def _build_regions_node(self, mesh_idx: int, mesh_entry: dict,
+                            cluster_order_algorithm) -> dict:
+        """Build the 'Regions' dropdown for a mesh: numbered, selectable region
+        nodes each containing a 'Clusters' and a 'Paths' dropdown.
+
+        ``cluster_order_algorithm`` orders/numbers the clusters and is frozen at
+        load time (see _cluster_order_algorithm) so the tree is stable across
+        path-algorithm changes."""
+        regions = mesh_entry.get('regions', [])
+        region_order = mesh_entry.get('order', list(range(len(regions))))
+
+        region_nodes = []
+        for region_id in region_order:
+            if not isinstance(region_id, int) or region_id < 0 or region_id >= len(regions):
+                continue
+            region = regions[region_id]
+
+            # Map to the visualizer's flat region index so selection lines up
+            # with select_region. Non-built regions are shown but not selectable.
+            region_name = f"mesh_{mesh_idx}_region_{region_id}"
+            region_sel_index = (self.region_names.index(region_name)
+                                if region_name in self.region_names else None)
+            region_select = ({'type': 'region', 'region': region_sel_index}
+                             if region_sel_index is not None else None)
+
+            # Clusters (in traversal order) — numbered, selectable, with viewpoint
+            cluster_order = _resolve_order_indices(
+                region.get('order', []), cluster_order_algorithm)
+            cluster_nodes = []
+            clusters = region.get('clusters', [])
+            for i, cluster_id in enumerate(cluster_order):
+                if not isinstance(cluster_id, int) or cluster_id < 0 or cluster_id >= len(clusters):
+                    continue
+                cluster = clusters[cluster_id]
+                cluster_children = []
+                vp_node = self._viewpoint_node(cluster.get('viewpoint'))
+                if vp_node is not None:
+                    cluster_children.append(vp_node)
+                cluster_select = ({'type': 'cluster',
+                                   'region': region_sel_index, 'cluster': i}
+                                  if region_sel_index is not None else None)
+                cluster_nodes.append(self._tree_node(
+                    f"Cluster {i}", cluster_children, select=cluster_select))
+            # Start the Clusters dropdown closed (lazily populated by the GUI).
+            clusters_node = self._tree_node("Clusters", cluster_nodes, collapsed=True)
+
+            # Paths — one selectable node per optimized algorithm. Clicking it
+            # sets the traversal algorithm (drives the drawn path and execution
+            # order). The 'order' index list is omitted; every other metadata
+            # key (e.g. 'distance') is shown under the algorithm node.
+            order = region.get('order', [])
+            path_children = []
+            if isinstance(order, dict):
+                for algo, info in order.items():
+                    algo_children = []
+                    if isinstance(info, dict):
+                        for key, value in info.items():
+                            if key == 'order':
+                                continue
+                            if isinstance(value, float):
+                                value = f"{value:.4f}"
+                            algo_children.append(
+                                self._tree_node(f"{key}: {value}"))
+                    path_children.append(self._tree_node(
+                        algo, algo_children,
+                        select={'type': 'algorithm', 'algorithm': algo}))
+            elif order:
+                path_children.append(self._tree_node(f"Order: {list(order)}"))
+            paths_node = self._tree_node("Paths", path_children)
+
+            region_nodes.append(self._tree_node(
+                f"Region {region_id}", [clusters_node, paths_node],
+                select=region_select))
+
+        return self._tree_node("Regions", region_nodes)
 
     # ── Ray casting ───────────────────────────────────────────────────────────
 

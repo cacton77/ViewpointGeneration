@@ -53,15 +53,6 @@ class ViewpointTraversalNode(Node):
                 ('workspace.max_z', 1.0),
                 ('clear_paths', False),
                 ('tsp_algorithm', 'greedy'),
-                ('compare', False),
-                ('compare_algorithms', '-- none --'),
-                ('result.primary_algorithm', ''),
-                ('result.primary_distance', -1.0),
-                ('result.compare_algorithm', ''),
-                ('result.compare_distance', -1.0),
-                ('result.mst_lower_bound', -1.0),
-                ('result.optimality_gap_pct', -1.0),
-                ('result.max_region_gap_pct', -1.0),
             ]
         )
 
@@ -73,12 +64,8 @@ class ViewpointTraversalNode(Node):
             'multiplanning').get_parameter_value().bool_value
         self.clear_paths = self.get_parameter(
             'clear_paths').get_parameter_value().bool_value
-        self.compare = self.get_parameter(
-            'compare').get_parameter_value().bool_value
         self.tsp_algorithm = self.get_parameter(
             'tsp_algorithm').get_parameter_value().string_value
-        self.compare_algorithms = self.get_parameter(
-            'compare_algorithms').get_parameter_value().string_value
 
         self.workspace = {
             'min_x': self.get_parameter('workspace.min_x').get_parameter_value().double_value,
@@ -258,18 +245,11 @@ class ViewpointTraversalNode(Node):
         with open(new_viewpoint_dict_path, 'w') as f:
             json.dump(viewpoint_dict_optimized, f, indent=4)
 
-        # Compute total distances across all regions for display
+        # Compute total distance across all regions for display
         primary_total = sum(
             v.get('distance', 0.0)
             for v in self.algorithm_results.get(self.tsp_algorithm, {}).values()
         )
-        compare_algo = (self.compare_algorithms
-                        if self.compare and self.compare_algorithms != '-- none --'
-                        else '')
-        compare_total = sum(
-            v.get('distance', 0.0)
-            for v in self.algorithm_results.get(compare_algo, {}).values()
-        ) if compare_algo and compare_algo in self.algorithm_results else -1.0
 
         # MST lower bound (summed across all regions of all meshes)
         mst_total = 0.0
@@ -307,27 +287,9 @@ class ViewpointTraversalNode(Node):
             f'{self.tsp_algorithm}: {primary_total:.3f} m  |  '
             f'Overall gap: {gap_pct:.2f}%  |  Max region gap: {max_gap:.2f}%')
 
-        self.set_parameters([
-            rclpy.parameter.Parameter('result.primary_algorithm',
-                                      rclpy.Parameter.Type.STRING, self.tsp_algorithm),
-            rclpy.parameter.Parameter('result.primary_distance',
-                                      rclpy.Parameter.Type.DOUBLE, float(primary_total)),
-            rclpy.parameter.Parameter('result.compare_algorithm',
-                                      rclpy.Parameter.Type.STRING, compare_algo),
-            rclpy.parameter.Parameter('result.compare_distance',
-                                      rclpy.Parameter.Type.DOUBLE, float(compare_total)),
-            rclpy.parameter.Parameter('result.mst_lower_bound',
-                                      rclpy.Parameter.Type.DOUBLE, float(mst_total)),
-            rclpy.parameter.Parameter('result.optimality_gap_pct',
-                                      rclpy.Parameter.Type.DOUBLE, float(gap_pct)),
-            rclpy.parameter.Parameter('result.max_region_gap_pct',
-                                      rclpy.Parameter.Type.DOUBLE, float(max_gap)),
-        ])
-
+        # Per-algorithm path metrics (distance, etc.) are stored per region in
+        # the results JSON under each algorithm's key, not in node parameters.
         msg = f"Algorithm: {self.tsp_algorithm}  Total: {primary_total:.3f} m"
-        if compare_algo and compare_total >= 0:
-            improvement = (compare_total - primary_total) / compare_total * 100 if compare_total > 0 else 0.0
-            msg += f" | Compare ({compare_algo}): {compare_total:.3f} m  Improvement: {improvement:.1f}%"
         self.get_logger().info(msg)
 
         response.success = True
@@ -368,10 +330,6 @@ class ViewpointTraversalNode(Node):
                 for region in mesh_entry.get('regions', []):
                     region['order'] = list(range(len(region.get('clusters', []))))
             viewpoint_dict.pop('selected_traversal_algorithm', None)
-            self.set_parameters([
-                rclpy.parameter.Parameter(
-                    'result.primary_algorithm', rclpy.Parameter.Type.STRING, ''),
-            ])
             return viewpoint_dict
 
         if self.tsp_algorithm == 'Select Algorithm':
@@ -379,14 +337,7 @@ class ViewpointTraversalNode(Node):
             return viewpoint_dict
 
         primary = self.tsp_algorithm
-        algorithms = [primary]
-        compare_algo = self.compare_algorithms
-        if (self.compare and compare_algo and compare_algo != primary
-                and compare_algo != '-- none --'):
-            algorithms.append(compare_algo)
-
-        for algo in algorithms:
-            self.algorithm_results.setdefault(algo, {})
+        self.algorithm_results.setdefault(primary, {})
 
         self._region_gaps = {}
 
@@ -398,12 +349,19 @@ class ViewpointTraversalNode(Node):
                 region_key = f"{mesh_idx}:{region_idx}"
 
                 # Regions too small to optimize (or missing viewpoints) keep an
-                # identity order under every algorithm so downstream consumers
-                # always find their selected algorithm's key.
+                # identity order so downstream consumers always find a path.
                 if n_clusters < 3 or any('viewpoint' not in c for c in clusters):
                     identity = list(range(n_clusters))
-                    for algo in algorithms:
-                        order_dict[algo] = identity
+                    if n_clusters >= 2 and all('viewpoint' in c for c in clusters):
+                        vps = [c['viewpoint']['position'] for c in clusters]
+                        identity_distance = self.dist_calc(
+                            self.dist_matrix(vps), identity)
+                    else:
+                        identity_distance = 0.0
+                    order_dict[primary] = {
+                        'order': identity,
+                        'distance': float(identity_distance),
+                    }
                     continue
 
                 viewpoints = [c['viewpoint']['position'] for c in clusters]
@@ -421,49 +379,54 @@ class ViewpointTraversalNode(Node):
                     lower_bound = self._mst_cost(dm)
                     bound_label = f'MST={lower_bound:.4f}'
 
-                for algo in algorithms:
-                    self.get_logger().info(
-                        f"Running {algo} on region {region_key} (N={n_vp})...")
-                    path, distance = self._run_algorithm(algo, viewpoints, dm)
-                    if path is None:
-                        continue
+                self.get_logger().info(
+                    f"Running {primary} on region {region_key} (N={n_vp})...")
+                path, distance = self._run_algorithm(primary, viewpoints, dm)
+                if path is None:
+                    continue
 
-                    prev_best = self.algorithm_results[algo].get(region_key, {}).get('distance', float('inf'))
-                    improved = distance < prev_best - 1e-10
-                    if improved or region_key not in self.algorithm_results[algo]:
-                        self.algorithm_results[algo][region_key] = {
-                            'path': path.copy(),
-                            'distance': distance
-                        }
-                    else:
-                        # Keep the previously stored best; restore distance for logging
-                        distance = prev_best
-                        path = self.algorithm_results[algo][region_key]['path']
+                prev_best = self.algorithm_results[primary].get(region_key, {}).get('distance', float('inf'))
+                improved = distance < prev_best - 1e-10
+                if improved or region_key not in self.algorithm_results[primary]:
+                    self.algorithm_results[primary][region_key] = {
+                        'path': path.copy(),
+                        'distance': distance
+                    }
+                else:
+                    # Keep the previously stored best; restore distance for logging
+                    distance = prev_best
+                    path = self.algorithm_results[primary][region_key]['path']
 
-                    # Store this algorithm's path under its own key in the region.
-                    path_to_save = path[:-1] if (len(path) > 0 and path[-1] == path[0]) else path
-                    order_dict[algo] = list(path_to_save)
+                # Store this algorithm's path and metrics under its own key.
+                path_to_save = path[:-1] if (len(path) > 0 and path[-1] == path[0]) else path
+                order_dict[primary] = {
+                    'order': list(path_to_save),
+                    'distance': float(distance),
+                }
 
-                    gap_pct = ((distance - lower_bound) / lower_bound * 100.0
-                            if lower_bound > 1e-9 else 0.0)
-                    tag = ' [EXACT OPTIMAL]' if (n_vp <= 18 and gap_pct < 0.01) else (
-                        ' [best kept]' if not improved else '')
-                    self.get_logger().info(
-                        f'  {algo}: {distance:.4f} m | {bound_label} | '
-                        f'Gap={gap_pct:.2f}%{tag}  (N={n_vp})')
+                gap_pct = ((distance - lower_bound) / lower_bound * 100.0
+                        if lower_bound > 1e-9 else 0.0)
+                tag = ' [EXACT OPTIMAL]' if (n_vp <= 18 and gap_pct < 0.01) else (
+                    ' [best kept]' if not improved else '')
+                self.get_logger().info(
+                    f'  {primary}: {distance:.4f} m | {bound_label} | '
+                    f'Gap={gap_pct:.2f}%{tag}  (N={n_vp})')
 
-                    if algo == primary:
-                        self._region_gaps[region_key] = {
-                            'n': n_vp,
-                            'distance': distance,
-                            'lower_bound': lower_bound,
-                            'gap_pct': gap_pct,
-                            'exact': n_vp <= 18
-                        }
+                self._region_gaps[region_key] = {
+                    'n': n_vp,
+                    'distance': distance,
+                    'lower_bound': lower_bound,
+                    'gap_pct': gap_pct,
+                    'exact': n_vp <= 18
+                }
 
                 self.completed_algorithms.add(primary)
 
-        viewpoint_dict['selected_traversal_algorithm'] = primary
+        # The selected algorithm is a parameter on the task_planning node (set
+        # via the GUI), which drives both the visualized path and the execution
+        # order. Each region keeps its per-algorithm 'order' dict here — each
+        # value being {'order': [...], 'distance': ...} — so any optimized
+        # algorithm can be chosen.
         return viewpoint_dict
 
     # ── Core primitives ───────────────────────────────────────────────────────
@@ -908,10 +871,6 @@ class ViewpointTraversalNode(Node):
                 self.tsp_algorithm = param.value
             elif param.name == 'clear_paths':
                 self.clear_paths = param.value
-            elif param.name == 'compare':
-                self.compare = param.value
-            elif param.name == 'compare_algorithms':
-                self.compare_algorithms = param.value
 
         return SetParametersResult(successful=True)
 

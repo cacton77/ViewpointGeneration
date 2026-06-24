@@ -140,10 +140,10 @@ def generate_launch_description():
     )
 
     return LaunchDescription(declared_arguments + [
-        viewpoint_generation_launch,
-        # foxglove_bridge_node,
-        # task_planning_node,
         control_moveit_launch,
+        viewpoint_generation_launch,
         viewpoint_traversal_launch,
-        # admittance_control_launch,
+        task_planning_node,
+        admittance_control_launch,
+        foxglove_bridge_node,
     ])
