@@ -8,7 +8,7 @@ from rclpy.duration import Duration
 from rclpy.action import ActionServer
 from viewpoint_generation.viewpoint_generation import ViewpointGeneration
 from rcl_interfaces.msg import (
-    SetParametersResult, ParameterDescriptor, ParameterType,
+    SetParametersResult, ParameterDescriptor,
     FloatingPointRange, IntegerRange,
 )
 from importlib import resources as importlib_resources
@@ -26,33 +26,11 @@ from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObj
 from viewpoint_generation_interfaces.srv import OptimizeViewpointTraversal
 
 
-def _resolve_order_indices(order, selected_algorithm=None):
-    """Resolve a region's traversal order into a flat list of cluster indices.
-
-    ``order`` is a plain list before traversal optimization and a dict keyed by
-    TSP algorithm name afterwards. Each algorithm maps to
-    ``{'order': [...], 'distance': ...}`` (older files stored the bare index
-    list — both are handled). For a dict, prefer ``selected_algorithm``;
-    otherwise fall back to the first available algorithm's path.
-    """
-    if isinstance(order, dict):
-        if not order:
-            return []
-        entry = order.get(selected_algorithm, next(iter(order.values())))
-        if isinstance(entry, dict):
-            return entry.get('order', [])
-        return entry
-    return order
-
-
 class ViewpointGenerationNode(rclpy.node.Node):
 
     block_next_param_callback = False
     initialized = False
     mesh = None
-    mesh_order_index = 0
-    region_order_index = 0
-    cluster_order_index = 0
 
     def __init__(self):
         node_name = 'viewpoint_generation'
@@ -152,9 +130,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
             namespace='',
             parameters=[
                 ('results.file', ''),
-                ('results.selected_mesh', 0),
-                ('results.selected_region', 0),
-                ('results.selected_cluster', 0),
                 ('settings.data_path', '/tmp'),
                 ('settings.pv_opacity', 0.0),
             ]
@@ -220,11 +195,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 'model.point_cloud.sampling.number_of_points').get_parameter_value().integer_value)
         self.pv_opacity = self.get_parameter(
             'settings.pv_opacity').get_parameter_value().double_value
-
-        self.set_selected_mesh_region_and_cluster(self.get_parameter('results.selected_mesh').get_parameter_value().integer_value,
-                                                  self.get_parameter(
-                                                      'results.selected_region').get_parameter_value().integer_value,
-                                                  self.get_parameter('results.selected_cluster').get_parameter_value().integer_value)
 
         self.add_on_set_parameters_callback(self.parameter_callback)
 
@@ -532,9 +502,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             self.block_next_param_callback = True
             self.set_parameters([results_file_param])
-
-            if self.initialized:
-                self.set_selected_mesh_region_and_cluster(0, 0, 0)
 
             return True
 
@@ -860,148 +827,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
         except Exception as e:
             self.get_logger().error(f"Optimization failed: {e}")
 
-    def set_selected_mesh_region_and_cluster(self, mesh_order_index, region_order_index, cluster_order_index):
-        """
-        Helper function to set the selected region and viewpoint for visualization.
-        :param mesh_order_index: The index of the selected mesh in the results.
-        :param region_order_index: The index of the selected region in the region order list.
-        :param cluster_order_index: The index of the selected cluster in the cluster order list.
-        :return: None
-        """
-
-        if mesh_order_index != self.mesh_order_index:
-            # Reset selected region and cluster if the mesh has changed to avoid out of bounds errors
-            region_order_index = 0
-            cluster_order_index = 0
-        if region_order_index != self.region_order_index:
-            # Reset selected cluster if the region has changed to avoid out of bounds errors
-            cluster_order_index = 0
-
-        if not self.viewpoint_generation.results:
-            self.get_logger().warn("No results loaded.")
-            number_of_meshes = 0
-            selected_mesh = 0
-            number_of_regions = 0
-            selected_region = 0
-            number_of_clusters = 0
-            selected_cluster = 0
-
-        else:
-
-            number_of_meshes = len(self.viewpoint_generation.results['meshes'])
-
-            if number_of_meshes == 0:
-                self.get_logger().warn(
-                    "No meshes found in results. Cannot set selected region and viewpoint.")
-                selected_mesh = 0
-                number_of_regions = 0
-                selected_region = 0
-                number_of_clusters = 0
-                selected_cluster = 0
-            if mesh_order_index >= number_of_meshes:
-                self.get_logger().warn(
-                    f"Selected mesh index {mesh_order_index} is out of bounds for results.")
-                selected_mesh = 0
-                number_of_regions = 0
-                selected_region = 0
-                number_of_clusters = 0
-                selected_cluster = 0
-            else:
-                selected_mesh = mesh_order_index
-
-                number_of_regions = len(
-                    self.viewpoint_generation.results['meshes'][selected_mesh]['order'])
-
-                if number_of_regions == 0:
-                    self.get_logger().warn(
-                        "No mesh order found in results. Cannot set selected region and viewpoint.")
-                    selected_region = 0
-                    number_of_clusters = 0
-                    selected_cluster = 0
-                elif region_order_index >= number_of_regions:
-                    self.get_logger().warn(
-                        f"Selected region index {region_order_index} is out of bounds for mesh {mesh_order_index}.")
-                    selected_region = 0
-                    number_of_clusters = 0
-                    selected_cluster = 0
-                else:
-
-                    selected_region = self.viewpoint_generation.results[
-                        'meshes'][selected_mesh]['order'][region_order_index]
-
-                    cluster_order = _resolve_order_indices(
-                        self.viewpoint_generation.results['meshes'][selected_mesh]['regions'][selected_region]['order'],
-                        self.viewpoint_generation.results.get('selected_traversal_algorithm'))
-                    number_of_clusters = len(cluster_order)
-
-                    if number_of_clusters == 0:
-                        self.get_logger().warn(
-                            f"No clusters found for region {selected_region}. Cannot set selected viewpoint.")
-                        selected_cluster = 0
-                    elif cluster_order_index >= number_of_clusters:
-                        self.get_logger().warn(
-                            f"Selected cluster index {cluster_order_index} is out of bounds for region {selected_region}.")
-                        selected_cluster = 0
-                    else:
-                        selected_cluster = cluster_order[cluster_order_index]
-
-        selected_mesh_param = rclpy.parameter.Parameter(
-            'results.selected_mesh',
-            rclpy.Parameter.Type.INTEGER,
-            mesh_order_index
-        )
-        selected_region_param = rclpy.parameter.Parameter(
-            'results.selected_region',
-            rclpy.Parameter.Type.INTEGER,
-            region_order_index
-        )
-        selected_cluster_param = rclpy.parameter.Parameter(
-            'results.selected_cluster',
-            rclpy.Parameter.Type.INTEGER,
-            cluster_order_index
-        )
-        selected_mesh_descriptor = ParameterDescriptor()
-        selected_mesh_descriptor.type = ParameterType.PARAMETER_INTEGER
-        selected_mesh_descriptor.description = f"Index of the selected mesh"
-        selected_mesh_descriptor.additional_constraints = "slider"
-        mesh_ir = IntegerRange()
-        mesh_ir.from_value = int(0)
-        mesh_ir.to_value = max(0, int(number_of_meshes - 1))
-        mesh_ir.step = 1
-        selected_mesh_descriptor.integer_range = [mesh_ir]
-
-        selected_region_descriptor = ParameterDescriptor()
-        selected_region_descriptor.type = ParameterType.PARAMETER_INTEGER
-        selected_region_descriptor.description = f"Index of the selected region for the selected mesh"
-        selected_region_descriptor.additional_constraints = "slider"
-        region_ir = IntegerRange()
-        region_ir.from_value = int(0)
-        region_ir.to_value = max(0, int(number_of_regions - 1))
-        region_ir.step = 1
-        selected_region_descriptor.integer_range = [region_ir]
-
-        selected_cluster_descriptor = ParameterDescriptor()
-        selected_cluster_descriptor.type = ParameterType.PARAMETER_INTEGER
-        selected_cluster_descriptor.description = f"Index of the selected viewpoint"
-        selected_cluster_descriptor.additional_constraints = "slider"
-        cluster_ir = IntegerRange()
-        cluster_ir.from_value = int(0)
-        cluster_ir.to_value = max(0, int(number_of_clusters - 1))
-        cluster_ir.step = 1
-        selected_cluster_descriptor.integer_range = [cluster_ir]
-
-        self.set_parameters_blocked(
-            [selected_mesh_param, selected_region_param, selected_cluster_param])
-        self.set_descriptor('results.selected_mesh', selected_mesh_descriptor)
-        self.set_descriptor('results.selected_region',
-                            selected_region_descriptor)
-        self.set_descriptor('results.selected_cluster',
-                            selected_cluster_descriptor)
-
-        self.mesh_order_index = mesh_order_index
-        self.region_order_index = region_order_index
-        self.cluster_order_index = cluster_order_index
-
     def parameter_callback(self, params):
         """ Callback for parameter changes.
         :param params: List of parameters that have changed.
@@ -1063,15 +888,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     self.get_logger().error(message)
             elif param.name == 'results.file':
                 success = self.set_results_file(param.value)
-            elif param.name == 'results.selected_mesh':
-                self.set_selected_mesh_region_and_cluster(
-                    param.value, self.region_order_index, self.cluster_order_index)
-            elif param.name == 'results.selected_region':
-                self.set_selected_mesh_region_and_cluster(
-                    self.mesh_order_index, param.value, self.cluster_order_index)
-            elif param.name == 'results.selected_cluster':
-                self.set_selected_mesh_region_and_cluster(
-                    self.mesh_order_index, self.region_order_index, param.value)
             elif param.name == 'settings.data_path':
                 self.set_data_path(param.value)
             elif param.name == 'settings.pv_opacity':

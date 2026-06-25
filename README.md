@@ -182,8 +182,14 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
 - `model.point_cloud.units` -- Point cloud units
 - `model.point_cloud.sampling.number_of_points` -- Sampling density
 - `results.file` -- Path to results JSON
-- `results.selected_mesh`, `results.selected_region`, `results.selected_cluster` -- Selection state
 - `settings.data_path` -- Base data directory
+
+> Mesh/region/viewpoint **selection state** lives on the `task_planning` node
+> (`navigation.selected_mesh`, `navigation.selected_region`,
+> `navigation.selected_viewpoint`), not here. The GUI and visualizer track those
+> parameters; `navigation.selected_mesh` is visualization-only while
+> `navigation.selected_region`/`navigation.selected_viewpoint` also scope robot
+> execution.
 
 **Publishers:**
 
@@ -195,7 +201,7 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
 
 ### Other Nodes
 
-- **task_planning_node** -- State machine for robot motion control, manages servo/trajectory controller switching
+- **task_planning_node** -- State machine for robot motion control, manages servo/trajectory controller switching. Parameters are namespaced (`controllers.*`, `navigation.*`, `settings.*`) so the GUI renders one tab per namespace. Owns the mesh/region/viewpoint selection parameters (`navigation.selected_mesh`, `navigation.selected_region`, `navigation.selected_viewpoint`, declared with live slider ranges) and `navigation.selected_traversal_algorithm`; `settings.results_file` points it at the results JSON to plan/execute over; the GUI/visualizer track these to highlight the selected geometry
 - **viewpoint_traversal_node** -- MoveIt-based motion planning to viewpoints with TSP optimization and workspace constraints
 - **gui_node** -- Open3D visualization GUI with interactive mesh, region, cluster, and viewpoint rendering
 

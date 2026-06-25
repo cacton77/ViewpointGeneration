@@ -368,24 +368,24 @@ class ROSThread(Node):
 
     def select_region(self, region_index):
         self.set_target_node_parameter(self.task_planning_node_name,
-                                       'selected_region', region_index)
+                                       'navigation.selected_region', region_index)
 
     def select_cluster(self, cluster_index):
         """Select a cluster based on cluster index"""
         self.set_target_node_parameter(self.task_planning_node_name,
-                                       'selected_viewpoint', cluster_index)
+                                       'navigation.selected_viewpoint', cluster_index)
 
     def select_traversal_algorithm(self, algorithm):
         """Select which TSP algorithm's path to follow (visualization +
         execution). Sets the parameter on the task_planning node."""
         self.set_target_node_parameter(self.task_planning_node_name,
-                                       'selected_traversal_algorithm', algorithm)
+                                       'navigation.selected_traversal_algorithm', algorithm)
 
-    def set_viewpoints_file(self, file_path):
+    def set_results_file(self, file_path):
         """Point the task_planning node at the loaded results file so it
         plans/executes over the same viewpoints the GUI is visualizing."""
         self.set_target_node_parameter(self.task_planning_node_name,
-                                       'viewpoints_file', file_path)
+                                       'settings.results_file', file_path)
 
     def optimize_traversal(self):
         """Optimize the viewpoint traversal path"""

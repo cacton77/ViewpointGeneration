@@ -1528,7 +1528,7 @@ class Visualizer:
         """Highlight the selected cluster and its viewpoint via mesh vertex coloring."""
         # Scope lookup to the currently selected region so the index is
         # relative to that region rather than the flat list of all clusters.
-        if self.selected_region_name:
+        if self.selected_region_name and self.selected_region_name in self.geometries_dict:
             region_clusters = self._cluster_names_for_region(self.selected_region_name)
         else:
             region_clusters = self.cluster_names
@@ -1540,6 +1540,17 @@ class Visualizer:
                 f"{self.selected_cluster_name}_viewpoint", Materials.viewpoint_material)
         selected_cluster_name = region_clusters[cluster_idx]
         self.selected_cluster_name = selected_cluster_name
+
+        # Recover the owning region from the cluster name when no region is
+        # currently selected. select_cluster is driven independently by the
+        # task_planning navigation.selected_viewpoint parameter, which can fire
+        # without a matching select_region (e.g. right after projecting
+        # viewpoints, when only the viewpoint slider's range changes). Without
+        # this, selected_region_name stays '' and the cluster-coloring loop
+        # below is skipped, leaving the whole mesh painted base gray ("white").
+        owning_region = selected_cluster_name.rsplit('_cluster_', 1)[0]
+        if owning_region in self.geometries_dict:
+            self.selected_region_name = owning_region
 
         # Color only the clusters within the selected region; leave every
         # other region gray. The selected cluster keeps its full color and the

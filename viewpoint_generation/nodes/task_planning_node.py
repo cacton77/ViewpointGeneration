@@ -16,7 +16,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from ament_index_python.packages import get_package_prefix
 
 from std_msgs.msg import Bool
-from rcl_interfaces.msg import SetParametersResult
+from rcl_interfaces.msg import SetParametersResult, ParameterDescriptor, ParameterType, IntegerRange
 from geometry_msgs.msg import PoseStamped
 
 from std_srvs.srv import Trigger, SetBool
@@ -81,6 +81,14 @@ class TaskPlanningNode(Node):
 
     selected_viewpoint = None
 
+    # Live mesh/region/viewpoint selection indices (visualization + execution
+    # scope). selected_mesh is visualization-only; planning/execution always
+    # operate on mesh 0 (self.viewpoints).
+    _sel_mesh = 0
+    _sel_region = 0
+    _sel_viewpoint = 0
+    results_dict = {}
+
     def __init__(self):
         super().__init__(self.node_name)
         self.get_logger().info('Task Planning Node Initialized')
@@ -106,32 +114,56 @@ class TaskPlanningNode(Node):
             State.SHUTDOWN: []
         }
 
+        # Parameters are namespaced (controllers.*, navigation.*, settings.*) so
+        # the GUI can render one tab per namespace in the task_planning panel.
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('servo_controllers', ['ur5e_forward_velocity_controller',
-                                       'turntable_forward_position_controller']),
-                ('trajectory_controllers', ['inspection_cell_controller']),
-                ('servo_node_name', 'servo_node'),
-                ('controller_manager_name', '/controller_manager'),
-                ('viewpoints_file', ''),
-                ('selected_region', 0),
-                ('selected_viewpoint', 0),
-                ('selected_traversal_algorithm', ''),
+                ('controllers.servo_controllers', ['ur5e_forward_velocity_controller',
+                                                   'turntable_forward_position_controller']),
+                ('controllers.trajectory_controllers', ['inspection_cell_controller']),
+                ('controllers.servo_node_name', 'servo_node'),
+                ('controllers.controller_manager_name', '/controller_manager'),
+                ('settings.results_file', ''),
+                ('navigation.selected_traversal_algorithm', ''),
                 ('settings.data_path', '/tmp')
             ]
         )
 
+        # Mesh/region/viewpoint selection parameters. Declared from a config
+        # dict so the GUI renders them as sliders (control='slider') and so the
+        # IntegerRange descriptors can be resized live as viewpoints load (see
+        # _declare_selection_parameters / update_selection). This mirrors the
+        # config-dict driven declaration in the viewpoint_generation node.
+        self.selection_config = {
+            'navigation.selected_mesh': {
+                'value': 0, 'type': 'integer', 'range': [0, 0],
+                'control': 'slider',
+                'description': 'Index of the selected mesh (visualization only)',
+            },
+            'navigation.selected_region': {
+                'value': 0, 'type': 'integer', 'range': [0, 0],
+                'control': 'slider',
+                'description': 'Index of the selected region',
+            },
+            'navigation.selected_viewpoint': {
+                'value': 0, 'type': 'integer', 'range': [0, 0],
+                'control': 'slider',
+                'description': 'Index of the selected viewpoint within the region',
+            },
+        }
+        self._declare_selection_parameters()
+
         self.add_on_set_parameters_callback(self.parameter_callback)
 
         self.servo_controllers = self.get_parameter(
-            'servo_controllers').get_parameter_value().string_array_value
+            'controllers.servo_controllers').get_parameter_value().string_array_value
         self.trajectory_controllers = self.get_parameter(
-            'trajectory_controllers').get_parameter_value().string_array_value
+            'controllers.trajectory_controllers').get_parameter_value().string_array_value
         self.servo_node_name = self.get_parameter(
-            'servo_node_name').get_parameter_value().string_value
+            'controllers.servo_node_name').get_parameter_value().string_value
         self.controller_manager_name = self.get_parameter(
-            'controller_manager_name').get_parameter_value().string_value
+            'controllers.controller_manager_name').get_parameter_value().string_value
 
         # Set data path
         self.set_data_path(self.get_parameter(
@@ -141,13 +173,17 @@ class TaskPlanningNode(Node):
         # per-algorithm dict. Source of truth (set via the GUI); replaces the
         # old results-file 'selected_traversal_algorithm' field.
         self.selected_traversal_algorithm = self.get_parameter(
-            'selected_traversal_algorithm').get_parameter_value().string_value
+            'navigation.selected_traversal_algorithm').get_parameter_value().string_value
 
         self.load_viewpoints(self.get_parameter(
-            'viewpoints_file').get_parameter_value().string_value)
+            'settings.results_file').get_parameter_value().string_value)
 
-        self.select_viewpoint(self.get_parameter('selected_region').get_parameter_value().integer_value,
-                              self.get_parameter('selected_viewpoint').get_parameter_value().integer_value)
+        # Clamp the initial selection to the loaded data and publish the live
+        # slider ranges to the GUI.
+        self.update_selection(
+            self.get_parameter('navigation.selected_mesh').get_parameter_value().integer_value,
+            self.get_parameter('navigation.selected_region').get_parameter_value().integer_value,
+            self.get_parameter('navigation.selected_viewpoint').get_parameter_value().integer_value)
 
         # Callback groups
         subscriber_callback_group = ReentrantCallbackGroup()
@@ -289,6 +325,7 @@ class TaskPlanningNode(Node):
 
     def load_viewpoints(self, filepath):
         self.viewpoints = []
+        self.results_dict = {}
         if filepath == '':
             self.get_logger().warning('Viewpoints file cleared, no viewpoints loaded')
             return False
@@ -302,6 +339,10 @@ class TaskPlanningNode(Node):
 
         with open(filepath, 'r') as f:
             results_dict = json.load(f)
+
+        # Keep the full results dict so update_selection can size the
+        # selected_mesh slider (planning/execution still use mesh 0 below).
+        self.results_dict = results_dict
 
         mesh_dict = results_dict['meshes'][0]
         region_order = mesh_dict['order']
@@ -370,71 +411,116 @@ class TaskPlanningNode(Node):
             self.get_logger().info(
                 'Service call failed %r' % (e,))
 
-    def select_viewpoint(self, region_index, viewpoint_index):
+    def _make_descriptor(self, field_info):
+        """Build a ParameterDescriptor from a selection_config entry."""
+        descriptor = ParameterDescriptor()
+        descriptor.description = field_info.get('description', '')
+        descriptor.additional_constraints = field_info.get('control', '')
+        range_val = field_info.get('range')
+        if field_info.get('type') == 'integer':
+            descriptor.type = ParameterType.PARAMETER_INTEGER
+        if range_val is not None and field_info.get('type') == 'integer':
+            ir = IntegerRange()
+            ir.from_value = int(range_val[0])
+            ir.to_value = int(range_val[1])
+            ir.step = 1
+            descriptor.integer_range = [ir]
+        return descriptor
+
+    def _declare_selection_parameters(self):
+        """Declare the selection parameters from self.selection_config with
+        full descriptors so the GUI renders them as sliders."""
+        for field_name, field_info in self.selection_config.items():
+            self.declare_parameter(
+                field_name, field_info['value'],
+                self._make_descriptor(field_info))
+
+    def _set_selection_descriptor(self, name, count):
+        """Resize the IntegerRange descriptor of a selection slider to [0, count-1]."""
+        descriptor = ParameterDescriptor()
+        descriptor.type = ParameterType.PARAMETER_INTEGER
+        descriptor.description = self.selection_config[name]['description']
+        descriptor.additional_constraints = 'slider'
+        ir = IntegerRange()
+        ir.from_value = 0
+        ir.to_value = max(0, int(count) - 1)
+        ir.step = 1
+        descriptor.integer_range = [ir]
+        self.set_descriptor(name, descriptor)
+
+    def update_selection(self, mesh_index, region_index, viewpoint_index):
+        """Clamp and apply the mesh/region/viewpoint selection.
+
+        Mirrors the dynamic-descriptor behaviour the viewpoint_generation node
+        used to provide: child indices reset when a parent changes, indices are
+        clamped to the loaded data, the active viewpoint pose is resolved for
+        execution, and the IntegerRange descriptors are resized to the live
+        counts so the GUI sliders track the data. ``selected_mesh`` is
+        visualization scope only — planning/execution always use mesh 0
+        (``self.viewpoints``).
+
+        :return: True if a valid viewpoint pose is selected, False otherwise.
         """
-        Helper function to select a viewpoint based on region and cluster indices.
-        :param region_index: The index of the region to select.
-        :param cluster_index: The index of the cluster to select.
-        :return: None
-        """
-        if self.viewpoints is None:
-            self.get_logger().error('No viewpoints loaded')
-            viewpoint = None
-        if self.viewpoints is None or len(self.viewpoints) == 0:
-            self.get_logger().error('No viewpoints loaded')
-            viewpoint = None
+        # Reset child selections when a parent changes to avoid stale indices.
+        if mesh_index != self._sel_mesh:
+            region_index = 0
+            viewpoint_index = 0
+        if region_index != self._sel_region:
+            viewpoint_index = 0
 
-        if region_index < 0 or region_index >= len(self.viewpoints):
-            self.get_logger().error(f'Invalid region index: {region_index}')
-            viewpoint = None
-        elif viewpoint_index < 0 or viewpoint_index >= len(self.viewpoints[region_index]):
-            self.get_logger().error(
-                f'Invalid viewpoint index: {viewpoint_index}')
-            viewpoint = None
-        else:
-            viewpoint = self.viewpoints[region_index][viewpoint_index]
+        number_of_meshes = len(self.results_dict.get('meshes', [])) \
+            if self.results_dict else 0
+        number_of_regions = len(self.viewpoints)
 
-        if viewpoint is None:
-            # Reset the selected region and viewpoint parameters
-            selected_region_param = rclpy.parameter.Parameter(
-                'selected_region',
-                rclpy.Parameter.Type.INTEGER,
-                0
-            )
-            selected_viewpoint_param = rclpy.parameter.Parameter(
-                'selected_viewpoint',
-                rclpy.Parameter.Type.INTEGER,
-                0
-            )
-            self.block_next_param_callback = True
-            self.set_parameters([selected_region_param])
-            self.block_next_param_callback = True
-            self.set_parameters([selected_viewpoint_param])
+        # Clamp mesh/region; reset descendants when out of bounds.
+        if mesh_index < 0 or mesh_index >= number_of_meshes:
+            mesh_index = 0
+        if region_index < 0 or region_index >= number_of_regions:
+            region_index = 0
+            viewpoint_index = 0
 
-            self.selected_viewpoint = None
+        number_of_viewpoints = (len(self.viewpoints[region_index])
+                                if 0 <= region_index < number_of_regions else 0)
+        if viewpoint_index < 0 or viewpoint_index >= number_of_viewpoints:
+            viewpoint_index = 0
 
-            return False
-        else:
-            selected_region_param = rclpy.parameter.Parameter(
-                'selected_region',
-                rclpy.Parameter.Type.INTEGER,
-                region_index
-            )
-            selected_viewpoint_param = rclpy.parameter.Parameter(
-                'selected_viewpoint',
-                rclpy.Parameter.Type.INTEGER,
-                viewpoint_index
-            )
-            self.block_next_param_callback = True
-            self.set_parameters([selected_region_param])
-            self.block_next_param_callback = True
-            self.set_parameters([selected_viewpoint_param])
-
-            self.selected_viewpoint = viewpoint
+        # Resolve the active viewpoint pose for execution.
+        if number_of_viewpoints > 0:
+            self.selected_viewpoint = self.viewpoints[region_index][viewpoint_index]
             self.get_logger().info(
                 f'Selected viewpoint {viewpoint_index} in region {region_index}')
+        else:
+            self.selected_viewpoint = None
+            if number_of_regions == 0:
+                self.get_logger().warning('No viewpoints loaded')
 
-            return True
+        self._sel_mesh = mesh_index
+        self._sel_region = region_index
+        self._sel_viewpoint = viewpoint_index
+
+        # Write the clamped values back (blocked so we don't re-enter selection).
+        for pname, value in (('navigation.selected_mesh', mesh_index),
+                             ('navigation.selected_region', region_index),
+                             ('navigation.selected_viewpoint', viewpoint_index)):
+            param = rclpy.parameter.Parameter(
+                pname, rclpy.Parameter.Type.INTEGER, value)
+            self.block_next_param_callback = True
+            self.set_parameters([param])
+
+        # Resize the slider ranges to the live counts.
+        self._set_selection_descriptor('navigation.selected_mesh', number_of_meshes)
+        self._set_selection_descriptor('navigation.selected_region', number_of_regions)
+        self._set_selection_descriptor('navigation.selected_viewpoint', number_of_viewpoints)
+
+        return self.selected_viewpoint is not None
+
+    def select_viewpoint(self, region_index, viewpoint_index):
+        """Select a viewpoint by region/viewpoint index (keeping the current
+        mesh). Thin wrapper over update_selection used by the inspection action.
+
+        :return: True if a valid viewpoint pose is selected, False otherwise.
+        """
+        return self.update_selection(self._sel_mesh, region_index, viewpoint_index)
 
     def publish_selected_viewpoint(self):
         """
@@ -682,7 +768,7 @@ class TaskPlanningNode(Node):
         feedback_msg = InspectRegion.Feedback()
 
         selected_region = self.get_parameter(
-            'selected_region').get_parameter_value().integer_value
+            'navigation.selected_region').get_parameter_value().integer_value
         for i in range(len(self.viewpoints[selected_region])-1):
             self.select_viewpoint(selected_region, i)
             self.flags.move_to_viewpoint = True
@@ -715,31 +801,37 @@ class TaskPlanningNode(Node):
 
         for param in params:
             # Viewpoints file parameter
-            if param.name == 'viewpoints_file' and param.type_ == param.Type.STRING:
+            if param.name == 'settings.results_file' and param.type_ == param.Type.STRING:
                 success = self.load_viewpoints(param.value)
+                # Reclamp the selection and refresh the slider ranges to match
+                # the newly loaded data.
+                self.update_selection(
+                    self._sel_mesh, self._sel_region, self._sel_viewpoint)
                 self.get_logger().info(
                     f'Viewpoints file changed to: {param.value}')
-            # Viewpoint selection parameters
-            elif param.name == 'selected_region':
-                region_index = param.value
-                viewpoint_index = self.get_parameter(
-                    'selected_viewpoint').get_parameter_value().integer_value
-                success = self.select_viewpoint(region_index, viewpoint_index)
-            elif param.name == 'selected_viewpoint':
-                viewpoint_index = param.value
-                region_index = self.get_parameter(
-                    'selected_region').get_parameter_value().integer_value
-                success = self.select_viewpoint(region_index, viewpoint_index)
+            # Mesh/region/viewpoint selection — drives both the visualizer
+            # (via the GUI) and the active viewpoint pose for execution.
+            elif param.name == 'navigation.selected_mesh':
+                self.update_selection(
+                    param.value, self._sel_region, self._sel_viewpoint)
+            elif param.name == 'navigation.selected_region':
+                self.update_selection(
+                    self._sel_mesh, param.value, self._sel_viewpoint)
+            elif param.name == 'navigation.selected_viewpoint':
+                self.update_selection(
+                    self._sel_mesh, self._sel_region, param.value)
             # Traversal algorithm selection — record the preference and reload
             # viewpoints so the execution order follows the newly chosen path.
             # The parameter set itself always succeeds: an empty/unset
-            # viewpoints_file just means there is nothing to reload yet.
-            elif param.name == 'selected_traversal_algorithm':
+            # results_file just means there is nothing to reload yet.
+            elif param.name == 'navigation.selected_traversal_algorithm':
                 self.selected_traversal_algorithm = param.value
-                viewpoints_file = self.get_parameter(
-                    'viewpoints_file').get_parameter_value().string_value
-                if viewpoints_file:
-                    self.load_viewpoints(viewpoints_file)
+                results_file = self.get_parameter(
+                    'settings.results_file').get_parameter_value().string_value
+                if results_file:
+                    self.load_viewpoints(results_file)
+                    self.update_selection(
+                        self._sel_mesh, self._sel_region, self._sel_viewpoint)
 
         result = SetParametersResult()
         result.successful = success
