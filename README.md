@@ -141,11 +141,16 @@ PartField produces no noise points (every face is assigned a part).
 |---|---|---|
 | `fov_diameter` | 0.03 m | Camera field of view diameter at focal distance |
 | `dof` | 0.02 m | Depth of field |
-| `point_density` | 10.0 | Target points per square millimeter |
-| `lambda_weight` | 1.0 | Weight for out-of-FOV penalty in cost function |
-| `beta_weight` | 1.0 | Weight for packing efficiency in cost function |
+| `point_density` | 10.0 | Target points per square millimeter (K-means only) |
+| `lambda_weight` | 1.0 | Weight for out-of-FOV penalty in cost function (K-means only) |
+| `beta_weight` | 1.0 | Weight for packing efficiency in cost function (K-means only) |
 | `point_weight` | 1.0 | Weight for point positions in K-means |
 | `normal_weight` | 1.0 | Weight for point normals in K-means |
+| `algorithm` | `kmeans` | Clustering algorithm: `kmeans` (Bayesian-optimised K-means) or `greedy_cover` (greedy set cover) |
+| `fov_normal_threshold` | π/4 rad | Max surface-normal incidence angle for the `greedy_cover` coverage predicate |
+| `candidate_spacing` | 0.0 m | Anchor spacing for `greedy_cover` candidate sampling; 0.0 = auto = `fov_diameter/2` |
+| `prune_redundant` | `true` | Remove redundant viewpoints after greedy cover (cannot open coverage holes) |
+| `rng_seed` | 0 | Random seed for `greedy_cover` candidate sampling (reproducibility) |
 
 **ViewpointProjectionConfig**
 
@@ -176,6 +181,7 @@ Wraps the core library, exposing each pipeline stage as a ROS service and all co
 All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`, and `ViewpointProjectionConfig` fields are declared as ROS parameters with type information and valid ranges (prefixed `regions.region_growth.`, `regions.partfield.`, `regions.fov_clustering.`, and `viewpoints.projection.` respectively). Additional parameters:
 
 - `regions.segmentation_algorithm` -- Surface segmentation algorithm: `region_growth` (default) or `partfield`
+- `regions.fov_clustering.algorithm` -- FOV clustering algorithm: `kmeans` (default) or `greedy_cover`
 - `model.mesh.file` -- Path to the mesh file
 - `model.mesh.units` -- Mesh units (`m`, `cm`, `mm`, `in`)
 - `model.point_cloud.file` -- Path to a pre-sampled point cloud

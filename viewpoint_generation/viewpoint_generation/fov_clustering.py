@@ -6,6 +6,7 @@ import numpy as np
 import open3d as o3d
 from multiprocessing import Queue, Process
 from scipy.spatial.distance import euclidean
+from scipy.spatial import cKDTree
 from itertools import permutations
 
 from sklearn.cluster import KMeans  # . . . . . . . . K-means
@@ -37,6 +38,15 @@ class FOVClusteringConfig:
     normal_weight: float = 1.0  # Weight for normals in clustering
     number_of_runs: int = 10  # Number of runs for KMeans
     maximum_iterations: int = 100  # Maximum iterations for KMeans
+
+    # Algorithm selector
+    algorithm: str = 'kmeans'  # 'kmeans' or 'greedy_cover'
+
+    # Greedy set-cover parameters
+    fov_normal_threshold: float = math.pi / 4  # Max incidence angle (rad) for coverage
+    candidate_spacing: float = 0.0  # Anchor spacing (m); 0.0 = auto = fov_diameter/2
+    prune_redundant: bool = True  # Drop redundant viewpoints after greedy cover
+    rng_seed: int = 0  # Seed for reproducible candidate sampling
 
     def to_dict(self):
         return {
@@ -110,7 +120,69 @@ class FOVClusteringConfig:
                 "control": "slider",
                 "range": [1, 1000],
             },
+            "algorithm": {
+                "value": self.algorithm,
+                "type": "string",
+                "description": "FOV clustering algorithm: 'kmeans' or 'greedy_cover'",
+                "control": "dropdown",
+            },
+            "fov_normal_threshold": {
+                "value": self.fov_normal_threshold,
+                "type": "float",
+                "description": "Max surface-normal incidence angle (radians) for greedy_cover coverage predicate",
+                "control": "slider",
+                "range": [0.0, math.pi],
+            },
+            "candidate_spacing": {
+                "value": self.candidate_spacing,
+                "type": "float",
+                "description": "Greedy cover anchor spacing in meters (0.0 = auto = fov_diameter/2)",
+                "control": "slider",
+                "range": [0.0, 0.5],
+            },
+            "prune_redundant": {
+                "value": self.prune_redundant,
+                "type": "bool",
+                "description": "Remove redundant viewpoints after greedy cover (preserves full coverage)",
+                "control": "checkbox",
+            },
+            "rng_seed": {
+                "value": self.rng_seed,
+                "type": "integer",
+                "description": "Random seed for greedy_cover candidate sampling (reproducibility)",
+                "control": "slider",
+                "range": [0, 2147483647],
+            },
         }
+
+
+def _farthest_point_sample(pts: np.ndarray, spacing: float, rng: np.random.Generator) -> list:
+    """Greedy maximin farthest-point sampling.
+
+    Returns a list of indices from pts such that every selected point is at
+    least `spacing` from all previously selected points (approximately — the
+    first point is chosen randomly and subsequent points maximise the minimum
+    distance to the selected set).  Always returns at least one index.
+    """
+    m = len(pts)
+    if m == 0:
+        return []
+    start = int(rng.integers(0, m))
+    selected = [start]
+    if m == 1:
+        return selected
+    min_dists = np.linalg.norm(pts - pts[start], axis=1)
+    min_dists[start] = 0.0
+    while True:
+        farthest_dist = float(np.max(min_dists))
+        if farthest_dist < spacing:
+            break
+        farthest = int(np.argmax(min_dists))
+        selected.append(farthest)
+        dists_to_new = np.linalg.norm(pts - pts[farthest], axis=1)
+        np.minimum(min_dists, dists_to_new, out=min_dists)
+        min_dists[farthest] = 0.0
+    return selected
 
 
 class FOVClustering:
@@ -385,12 +457,14 @@ class FOVClustering:
         return k_opt, valid_clusters
 
     def fov_clustering(self, point_cloud):
-        """ Partition a region of a point cloud into regions within camera fov and dof. 
+        """ Partition a region of a point cloud into regions within camera fov and dof.
         input: point cloud of a region (with normals) Open3D PointCloud
         Returns a list of clusters, where each cluster is a list of point indices. """
 
-        # Get the region point cloud
+        if self.config.algorithm == 'greedy_cover':
+            return self.greedy_cover_clustering(point_cloud)
 
+        # Default: K-means + Bayesian optimization path
         points = np.asarray(point_cloud.points)
         normals = np.asarray(point_cloud.normals)
 
@@ -398,6 +472,109 @@ class FOVClustering:
             points, normals, self.evaluate_fov_cluster)
 
         return fov_clusters
+
+    def greedy_cover_clustering(self, point_cloud):
+        """Greedy set-cover FOV clustering.
+
+        Replaces the K-means+BO path when algorithm=='greedy_cover'.
+        Returns the same container: a list of clusters, each a list of
+        LOCAL point indices into the sub-cloud (matching the K-means output).
+        """
+        pts = np.asarray(point_cloud.points)     # (m, 3)
+        normals = np.asarray(point_cloud.normals) # (m, 3)
+        m = len(pts)
+
+        if m == 0:
+            return []
+
+        cfg = self.config
+        fov_radius = cfg.fov_diameter / 2.0
+        half_dof = cfg.dof / 2.0
+        spacing = cfg.candidate_spacing if cfg.candidate_spacing > 0.0 else fov_radius
+        cos_thr = math.cos(cfg.fov_normal_threshold)
+        rng = np.random.default_rng(cfg.rng_seed)
+
+        # Normalize normals defensively
+        magnitudes = np.linalg.norm(normals, axis=1, keepdims=True)
+        magnitudes = np.where(magnitudes == 0.0, 1.0, magnitudes)
+        normals = normals / magnitudes
+
+        # Build KD-tree on the region sub-cloud
+        kdtree = cKDTree(pts)
+        broad_radius = math.sqrt(fov_radius**2 + half_dof**2)
+
+        def _coverage_set(center, axis):
+            """Return set of local indices covered by a candidate at (center, axis)."""
+            candidates = kdtree.query_ball_point(center, r=broad_radius)
+            if not candidates:
+                return set()
+            idx = np.array(candidates, dtype=np.intp)
+            d = pts[idx] - center                              # (k, 3)
+            axial = d @ axis                                   # (k,)
+            lateral = np.linalg.norm(d - np.outer(axial, axis), axis=1)  # (k,)
+            incidence = normals[idx] @ axis                    # (k,)
+            mask = (np.abs(axial) <= half_dof) & (lateral <= fov_radius) & (incidence >= cos_thr)
+            return set(idx[mask].tolist())
+
+        # --- 5.1  Candidate anchors via farthest-point sampling ---
+        anchor_ids = _farthest_point_sample(pts, spacing, rng)
+        cand_centers = [pts[i] for i in anchor_ids]
+        cand_axes   = [normals[i] for i in anchor_ids]
+        coverages   = [_coverage_set(c, a) for c, a in zip(cand_centers, cand_axes)]
+
+        # --- 5.3  Coverability guarantee: self-anchor any uncovered point ---
+        covered_union = set().union(*coverages) if coverages else set()
+        for p in range(m):
+            if p not in covered_union:
+                c, a = pts[p], normals[p]
+                cand_centers.append(c)
+                cand_axes.append(a)
+                coverages.append(_coverage_set(c, a))
+        covered_union = set().union(*coverages) if coverages else set()
+
+        # --- 5.4  Greedy forward set cover ---
+        uncovered = set(range(m))
+        chosen = []
+        n_cands = len(coverages)
+        while uncovered:
+            best = max(range(n_cands), key=lambda c: len(coverages[c] & uncovered))
+            gain = coverages[best] & uncovered
+            if not gain:
+                break   # remaining points intrinsically uncoverable
+            chosen.append(best)
+            uncovered -= gain
+
+        if not chosen:
+            return [list(range(m))]
+
+        # --- 5.5  Redundancy prune (AFTER coverage is guaranteed) ---
+        if cfg.prune_redundant and len(chosen) > 1:
+            for c in list(reversed(chosen)):
+                if len(chosen) == 1:
+                    break
+                others_union = set().union(*(coverages[o] for o in chosen if o != c))
+                if coverages[c] <= others_union:
+                    chosen.remove(c)
+
+        # --- 5.6  Disjoint assignment ---
+        assignment = {c: [] for c in chosen}
+        for p in range(m):
+            owners = [c for c in chosen if p in coverages[c]]
+            if not owners:
+                # Assign uncovered point to the nearest chosen candidate
+                owner = min(chosen, key=lambda c: float(np.linalg.norm(pts[p] - cand_centers[c])))
+            else:
+                def _sort_key(c):
+                    dot = float(np.dot(normals[p], cand_axes[c]))
+                    dot = max(-1.0, min(1.0, dot))
+                    angle = math.acos(dot)
+                    axial = abs(float(np.dot(pts[p] - cand_centers[c], cand_axes[c])))
+                    return (angle, axial)
+                owner = min(owners, key=_sort_key)
+            assignment[owner].append(p)
+
+        # --- 5.7  Emit (drop empty clusters) ---
+        return [members for members in assignment.values() if members]
 
 
 # Utility functions
