@@ -226,7 +226,7 @@ class ViewpointTraversalNode(Node):
             return viewpoint_dict
 
         primary = self.tsp_algorithm
-        self.algorithm_results.setdefault(primary, {})
+        self.solver.algorithm_results.setdefault(primary, {})
 
         self.solver._region_gaps = {}
 
@@ -243,8 +243,8 @@ class ViewpointTraversalNode(Node):
                     identity = list(range(n_clusters))
                     if n_clusters >= 2 and all('viewpoint' in c for c in clusters):
                         vps = [c['viewpoint']['position'] for c in clusters]
-                        identity_distance = self.dist_calc(
-                            self.dist_matrix(vps), identity)
+                        identity_distance = self.solver.dist_calc(
+                            self.solver.dist_matrix(vps), identity)
                     else:
                         identity_distance = 0.0
                     order_dict[primary] = {
@@ -270,21 +270,21 @@ class ViewpointTraversalNode(Node):
 
                 self.get_logger().info(
                     f"Running {primary} on region {region_key} (N={n_vp})...")
-                path, distance = self._run_algorithm(primary, viewpoints, dm)
+                path, distance = self.solver._run_algorithm(primary, viewpoints, dm)
                 if path is None:
                     continue
 
-                prev_best = self.algorithm_results[primary].get(region_key, {}).get('distance', float('inf'))
+                prev_best = self.solver.algorithm_results[primary].get(region_key, {}).get('distance', float('inf'))
                 improved = distance < prev_best - 1e-10
-                if improved or region_key not in self.algorithm_results[primary]:
-                    self.algorithm_results[primary][region_key] = {
+                if improved or region_key not in self.solver.algorithm_results[primary]:
+                    self.solver.algorithm_results[primary][region_key] = {
                         'path': path.copy(),
                         'distance': distance
                     }
                 else:
                     # Keep the previously stored best; restore distance for logging
                     distance = prev_best
-                    path = self.algorithm_results[primary][region_key]['path']
+                    path = self.solver.algorithm_results[primary][region_key]['path']
 
                 # Store this algorithm's path and metrics under its own key.
                 path_to_save = path[:-1] if (len(path) > 0 and path[-1] == path[0]) else path
@@ -301,7 +301,7 @@ class ViewpointTraversalNode(Node):
                     f'  {primary}: {distance:.4f} m | {bound_label} | '
                     f'Gap={gap_pct:.2f}%{tag}  (N={n_vp})')
 
-                self._region_gaps[region_key] = {
+                self.solver._region_gaps[region_key] = {
                     'n': n_vp,
                     'distance': distance,
                     'lower_bound': lower_bound,
