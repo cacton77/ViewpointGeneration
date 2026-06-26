@@ -613,6 +613,7 @@ class Visualizer:
         self.show_region_view_manifolds_flag = False
         self.show_path_flag                  = False
         self.mesh_has_vertex_colors          = False
+        self.show_joint_path_flag            = False
 
     def on_mouse(self, event) -> gui.Widget.EventCallbackResult:
         """Delegate mouse events to the turntable camera controller."""
@@ -1126,6 +1127,11 @@ class Visualizer:
                     else:
                         new_geometries_dict[region_name]['path'] = None
 
+                    joint_path, joint_markers = self._build_joint_path(
+                        region_dict, selected_algorithm)
+                    new_geometries_dict[region_name]['joint_path'] = joint_path
+                    new_geometries_dict[region_name]['joint_markers'] = joint_markers
+
         if self.point_cloud is None:
             print("No point cloud loaded; cannot import regions.")
             for mesh_name, mesh in new_meshes.items():
@@ -1222,6 +1228,16 @@ class Visualizer:
                         self.add_geometry(
                             f"{region_name}_path", path,
                             Materials.path_material)
+                    joint_path = region_data.get('joint_path')
+                    if joint_path is not None:
+                        self.add_geometry(
+                            f"{region_name}_joint_path", joint_path,
+                            Materials.joint_path_material)
+                    joint_markers = region_data.get('joint_markers')
+                    if joint_markers is not None:
+                        self.add_geometry(
+                            f"{region_name}_joint_markers", joint_markers,
+                            Materials.joint_marker_material)
 
         print(f"Loaded regions from {file_path}")
 
@@ -1277,6 +1293,7 @@ class Visualizer:
         self.clear_viewpoints()
         self.clear_region_view_manifolds()
         self.clear_paths()
+        self.clear_joint_paths()
         self.clear_clusters()
         self.clear_regions()
 
@@ -1297,6 +1314,11 @@ class Visualizer:
     def clear_paths(self):
         for name in self.region_names:
             self.scene.remove_geometry(f"{name}_path")
+
+    def clear_joint_paths(self):
+        for name in self.region_names:
+            self.scene.remove_geometry(f"{name}_joint_path")
+            self.scene.remove_geometry(f"{name}_joint_markers")
 
     # ── Visibility (pure scene — no menu, no ROS, no cross-calls) ─────────────
 
@@ -1405,6 +1427,8 @@ class Visualizer:
             visible = show and (
                 not self.selected_region_name or name == self.selected_region_name)
             self.scene.show_geometry(f"{name}_path", visible)
+            self.scene.show_geometry(f"{name}_joint_path", visible)
+            self.scene.show_geometry(f"{name}_joint_markers", visible)
 
     def _build_region_path(self, region: dict, algorithm) -> o3d.geometry.LineSet | None:
         """Build a region's traversal path LineSet (viewpoint positions joined
@@ -1427,6 +1451,34 @@ class Visualizer:
             [[i, i + 1] for i in range(len(pts) - 1)])
         return path
 
+    def _build_joint_path(self, region: dict, algorithm) -> tuple:
+        order = region.get('order', {})
+        if not isinstance(order, dict):
+            return None, None
+        algo_entry = (order.get(algorithm)
+                      or (next(iter(order.values())) if order else None))
+        if not isinstance(algo_entry, dict):
+            return None, None
+        jt = algo_entry.get('joint_trajectory')
+        if not jt or not jt.get('cartesian_waypoints'):
+            return None, None
+
+        pts = np.array(jt['cartesian_waypoints']) * 1000.0  # m → mm
+        if len(pts) < 2:
+            return None, None
+
+        path_ls = o3d.geometry.LineSet()
+        path_ls.points = o3d.utility.Vector3dVector(pts)
+        path_ls.lines = o3d.utility.Vector2iVector(
+            [[i, i + 1] for i in range(len(pts) - 1)])
+
+        step = max(1, len(pts) // 30)
+        marker_pcd = o3d.geometry.PointCloud()
+        marker_pcd.points = o3d.utility.Vector3dVector(pts[::step])
+        marker_pcd.paint_uniform_color([1.0, 0.2, 0.2])
+
+        return path_ls, marker_pcd
+
     def set_traversal_algorithm(self, algorithm):
         """Switch the displayed traversal algorithm and rebuild each region's
         path LineSet in place (no full reload). The GUI calls this when the
@@ -1444,6 +1496,7 @@ class Visualizer:
                 region_name = f"mesh_{mesh_idx}_region_{region_id}"
                 if region_name not in self.geometries_dict:
                     continue
+
                 path = self._build_region_path(
                     regions[region_id], self.selected_traversal_algorithm)
                 self.scene.remove_geometry(f"{region_name}_path")
@@ -1452,7 +1505,19 @@ class Visualizer:
                     self.add_geometry(f"{region_name}_path", path,
                                       Materials.path_material)
 
-        # Reapply visibility (selection-gated) to the freshly added paths.
+                joint_path, joint_markers = self._build_joint_path(
+                    regions[region_id], self.selected_traversal_algorithm)
+                self.scene.remove_geometry(f"{region_name}_joint_path")
+                self.scene.remove_geometry(f"{region_name}_joint_markers")
+                self.geometries_dict[region_name]['joint_path'] = joint_path
+                self.geometries_dict[region_name]['joint_markers'] = joint_markers
+                if joint_path is not None:
+                    self.add_geometry(f"{region_name}_joint_path", joint_path,
+                                      Materials.joint_path_material)
+                if joint_markers is not None:
+                    self.add_geometry(f"{region_name}_joint_markers", joint_markers,
+                                      Materials.joint_marker_material)
+
         self.show_path(self.show_path_flag)
 
     # ── Selection ─────────────────────────────────────────────────────────────
@@ -1521,6 +1586,12 @@ class Visualizer:
                 is_selected and self.show_region_view_manifolds_flag)
             self.scene.show_geometry(
                 f"{region_name}_path",
+                is_selected and self.show_path_flag)
+            self.scene.show_geometry(
+                f"{region_name}_joint_path",
+                is_selected and self.show_path_flag)
+            self.scene.show_geometry(
+                f"{region_name}_joint_markers",
                 is_selected and self.show_path_flag)
         return True
 

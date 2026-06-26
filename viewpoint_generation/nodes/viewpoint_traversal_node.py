@@ -2,6 +2,7 @@ import rclpy
 import json
 import re
 import datetime
+import numpy as np
 from rclpy.node import Node
 from moveit.core.robot_state import RobotState
 from moveit.planning import (
@@ -10,7 +11,7 @@ from moveit.planning import (
 )
 from rcl_interfaces.msg import SetParametersResult
 from viewpoint_generation_interfaces.srv import MoveToPoseStamped, OptimizeViewpointTraversal
-from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Pose, PoseStamped
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
@@ -293,13 +294,22 @@ class ViewpointTraversalNode(Node):
                     'distance': float(distance),
                 }
 
+                jt_info = ''
+                if self.planning_component:
+                    joint_traj = self._compute_joint_trajectory(
+                        list(path_to_save), clusters)
+                    if joint_traj['segments']:
+                        order_dict[primary]['joint_trajectory'] = joint_traj
+                        jt_info = (f' | arm: {joint_traj["total_time_s"]:.1f}s'
+                                   f' / {joint_traj["total_joint_distance"]:.2f} rad')
+
                 gap_pct = ((distance - lower_bound) / lower_bound * 100.0
                         if lower_bound > 1e-9 else 0.0)
                 tag = ' [EXACT OPTIMAL]' if (n_vp <= 18 and gap_pct < 0.01) else (
                     ' [best kept]' if not improved else '')
                 self.get_logger().info(
                     f'  {primary}: {distance:.4f} m | {bound_label} | '
-                    f'Gap={gap_pct:.2f}%{tag}  (N={n_vp})')
+                    f'Gap={gap_pct:.2f}%{tag}  (N={n_vp}){jt_info}')
 
                 self.solver._region_gaps[region_key] = {
                     'n': n_vp,
@@ -404,6 +414,99 @@ class ViewpointTraversalNode(Node):
         else:
             self.get_logger().error("No trajectory found to execute")
             return False
+
+    def _plan_segment(self, viewpoint, start_joint_positions=None):
+        if start_joint_positions is not None:
+            start_state = RobotState(self.robot.get_robot_model())
+            start_state.set_joint_group_positions(
+                self.planning_group, start_joint_positions)
+            self.planning_component.set_start_state(robot_state=start_state)
+        else:
+            self.planning_component.set_start_state_to_current_state()
+
+        pose_goal = PoseStamped()
+        pose_goal.header.frame_id = "world"
+        pos = viewpoint['position']
+        orient = viewpoint['orientation']  # [x, y, z, w]
+        pose_goal.pose.position.x = pos[0]
+        pose_goal.pose.position.y = pos[1]
+        pose_goal.pose.position.z = pos[2]
+        pose_goal.pose.orientation.x = orient[0]
+        pose_goal.pose.orientation.y = orient[1]
+        pose_goal.pose.orientation.z = orient[2]
+        pose_goal.pose.orientation.w = orient[3]
+        self.planning_component.set_goal_state(
+            pose_stamped_msg=pose_goal, pose_link="eoat_camera_link")
+
+        plan_result = self.planning_component.plan()
+        if not plan_result:
+            return None, 0.0
+
+        jt = plan_result.trajectory.joint_trajectory
+        if not jt.points:
+            return None, 0.0
+
+        waypoints = [list(pt.positions) for pt in jt.points]
+        last_pt = jt.points[-1]
+        duration = (last_pt.time_from_start.sec
+                    + last_pt.time_from_start.nanosec * 1e-9)
+        return waypoints, duration
+
+    def _fk_waypoints(self, joint_waypoints):
+        robot_model = self.robot.get_robot_model()
+        robot_state = RobotState(robot_model)
+        positions = []
+        for jpos in joint_waypoints:
+            robot_state.set_joint_group_positions(self.planning_group, jpos)
+            robot_state.update()
+            T = robot_state.get_frame_transform("eoat_camera_link")
+            positions.append([float(T[0, 3]), float(T[1, 3]), float(T[2, 3])])
+        return positions
+
+    def _compute_joint_trajectory(self, path, clusters):
+        result = {
+            'total_time_s': 0.0,
+            'total_joint_distance': 0.0,
+            'segments': [],
+            'cartesian_waypoints': [],
+        }
+        prev_joint_state = None
+
+        for step in range(len(path) - 1):
+            from_idx, to_idx = path[step], path[step + 1]
+            to_vp = clusters[to_idx].get('viewpoint') if to_idx < len(clusters) else None
+
+            if not to_vp:
+                result['segments'].append(
+                    {'from': from_idx, 'to': to_idx, 'planned': False})
+                continue
+
+            waypoints, duration = self._plan_segment(to_vp, prev_joint_state)
+            if waypoints is None:
+                result['segments'].append(
+                    {'from': from_idx, 'to': to_idx, 'planned': False})
+                continue
+
+            joint_dist = float(sum(
+                np.linalg.norm(np.array(waypoints[i + 1]) - np.array(waypoints[i]))
+                for i in range(len(waypoints) - 1)
+            ))
+            cartesian = self._fk_waypoints(waypoints)
+            result['cartesian_waypoints'].extend(cartesian)
+            result['total_time_s'] += duration
+            result['total_joint_distance'] += joint_dist
+            result['segments'].append({
+                'from': from_idx, 'to': to_idx,
+                'time_s': round(duration, 3),
+                'joint_distance': round(joint_dist, 4),
+                'planned': True,
+            })
+            prev_joint_state = waypoints[-1]
+
+        self.planning_component.set_start_state_to_current_state()
+        result['total_time_s'] = round(result['total_time_s'], 3)
+        result['total_joint_distance'] = round(result['total_joint_distance'], 4)
+        return result
 
     def parameter_callback(self, params):
         for param in params:

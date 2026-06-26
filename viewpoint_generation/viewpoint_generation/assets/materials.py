@@ -116,6 +116,16 @@ class Materials:
     selected_path_material.line_width = 3.0
     selected_path_material.base_color = [0.0, 1.0, 1.0, 1.0]
 
+    joint_path_material = MaterialRecord()
+    joint_path_material.shader = 'unlitLine'
+    joint_path_material.line_width = 2.5
+    joint_path_material.base_color = [1.0, 0.2, 0.2, 1.0]
+
+    joint_marker_material = rendering.MaterialRecord()
+    joint_marker_material.shader = 'defaultUnlit'
+    joint_marker_material.point_size = 7.0
+    joint_marker_material.base_color = [1.0, 0.2, 0.2, 1.0]
+
     ground_plane_material = MaterialRecord()
     ground_plane_material.shader = 'defaultLitTransparency'
     ground_plane_material.base_color = [0.0, 0.0, 0.0, 0.0]
