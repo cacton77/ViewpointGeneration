@@ -36,6 +36,7 @@ class ROSThread(Node):
     orientation_control_node_name = 'orientation_controller'
     admittance_control_node_name = 'admittance_control'
     teleop_node_name = 'teleop'
+    tsdf_node_name = 'tsdf_pose'
 
     target_nodes = [viewpoint_generation_node_name,
                     traversal_node_name,
@@ -44,6 +45,7 @@ class ROSThread(Node):
                     orientation_control_node_name,
                     admittance_control_node_name,
                     teleop_node_name,
+                    tsdf_node_name,
                     node_name]
 
     flags = {
@@ -65,7 +67,7 @@ class ROSThread(Node):
                 ('show_axes', False),
                 ('show_grid', False),
                 ('show_model_bounding_box', False),
-                ('show_skybox', True),
+                ('show_skybox', False),
                 ('show_mesh', True),
                 ('show_point_cloud', True),
                 ('show_curvatures', True),
@@ -193,6 +195,14 @@ class ROSThread(Node):
                                                             )
 
         # ----------- Create clients for task planning services -----------
+
+
+        # ----------- Create clients for TSDF services -----------
+
+        self.reset_tsdf_client = self.create_client(Trigger,
+                                                    f'{self.tsdf_node_name}/reset',
+                                                    callback_group=services_cb_group
+                                                    )
 
         self.log = []
 
@@ -358,12 +368,24 @@ class ROSThread(Node):
 
     def select_region(self, region_index):
         self.set_target_node_parameter(self.task_planning_node_name,
-                                       'selected_region', region_index)
+                                       'navigation.selected_region', region_index)
 
     def select_cluster(self, cluster_index):
         """Select a cluster based on cluster index"""
         self.set_target_node_parameter(self.task_planning_node_name,
-                                       'selected_viewpoint', cluster_index)
+                                       'navigation.selected_viewpoint', cluster_index)
+
+    def select_traversal_algorithm(self, algorithm):
+        """Select which TSP algorithm's path to follow (visualization +
+        execution). Sets the parameter on the task_planning node."""
+        self.set_target_node_parameter(self.task_planning_node_name,
+                                       'navigation.selected_traversal_algorithm', algorithm)
+
+    def set_results_file(self, file_path):
+        """Point the task_planning node at the loaded results file so it
+        plans/executes over the same viewpoints the GUI is visualizing."""
+        self.set_target_node_parameter(self.task_planning_node_name,
+                                       'settings.results_file', file_path)
 
     def optimize_traversal(self):
         """Optimize the viewpoint traversal path"""
@@ -433,6 +455,30 @@ class ROSThread(Node):
         feedback = feedback_msg.feedback
         self.get_logger().info(f'Inspect region feedback: {feedback.message}')
         self.get_all_parameters()
+
+    # ============================================================================
+    # TSDF SERVICES
+    # ============================================================================
+
+    def reset_tsdf(self):
+        """Trigger the reset TSDF service"""
+        if not self.reset_tsdf_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().error('Reset TSDF service not available')
+            return False
+
+        request = Trigger.Request()
+        future = self.reset_tsdf_client.call_async(request)
+        future.add_done_callback(self.reset_tsdf_future_callback)
+
+    def reset_tsdf_future_callback(self, future):
+        """Callback for the reset TSDF service future"""
+        if future.result() is not None:
+            self.get_logger().info('Reset TSDF triggered successfully')
+            self.get_all_parameters()
+            return True
+        else:
+            self.get_logger().error('Failed to trigger reset TSDF')
+            return False
 
     # ============================================================================
     # PARAMETER MANAGEMENT
@@ -578,6 +624,9 @@ class ROSThread(Node):
             for name, value in zip(param_names, param_values):
                 if name == 'use_sim_time':
                     # Skip the use_sim_time parameter
+                    continue
+                elif name == 'start_type_description_service':
+                    # Skip the start_type_description_service parameter
                     continue
 
                 param_value = self.extract_parameter_value(value)

@@ -141,11 +141,16 @@ PartField produces no noise points (every face is assigned a part).
 |---|---|---|
 | `fov_diameter` | 0.03 m | Camera field of view diameter at focal distance |
 | `dof` | 0.02 m | Depth of field |
-| `point_density` | 10.0 | Target points per square millimeter |
-| `lambda_weight` | 1.0 | Weight for out-of-FOV penalty in cost function |
-| `beta_weight` | 1.0 | Weight for packing efficiency in cost function |
+| `point_density` | 10.0 | Target points per square millimeter (K-means only) |
+| `lambda_weight` | 1.0 | Weight for out-of-FOV penalty in cost function (K-means only) |
+| `beta_weight` | 1.0 | Weight for packing efficiency in cost function (K-means only) |
 | `point_weight` | 1.0 | Weight for point positions in K-means |
 | `normal_weight` | 1.0 | Weight for point normals in K-means |
+| `algorithm` | `kmeans` | Clustering algorithm: `kmeans` (Bayesian-optimised K-means) or `greedy_cover` (greedy set cover) |
+| `fov_normal_threshold` | π/4 rad | Max surface-normal incidence angle for the `greedy_cover` coverage predicate |
+| `candidate_spacing` | 0.0 m | Anchor spacing for `greedy_cover` candidate sampling; 0.0 = auto = `fov_diameter/2` |
+| `prune_redundant` | `true` | Remove redundant viewpoints after greedy cover (cannot open coverage holes) |
+| `rng_seed` | 0 | Random seed for `greedy_cover` candidate sampling (reproducibility) |
 
 **ViewpointProjectionConfig**
 
@@ -176,14 +181,21 @@ Wraps the core library, exposing each pipeline stage as a ROS service and all co
 All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`, and `ViewpointProjectionConfig` fields are declared as ROS parameters with type information and valid ranges (prefixed `regions.region_growth.`, `regions.partfield.`, `regions.fov_clustering.`, and `viewpoints.projection.` respectively). Additional parameters:
 
 - `regions.segmentation_algorithm` -- Surface segmentation algorithm: `region_growth` (default) or `partfield`
+- `regions.fov_clustering.algorithm` -- FOV clustering algorithm: `kmeans` (default) or `greedy_cover`
 - `model.mesh.file` -- Path to the mesh file
 - `model.mesh.units` -- Mesh units (`m`, `cm`, `mm`, `in`)
 - `model.point_cloud.file` -- Path to a pre-sampled point cloud
 - `model.point_cloud.units` -- Point cloud units
 - `model.point_cloud.sampling.number_of_points` -- Sampling density
 - `results.file` -- Path to results JSON
-- `results.selected_mesh`, `results.selected_region`, `results.selected_cluster` -- Selection state
 - `settings.data_path` -- Base data directory
+
+> Mesh/region/viewpoint **selection state** lives on the `task_planning` node
+> (`navigation.selected_mesh`, `navigation.selected_region`,
+> `navigation.selected_viewpoint`), not here. The GUI and visualizer track those
+> parameters; `navigation.selected_mesh` is visualization-only while
+> `navigation.selected_region`/`navigation.selected_viewpoint` also scope robot
+> execution.
 
 **Publishers:**
 
@@ -195,7 +207,7 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
 
 ### Other Nodes
 
-- **task_planning_node** -- State machine for robot motion control, manages servo/trajectory controller switching
+- **task_planning_node** -- State machine for robot motion control, manages servo/trajectory controller switching. Parameters are namespaced (`controllers.*`, `navigation.*`, `settings.*`) so the GUI renders one tab per namespace. Owns the mesh/region/viewpoint selection parameters (`navigation.selected_mesh`, `navigation.selected_region`, `navigation.selected_viewpoint`, declared with live slider ranges) and `navigation.selected_traversal_algorithm`; `settings.results_file` points it at the results JSON to plan/execute over; the GUI/visualizer track these to highlight the selected geometry
 - **viewpoint_traversal_node** -- MoveIt-based motion planning to viewpoints with TSP optimization and workspace constraints
 - **gui_node** -- Open3D visualization GUI with interactive mesh, region, cluster, and viewpoint rendering
 
@@ -281,7 +293,10 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
               }
             }
           ],
-          "order": {"greedy": [0, 2, 1], "LKH": [0, 1, 2]}
+          "order": {
+            "greedy": {"order": [0, 2, 1], "distance": 0.84},
+            "LKH":    {"order": [0, 1, 2], "distance": 0.79}
+          }
         }
       ],
       "order": [0, 1, 2],
@@ -292,8 +307,7 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
         "focal_distance": 0.3
       }
     }
-  ],
-  "selected_traversal_algorithm": "LKH"
+  ]
 }
 ```
 
@@ -307,11 +321,16 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
 - Mesh-level `order` -- Region visit order (a list of region indices).
 - Region-level `order` -- Cluster visit order *within* that region. Out of FOV
   clustering this is a plain list (identity order). After `optimize_traversal`
-  runs it becomes a **dict keyed by TSP algorithm name**, with each value the
-  optimized list of cluster indices for that algorithm. Multiple algorithms
-  accumulate in the same dict across runs (e.g. `{"greedy": [...], "LKH": [...]}`),
-  so the different optimization results are stored together rather than in a
-  separate file.
-- `selected_traversal_algorithm` -- Top-level key naming which algorithm's path
-  the visualizer and motion consumers should follow when a region's `order` is a
-  dict. Readers fall back to the first available algorithm if it is absent.
+  runs it becomes a **dict keyed by TSP algorithm name**, where each value is an
+  object `{"order": [...], "distance": ...}` holding that algorithm's optimized
+  list of cluster indices plus its path metrics (e.g. `distance` in metres).
+  Multiple algorithms accumulate in the same dict across runs, so the different
+  optimization results — and their metrics — are stored together in the results
+  file rather than in node parameters or a separate file.
+- Selected algorithm -- Which algorithm's path the visualizer and motion
+  consumers follow when a region's `order` is a dict is **not** stored in the
+  results file. It is the `selected_traversal_algorithm` parameter on the
+  `task_planning` node (set via the GUI, e.g. by clicking an algorithm under a
+  region's *Paths* in the tree view), so the same choice drives both the
+  visualized path and the execution order. An empty value falls back to the
+  first available algorithm.

@@ -102,7 +102,7 @@ class GUIClient():
         # early calls that arrive before all attributes are initialised.
         self.window.set_on_layout(self._on_layout)
 
-        self.init_main_layout()
+        self.init_layouts()
         self.init_menu_bar()
 
         # 3D SCENE ################################################################
@@ -117,7 +117,12 @@ class GUIClient():
         def on_mouse(event):
             # Consume events that land on the side panels so they don't
             # reach the camera controller.
-            for layout in [self.main_layout]:
+            panels = [self.main_layout]
+            if getattr(self, 'task_planning_panel', None) is not None:
+                panels.append(self.task_planning_panel)
+            for layout in panels:
+                if not layout.visible:
+                    continue
                 frame = layout.frame
                 if (frame.get_left() <= event.x <= frame.get_right() and
                         frame.get_top()  <= event.y <= frame.get_bottom()):
@@ -131,6 +136,10 @@ class GUIClient():
         # Create Visualizer — owns all scene geometry and rendering state
         self.viz = Visualizer(self.scene_widget)
         self.viz.setup_multi_directional_lighting()
+
+        # Draw a default ground grid and frame the camera to it so the scene
+        # has a reference plane before any mesh/results are loaded.
+        self.viz.setup_default_scene()
 
         self.last_draw_time = time.time()
 
@@ -347,65 +356,100 @@ class GUIClient():
         self.file_list.selected_index = yaml_files.index(self.ros_thread.file_name) if self.ros_thread.file_name in yaml_files else 0
     
     def _refresh_file_tree(self):
-        """Refresh the file tree to show a summary of the loaded results.
+        """Rebuild the file-tree widget from viz's render-agnostic contents.
 
-        Parses self.viz.results_dict into the hierarchy:
+        The Visualizer owns the translation of results_dict (and selection
+        state) into a nested ``{'label', 'children'}`` structure via
+        ``get_file_tree_contents()``; this method only renders that structure
+        into an Open3D TreeView.
 
-            Meshes:
-              0:
-                File: ...
-                Units: ...
-                Material: ...
-                Dimensions: ...
-                Surface Area: ...
-                Point Cloud:
-                  File: ...
-                  Units: ...
-                  Points: ...
-                Regions: N
-                Clusters: N
+        Open3D's TreeView has no clear/remove API (and renders opaquely
+        regardless of background color), so on each call the old widget is
+        hidden and a fresh one is added directly to the window.
 
-        Open3D's TreeView has no clear/remove API, so on each call the old
-        widget is hidden and a fresh one is added directly to the window.
+        This runs every tick, but the widget is only rebuilt when the contents
+        actually change. Rebuilding every frame would replace the TreeView
+        continuously and discard the user's expand/collapse and selection state,
+        making the tree impossible to interact with.
         """
-        if not self.viz.results_dict:
+        contents = self.viz.get_file_tree_contents()
+        if not contents:
             return
+
+        # Skip the rebuild when nothing changed so the live widget (and its
+        # interaction state) is preserved between frames.
+        if contents == self._file_tree_contents:
+            return
+        self._file_tree_contents = contents
 
         # Hide the stale tree; Open3D treats visible=False as zero-height in layout
         self.file_tree.visible = False
 
         new_tree = gui.TreeView()
-        new_tree.background_color = Materials.panel_color
+        new_tree.background_color = Materials.tab_control_background_color
         new_tree.can_select_items_with_children = True
         new_tree.visible = True
 
-        root = new_tree.get_root_item()
-        meshes_id = new_tree.add_text_item(root, "Meshes")
-
-        for i, mesh_entry in enumerate(self.viz.results_dict.get('meshes', [])):
-            mesh_id = new_tree.add_text_item(meshes_id, str(i))
-
-            new_tree.add_text_item(mesh_id, f"File: {mesh_entry.get('file', '')}")
-            new_tree.add_text_item(mesh_id, f"Units: {mesh_entry.get('units', '')}")
-            new_tree.add_text_item(mesh_id, f"Material: {mesh_entry.get('material', '')}")
-            new_tree.add_text_item(mesh_id, f"Dimensions: {mesh_entry.get('dimensions', '')}")
-            new_tree.add_text_item(mesh_id, f"Surface Area: {mesh_entry.get('surface_area', '')}")
-
-            pcd = mesh_entry.get('point_cloud', {})
-            pcd_id = new_tree.add_text_item(mesh_id, "Point Cloud")
-            new_tree.add_text_item(pcd_id, f"File: {pcd.get('file', '')}")
-            new_tree.add_text_item(pcd_id, f"Units: {pcd.get('units', '')}")
-            new_tree.add_text_item(pcd_id, f"Points: {pcd.get('points', 0)}")
-            regions = mesh_entry.get('regions', {})
-            n_regions = len(regions)
-            n_clusters = sum(
-                len(r.get('clusters', {})) for r in regions
-            )
-            new_tree.add_text_item(mesh_id, f"Regions: {n_regions}")
-            new_tree.add_text_item(mesh_id, f"Clusters: {n_clusters}")
+        # Item id -> selection action, and item id -> deferred children for
+        # collapsed nodes. Both are rebuilt with the tree since item ids are
+        # only valid for this widget instance.
+        self._tree_item_actions = {}
+        self._tree_pending_children = {}
+        self._populate_tree(new_tree, new_tree.get_root_item(), contents)
+        new_tree.set_on_selection_changed(self._on_tree_item_selected)
 
         self.window.add_child(new_tree)
         self.file_tree = new_tree
+
+    def _populate_tree(self, tree, parent_id, nodes):
+        """Add nodes under parent_id, recording selection actions.
+
+        Open3D's TreeView auto-expands everything and offers no collapse API,
+        so a node flagged ``collapsed`` is added empty and its children stashed
+        in _tree_pending_children to be added on first click (lazy population).
+        """
+        for node in nodes:
+            node_id = tree.add_text_item(parent_id, node['label'])
+            if node.get('select'):
+                self._tree_item_actions[node_id] = node['select']
+            children = node.get('children', [])
+            if node.get('collapsed') and children:
+                self._tree_pending_children[node_id] = children
+            else:
+                self._populate_tree(tree, node_id, children)
+
+    def _on_tree_item_selected(self, item_id):
+        """Drive region/cluster selection from a file-tree click.
+
+        First reveals any deferred children (collapsed nodes start empty and are
+        populated on click). Then looks up the action attached to the selected
+        item and updates the visualizer. Selecting a cluster selects its region
+        first so the cluster index is scoped correctly (mirrors select_cluster).
+        """
+        pending = self._tree_pending_children.pop(item_id, None)
+        if pending is not None:
+            self._populate_tree(self.file_tree, item_id, pending)
+
+        action = self._tree_item_actions.get(item_id)
+        if not action:
+            return
+        # Update the visualizer immediately for responsiveness, and set the
+        # matching task_planning parameter so selection state (and the robot's
+        # execution target) stays in sync — the param round-trip would redraw
+        # the same selection, so the direct call just avoids the latency.
+        if action['type'] == 'region':
+            self.viz.select_region(action['region'])
+            self.ros_thread.select_region(action['region'])
+        elif action['type'] == 'cluster':
+            self.viz.select_region(action['region'])
+            self.viz.select_cluster(action['cluster'])
+            self.ros_thread.select_region(action['region'])
+            self.ros_thread.select_cluster(action['cluster'])
+        elif action['type'] == 'algorithm':
+            # Update the drawn path immediately and set the parameter so the
+            # execution order follows the same algorithm.
+            self.viz.set_traversal_algorithm(action['algorithm'])
+            self.ros_thread.select_traversal_algorithm(action['algorithm'])
 
     def _update_save_menu(self):
         is_new = self.ros_thread.file_name == 'new'
@@ -583,10 +627,17 @@ class GUIClient():
     # INIT MAIN LAYOUT
     # ============================================================================
 
-    def init_main_layout(self):
-        """Initialize the Open3D GUI with fixed tabs"""
+    def init_layouts(self):
+        """Build every persistent panel: the YAML file list, the regions tree,
+        the tabbed per-node parameter panel, and the always-visible
+        task_planning panel. Parses self.parameters_dict and creates the
+        styled panels/sections/content for each node."""
         self.parameter_widgets = {}
         self._companion_widgets = {}
+        # Always-visible task_planning panel — created below, framed by
+        # _on_layout. Declared up front so _on_layout / on_mouse can reference
+        # it safely even if the task_planning node is not connected.
+        self.task_planning_panel = None
         # Get theme for consistent styling
         theme = self.window.theme
         em = theme.font_size
@@ -601,12 +652,20 @@ class GUIClient():
         # Hidden until _on_layout sets its frame — same reason as file_tree.
         self.file_list.visible = False
 
-        # Regions tree — direct window child, sized by _on_layout.
-        # Kept separate from file_list so _refresh_file_tree can swap it out
-        # via visible=False without affecting any Vert layout.
+        # Regions tree — direct window child, sized by _on_layout. The TreeView
+        # renders opaquely regardless of background color (it can't be made
+        # transparent like the main layout). Kept separate from file_list so
+        # _refresh_file_tree can swap it out via visible=False.
         self.file_tree = gui.TreeView()
-        self.file_tree.background_color = Materials.panel_color
+        self.file_tree.background_color = Materials.tab_control_background_color
         self.file_tree.can_select_items_with_children = True
+        # Last-rendered tree contents; used to rebuild the widget only when the
+        # contents change (see _refresh_file_tree).
+        self._file_tree_contents = None
+        # Map of TreeView item id -> selection action for the current tree.
+        self._tree_item_actions = {}
+        # Map of TreeView item id -> deferred child nodes for collapsed nodes.
+        self._tree_pending_children = {}
         # Hidden until regions are loaded — prevents the empty widget from
         # occupying its full default frame and covering other panels before
         # _on_layout has had a chance to run.
@@ -623,18 +682,28 @@ class GUIClient():
         self.main_layout.background_color = Materials.tab_control_background_color
         self.main_layout = self.main_layout  # alias used by _on_layout and on_mouse
 
-        # Create tabs for each top-level key
+        # Create tabs for each top-level key. The gui node has no tab, and
+        # task_planning is rendered in its own always-visible horizontal panel
+        # (below) rather than as a tab.
+        tp_name = self.ros_thread.task_planning_node_name
         for node_name, tab_data in self.parameters_dict.items():
             self.parameter_widgets[node_name] = {}
-            if node_name == 'gui':
+            if node_name == 'gui' or node_name == tp_name:
                 continue
-            else:
-                main_tab_panel = self.create_main_tab_panel(node_name, tab_data, em)
-                self.main_layout.add_tab(
-                    node_name.title().replace('_', ' '), main_tab_panel)
+            main_tab_panel = self.create_main_tab_panel(node_name, tab_data, em)
+            self.main_layout.add_tab(
+                node_name.title().replace('_', ' '), main_tab_panel)
 
         self.window.add_child(self.main_layout)
-    
+
+        # Always-visible task_planning panel spanning the gap between the
+        # regions tree and the main panel. Hidden until _on_layout frames it.
+        if tp_name in self.parameters_dict:
+            self.task_planning_panel = self.create_task_planning_panel(
+                tp_name, self.parameters_dict[tp_name], em)
+            self.task_planning_panel.visible = False
+            self.window.add_child(self.task_planning_panel)
+
     def create_main_tab_panel(self, node_name, tab_data, em):
         """Create a scrollable panel for a tab - ONLY scrolling here"""
         # Create scrollable area directly - no intermediate containers
@@ -655,6 +724,11 @@ class GUIClient():
             button = gui.Button("Optimize Traversal")
             button.background_color = Materials.button_background_color
             button.set_on_clicked(lambda: self.ros_thread.optimize_traversal())
+            content.add_child(button)
+        elif node_name == self.ros_thread.tsdf_node_name:
+            button = gui.Button("Reset Voxel Block Grid")
+            button.background_color = Materials.button_background_color
+            button.set_on_clicked(lambda: self.ros_thread.reset_tsdf())
             content.add_child(button)
 
         scroll_area.add_child(content)
@@ -943,20 +1017,6 @@ class GUIClient():
                         node_name, param_name, selected_text))
                 row.add_child(widget)  # ADD HERE
 
-            elif 'compare_algorithms' in param_name.lower():
-                widget = gui.Combobox()
-                # '-- none --' is the sentinel meaning "no comparison" (the
-                # parameter's default); it must be selectable or building the
-                # combo from that default value raises ValueError.
-                algorithms = ['-- none --', 'greedy', '2opt', '3opt', 'LKH', 'ILS'] # compare TSP algorithms
-                for algorithm in algorithms:
-                    widget.add_item(algorithm)
-                widget.selected_index = algorithms.index(param_value)
-                widget.set_on_selection_changed(
-                    lambda selected_text, selected_index: self.on_parameter_changed(
-                        node_name, param_name, selected_text))
-                row.add_child(widget)  # ADD HERE  
-            
             elif 'controller_type' in param_name.lower():
                 widget = gui.Combobox()
                 controller_types = ['PD', 'PID']
@@ -1014,6 +1074,215 @@ class GUIClient():
             self.parameter_widgets[node_name][param_name] = widget
 
         return row
+
+    # ============================================================================
+    # TASK PLANNING PANEL (always-visible, horizontal)
+    # ============================================================================
+
+    def _iter_leaf_params(self, data):
+        """Yield each leaf parameter dict (those with name/type/value) found by
+        walking the nested parameter structure in declaration order."""
+        if isinstance(data, dict) and 'name' in data and 'type' in data and 'value' in data:
+            yield data
+        elif isinstance(data, dict):
+            for value in data.values():
+                yield from self._iter_leaf_params(value)
+
+    # Preferred left-to-right order for the task_planning namespace tabs.
+    # Namespaces not listed here are appended afterwards in their natural order.
+    TASK_PLANNING_TAB_ORDER = ['navigation', 'controllers', 'settings']
+
+    def create_task_planning_panel(self, node_name, data, em):
+        """Build the always-visible task_planning panel.
+
+        Unlike the tabbed node panels (one tab per node), this panel has one
+        tab per top-level parameter namespace (e.g. 'navigation', 'controllers',
+        'settings'). Tabs are ordered by TASK_PLANNING_TAB_ORDER. Each tab spans
+        the horizontal gap between the regions tree and the main panel, so its
+        parameters are laid out left-to-right as compact label-over-control
+        cells with no collapsing or nesting (the panel is short and wide).
+        """
+        tabs = gui.TabControl()
+        tabs.background_color = Materials.tab_control_background_color
+
+        # Per-tab lists of cell resizers, applied at layout time so the cells
+        # fill the panel width (gui.Horiz has no per-child grow factor).
+        self._tp_row_resizers = []
+
+        ordered = sorted(
+            data.keys(),
+            key=lambda ns: (self.TASK_PLANNING_TAB_ORDER.index(ns)
+                            if ns in self.TASK_PLANNING_TAB_ORDER
+                            else len(self.TASK_PLANNING_TAB_ORDER)))
+        for namespace in ordered:
+            row, resizers = self.create_horizontal_param_row(
+                node_name, data[namespace], em)
+            tabs.add_tab(namespace.title().replace('_', ' '), row)
+            self._tp_row_resizers.append(resizers)
+
+        return tabs
+
+    def create_horizontal_param_row(self, node_name, data, em):
+        """Lay out every leaf parameter under *data* across the full width as
+        compact label-over-control cells. Used for each tab of the task_planning
+        panel. Cells are given equal, space-filling widths at layout time (see
+        _apply_task_planning_cell_widths); returns ``(row, resizers)`` where
+        each resizer assigns its cell's width."""
+        row = gui.Horiz(
+            0.5 * em, gui.Margins(0.5 * em, 0.25 * em, 0.5 * em, 0.25 * em))
+        row.background_color = Materials.panel_color
+
+        resizers = []
+        for param_data in self._iter_leaf_params(data):
+            cell, resize = self.create_horizontal_parameter_cell(
+                node_name, param_data, em)
+            row.add_child(cell)
+            resizers.append(resize)
+
+        return row, resizers
+
+    def create_horizontal_parameter_cell(self, node_name, param_data, em):
+        """Build one compact label-over-control cell for the task_planning panel.
+
+        Registers the control in self.parameter_widgets (and any slider
+        companion in self._companion_widgets) exactly like
+        create_parameter_widget, so update_all_widgets_from_dict keeps the cell
+        live. The cell stacks the label above the control vertically so the
+        cells stay narrow when packed horizontally.
+
+        Returns ``(cell, resize)`` where ``resize(cell_w)`` sets the cell's width
+        and widens its stretchy control to fill that width. gui.Horiz has no
+        per-child grow factor, so the row driver (_apply_task_planning_cell_widths)
+        calls these at layout time to make the columns span the panel instead of
+        left-justifying.
+        """
+        param_name = param_data['name']
+        param_type = param_data['type']
+        param_value = param_data['value']
+        param_control = param_data['control']
+        param_range = param_data['range']
+
+        cell = gui.Vert(0.15 * em)
+        # Widgets/containers to widen when the cell is resized; each entry is a
+        # callable taking the target cell width (in px).
+        fillers = []
+
+        label = gui.Label(param_name.split('.')[-1].replace('_', ' ').title() + ":")
+        label.text_color = Materials.text_color
+        cell.add_child(label)
+
+        widget = None
+
+        if param_type == 'bool':
+            widget = gui.Checkbox("")
+            widget.checked = bool(param_value)
+            widget.set_on_checked(
+                lambda checked, name=param_name: self.on_parameter_changed(node_name, name, checked))
+            cell.add_child(widget)
+            cell.preferred_width = 8 * em
+
+        elif param_type == 'integer' and param_control == 'slider' and param_range:
+            widget = gui.Slider(gui.Slider.INT)
+            widget.set_limits(param_range[0], param_range[1])
+            widget.int_value = int(param_value)
+
+            number_edit = gui.NumberEdit(gui.NumberEdit.INT)
+            number_edit.int_value = int(param_value)
+            number_edit.set_limits(param_range[0], param_range[1])
+            number_edit.set_preferred_width(3.5 * em)
+
+            syncing = [False]
+
+            def _slider_changed(value, name=param_name, ne=number_edit, s=syncing):
+                if s[0]:
+                    return
+                s[0] = True
+                ne.int_value = int(value)
+                self.on_parameter_changed(node_name, name, value)
+                s[0] = False
+
+            def _numedit_changed(value, name=param_name, sl=widget, s=syncing):
+                if s[0]:
+                    return
+                s[0] = True
+                sl.int_value = int(value)
+                self.on_parameter_changed(node_name, name, value)
+                s[0] = False
+
+            widget.set_on_value_changed(_slider_changed)
+            number_edit.set_on_value_changed(_numedit_changed)
+
+            control = gui.Horiz(0.25 * em)
+            slider_container = gui.Vert()
+            slider_container.preferred_width = 8 * em
+            slider_container.add_child(widget)
+            control.add_child(slider_container)
+            control.add_child(number_edit)
+            cell.add_child(control)
+            cell.preferred_width = 13 * em
+
+            # Grow the slider; reserve room for the number edit (3.5em) + the
+            # control's inter-widget spacing (0.25em).
+            fillers.append(lambda cw, c=slider_container, em=em:
+                           setattr(c, 'preferred_width', int(max(2 * em, cw - 3.75 * em))))
+
+            self._companion_widgets[f"{node_name}/{param_name}"] = number_edit
+
+        elif param_type in ('integer', 'double'):
+            widget = gui.NumberEdit(
+                gui.NumberEdit.INT if param_type == 'integer' else gui.NumberEdit.DOUBLE)
+            if param_type == 'integer':
+                widget.int_value = int(param_value)
+            else:
+                widget.double_value = float(param_value)
+            widget.set_on_value_changed(
+                lambda value, name=param_name: self.on_parameter_changed(node_name, name, value))
+            cell.add_child(widget)
+            cell.preferred_width = 8 * em
+            fillers.append(lambda cw, w=widget: w.set_preferred_width(int(max(1, cw))))
+
+        else:
+            # string / string_array / fallback — a text field, with a browse
+            # button for file/path params (mirrors create_parameter_widget).
+            widget = gui.TextEdit()
+            widget.background_color = Materials.text_edit_background_color
+            widget.text_value = str(param_value)
+            widget.set_on_text_changed(
+                lambda text, name=param_name: self.on_parameter_changed(node_name, name, text))
+
+            is_file = 'file' in param_name.lower() or 'path' in param_name.lower()
+            if is_file:
+                control = gui.Horiz(0.25 * em)
+                text_container = gui.Vert()
+                text_container.preferred_width = 10 * em
+                text_container.add_child(widget)
+                control.add_child(text_container)
+                browse_button = gui.Button("...")
+                browse_button.background_color = Materials.button_background_color
+                browse_button.horizontal_padding_em = 0.5
+                browse_button.vertical_padding_em = 0
+                browse_button.set_on_clicked(
+                    lambda node_name=node_name, name=param_name: self.on_browse_file(node_name, name))
+                control.add_child(browse_button)
+                cell.add_child(control)
+                cell.preferred_width = 13 * em
+                # Grow the text field; reserve room for the browse button + spacing.
+                fillers.append(lambda cw, c=text_container, em=em:
+                               setattr(c, 'preferred_width', int(max(2 * em, cw - 2.5 * em))))
+            else:
+                cell.add_child(widget)
+                cell.preferred_width = 11 * em
+
+        if widget is not None:
+            self.parameter_widgets[node_name][param_name] = widget
+
+        def _resize(cell_w, cell=cell, fillers=fillers):
+            cell_w = int(cell_w)
+            cell.preferred_width = cell_w
+            for filler in fillers:
+                filler(cell_w)
+
+        return cell, _resize
 
     def on_parameter_changed(self, node_name, param_name, new_value):
         """Handle parameter value changes"""
@@ -1136,6 +1405,11 @@ class GUIClient():
         print(f"Visualizing results from: {file_path}")
         self.viz.visualize_results(file_path)
 
+        # Point task_planning at the same results file so its planning/execution
+        # uses these viewpoints. It loads from its own settings.results_file
+        # param, which is otherwise never set by the current results-loading flow.
+        self.ros_thread.set_results_file(file_path)
+
         # Sync menu checkmarks with the visibility flags set by the Visualizer
         self._refresh_view_menu()
 
@@ -1195,7 +1469,7 @@ class GUIClient():
 
     def _on_layout(self, layout_context):
         # Guard against early calls that arrive before __init__ has finished
-        # adding all widgets (set_on_layout is registered before init_main_layout).
+        # adding all widgets (set_on_layout is registered before init_layouts).
         if not hasattr(self, 'main_layout'):
             return
 
@@ -1211,7 +1485,7 @@ class GUIClient():
 
         panel_x = r.width - main_width - margin
 
-        # YAML file list — size to content, capped at 35 % of the panel
+        # YAML file list — top-right, size to content, capped at 35 % of panel
         file_list_h = min(
             self.file_list.calc_preferred_size(
                 layout_context, gui.Widget.Constraints()).height,
@@ -1220,26 +1494,64 @@ class GUIClient():
             panel_x, r.y + margin, main_width, file_list_h)
         self.file_list.visible = True
 
-        # Regions tree fills the rest of the top half
-        tree_h = main_height - file_list_h - margin * 0.5
-        self.file_tree.frame = gui.Rect(
-            panel_x,
-            r.y + margin + file_list_h + margin * 0.5,
-            main_width,
-            max(0, tree_h))
-
-        # Place main layout below file layout
+        # Main layout fills the right column below the file list, expanding up
+        # into the space the regions tree used to occupy.
+        main_top = r.y + margin + file_list_h + margin * 0.5
         self.main_layout.frame = gui.Rect(
-            r.width - main_width - margin,
-            r.y + margin + main_height + margin,
+            panel_x,
+            main_top,
             main_width,
-            main_height)
+            max(0, r.y + r.height - margin - main_top))
+
+        # Regions tree — full-height panel on the left side of the window,
+        # slightly narrower than the right-hand panels.
+        tree_width = 24 * em
+        self.file_tree.frame = gui.Rect(
+            r.x + margin,
+            r.y + margin,
+            tree_width,
+            max(0, r.height - 2 * margin))
+
+        # Task planning panel — always-visible horizontal bar pinned to the
+        # bottom, spanning the gap between the regions tree (left) and the main
+        # panel (right). Short height sized to its content.
+        if self.task_planning_panel is not None:
+            tp_left = r.x + margin + tree_width + margin
+            tp_right = panel_x - margin
+            tp_width = max(0, tp_right - tp_left)
+            tp_height = self.task_planning_panel.calc_preferred_size(
+                layout_context, gui.Widget.Constraints()).height + em
+            tp_top = r.y + r.height - margin - tp_height
+            self.task_planning_panel.frame = gui.Rect(
+                tp_left, tp_top, tp_width, tp_height)
+            self.task_planning_panel.visible = True
+            self._apply_task_planning_cell_widths(tp_width, em)
 
         # Ensure a redraw follows every layout pass so frames set above are
         # actually rendered.  Without this the draw scheduled by the tick event
         # can fire *before* _on_layout processes, leaving panels invisible until
         # the user triggers another draw (e.g. a mouse click).
         self.window.post_redraw()
+
+    def _apply_task_planning_cell_widths(self, tp_width, em):
+        """Give each task_planning cell an equal, space-filling share of its
+        tab's width. gui.Horiz sizes children to their preferred width with no
+        per-child grow factor, so to make the columns span the panel (rather
+        than left-justify with empty space on the right) the widths must be
+        assigned explicitly at layout time, once the panel width is known.
+
+        ``CHROME`` reserves the row margins plus the TabControl's own padding;
+        it is approximate, so a small right-hand gap is preferred over clipping.
+        """
+        spacing = 0.5 * em       # gui.Horiz inter-cell spacing (see the row's ctor)
+        CHROME = 3.0 * em        # row margins + TabControl content inset
+        for resizers in getattr(self, '_tp_row_resizers', []):
+            n = len(resizers)
+            if n == 0:
+                continue
+            cell_w = max(4 * em, (tp_width - CHROME - (n - 1) * spacing) / n)
+            for resize in resizers:
+                resize(cell_w)
 
     def set_widget_value(self, widget, value, limits=None):
         """Set the value of a widget based on its type.
@@ -1294,14 +1606,21 @@ class GUIClient():
                                     self._companion_widgets[companion_key],
                                     param_value, limits=param_range)
 
-                            if 'results.file' in param_name:
+                            # Selection state lives on the task_planning node;
+                            # results.file (mesh/pcd/regions geometry) lives on
+                            # viewpoint_generation. Gate by node so the two
+                            # nodes' identically named params don't cross-drive.
+                            if (node_name == self.ros_thread.viewpoint_generation_node_name
+                                    and 'results.file' in param_name):
                                 self.visualize_results(param_value)
-                            elif 'selected_mesh' in param_name:
+                            elif node_name == self.ros_thread.task_planning_node_name and param_name == 'navigation.selected_mesh':
                                 self.select_mesh(param_value)
-                            elif 'selected_region' in param_name:
+                            elif node_name == self.ros_thread.task_planning_node_name and param_name == 'navigation.selected_region':
                                 self.select_region(param_value)
-                            elif 'selected_cluster' in param_name:
+                            elif node_name == self.ros_thread.task_planning_node_name and param_name == 'navigation.selected_viewpoint':
                                 self.select_cluster(param_value)
+                            elif node_name == self.ros_thread.task_planning_node_name and param_name == 'navigation.selected_traversal_algorithm':
+                                self.viz.set_traversal_algorithm(param_value)
                             elif 'model.camera.fov.height' in param_name:
                                 self.camera_fov_height = param_value
                                 self.camera_updated = True
