@@ -255,6 +255,11 @@ ros2 launch viewpoint_generation bringup.launch.py \
 Additional arguments:
 - `cell` -- Inspection cell configuration (`alpha` or `beta`)
 - `sim` -- Use fake/simulated hardware
+- `admittance_config_file` -- Admittance/orientation control config (default:
+  `admittance_control_coupled_pendulum.yaml`). When `cell` is enabled, bringup includes
+  `inspection_control/launch/coupled_pendulum.launch.py`, i.e. the Tier 3 coupled-pendulum
+  orientation + admittance pair. To use the legacy point-mass pipeline instead, point this
+  back at `admittance_control.yaml` and include `admittance_control.launch.py`.
 
 ## JSON Results Format
 
