@@ -18,8 +18,8 @@ def generate_launch_description():
                               description="Path to the data directory."),
         DeclareLaunchArgument("controller", default_value="xbox_controller.yaml",
                               description="Controller configuration file for teleoperation."),
-        DeclareLaunchArgument("admittance_config_file", default_value="admittance_control.yaml",
-                              description="Configuration file for admittance control."),
+        DeclareLaunchArgument("admittance_config_file", default_value="admittance_control_coupled_pendulum.yaml",
+                              description="Configuration file for admittance control (Tier 3 coupled-pendulum plant)."),
         DeclareLaunchArgument("rviz_config",
                               default_value="/config/rviz/inspection_cell.rviz",
                               description="Absolute path to an RViz config file for the whole "
@@ -100,7 +100,7 @@ def generate_launch_description():
             PathJoinSubstitution([
                 FindPackageShare("inspection_control"),
                 "launch",
-                "admittance_control.launch.py"
+                "coupled_pendulum.launch.py"
             ])
         ]),
         launch_arguments={
