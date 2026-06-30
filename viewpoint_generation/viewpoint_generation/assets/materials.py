@@ -139,3 +139,8 @@ class Materials:
     axes_line_material.shader = 'unlitLine'
     axes_line_material.base_color = [1.0, 1.0, 1.0, 1.0]
     axes_line_material.line_width = 3.0
+
+    fov_cylinder_material = MaterialRecord()
+    fov_cylinder_material.shader = 'unlitLine'
+    fov_cylinder_material.base_color = [1.0, 1.0, 1.0, 1.0]
+    fov_cylinder_material.line_width = 1.5

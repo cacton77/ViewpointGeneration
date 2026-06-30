@@ -30,6 +30,7 @@ class ClusterViewpointMode(enum.Enum):
     LINES          = "lines"          # Line from viewpoint to cluster centroid
     VIEWPOINT_ONLY = "viewpoint_only" # Only viewpoint markers, no cluster footprint
     ORIGIN_SPHERE  = "origin_sphere"  # Small sphere at the surface origin of each cluster
+    FOV_CYLINDER   = "fov_cylinder"   # Wireframe FOV cylinder at the cluster's surface target
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -213,6 +214,63 @@ def _build_frustum(viewpoint_data: dict,
     return ls
 
 
+def _build_fov_cylinder(viewpoint_data: dict,
+                        n_segments: int = 24,
+                        n_struts: int = 8,
+                        color=(1.0, 1.0, 1.0)) -> o3d.geometry.LineSet | None:
+    """Build a wireframe FOV-cylinder LineSet (in mm) at a cluster's surface target.
+
+    The cylinder is the coverage volume of the field of view: radius
+    ``fov_diameter / 2`` (lateral FOV) and height ``dof`` (axial depth of field),
+    centred on the cluster's surface ``origin`` and aligned along its averaged view
+    ``direction``. It straddles the surface by ±dof/2, matching the greedy-cover
+    coverage predicate. Returns None when camera dimensions are unavailable.
+    """
+    fov_diameter = viewpoint_data.get('fov_diameter')
+    dof          = viewpoint_data.get('dof')
+    if not fov_diameter or not dof:
+        return None
+
+    center = 1000.0 * np.array(viewpoint_data['origin'], dtype=float)
+    axis   = np.array(viewpoint_data['direction'], dtype=float)
+    norm   = np.linalg.norm(axis)
+    if norm < 1e-9:
+        return None
+    axis = axis / norm
+
+    radius      = 1000.0 * fov_diameter / 2.0
+    half_height = 1000.0 * dof / 2.0
+
+    # Orthonormal frame perpendicular to the view axis.
+    ref = np.array([1.0, 0.0, 0.0]) if abs(axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(axis, ref)
+    u /= np.linalg.norm(u)
+    v = np.cross(axis, u)
+
+    thetas = np.linspace(0.0, 2.0 * np.pi, n_segments, endpoint=False)
+    ring = np.array([np.cos(t) * u + np.sin(t) * v for t in thetas])  # (n,3)
+
+    top    = center + half_height * axis + radius * ring
+    bottom = center - half_height * axis + radius * ring
+    points = np.vstack([top, bottom])
+
+    lines = []
+    for i in range(n_segments):
+        j = (i + 1) % n_segments
+        lines.append([i, j])                              # top ring
+        lines.append([n_segments + i, n_segments + j])    # bottom ring
+    # A handful of vertical struts so the tube reads as a cylinder.
+    strut_step = max(1, n_segments // max(1, n_struts))
+    for i in range(0, n_segments, strut_step):
+        lines.append([i, n_segments + i])
+
+    ls = o3d.geometry.LineSet()
+    ls.points = o3d.utility.Vector3dVector(points)
+    ls.lines  = o3d.utility.Vector2iVector(np.array(lines))
+    ls.paint_uniform_color(list(color))
+    return ls
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Renderer ABC
 # ─────────────────────────────────────────────────────────────────────────────
@@ -376,6 +434,25 @@ class OriginSphereRenderer(ClusterViewpointRenderer):
         return sphere, Materials.viewpoint_material
 
 
+class FOVCylinderRenderer(ClusterViewpointRenderer):
+    """White wireframe FOV cylinder at each cluster's surface target.
+
+    Represents the field-of-view coverage volume directly (radius = fov_diameter/2,
+    height = dof), so overlapping FOVs visibly intersect — the honest depiction of
+    a *covering* solution. The surface itself is left to region coloring; this
+    renderer never paints per-cluster footprints onto the cloud/mesh.
+    """
+
+    def build_cluster(self, _cluster_pcd, _cluster_color):
+        return None
+
+    def build_viewpoint(self, viewpoint_data):
+        ls = _build_fov_cylinder(viewpoint_data, color=(1.0, 1.0, 1.0))
+        if ls is None:
+            return None
+        return ls, Materials.fov_cylinder_material
+
+
 # Map from mode enum to renderer class
 _RENDERER_MAP: dict[ClusterViewpointMode, type[ClusterViewpointRenderer]] = {
     ClusterViewpointMode.CONVEX_HULL:    ConvexHullRenderer,
@@ -384,6 +461,7 @@ _RENDERER_MAP: dict[ClusterViewpointMode, type[ClusterViewpointRenderer]] = {
     ClusterViewpointMode.LINES:          LinesRenderer,
     ClusterViewpointMode.VIEWPOINT_ONLY: ViewpointOnlyRenderer,
     ClusterViewpointMode.ORIGIN_SPHERE:  OriginSphereRenderer,
+    ClusterViewpointMode.FOV_CYLINDER:   FOVCylinderRenderer,
 }
 
 
@@ -989,6 +1067,11 @@ class Visualizer:
 
             region_order = mesh_entry.get('order', [])
 
+            # FOV dimensions persisted with the results; consumed by the
+            # FOVCylinderRenderer. Absent on older results files (cylinder is
+            # then skipped per-cluster).
+            camera_config = mesh_entry.get('camera_config', {})
+
             # Guard against a stale results file: the region/noise indices may
             # reference a point cloud with a different number of points than the
             # one currently loaded (e.g. the results were generated before the
@@ -1082,6 +1165,8 @@ class Visualizer:
                                 'orientation':      vp_raw['orientation'],
                                 'cluster_centroid': centroid.tolist(),
                                 'cluster_color':    cluster_color.tolist(),
+                                'fov_diameter':     camera_config.get('fov_diameter'),
+                                'dof':              camera_config.get('dof'),
                             }
 
                             position  = 1000.0 * np.array(vp_raw['position'])
@@ -1392,12 +1477,20 @@ class Visualizer:
             self.show_point_cloud(False)
             self.show_curvatures(False)
             self.show_regions(False)
-            # Paint PCD with cluster colors
             pcd_colors = np.asarray(self.point_cloud.colors)
             pcd_colors[:] = [0.8, 0.8, 0.8]  # base gray
-            for region_data in self.geometries_dict.values():
-                for cluster_data in region_data.get('clusters', {}).values():
-                    pcd_colors[cluster_data['indices']] = cluster_data['color']
+            if self._mode == ClusterViewpointMode.FOV_CYLINDER:
+                # Covering model: a surface point may lie in several FOVs, so
+                # painting it a single cluster color would misrepresent it.
+                # Color the surface by region and let the FOV cylinders (drawn
+                # via the viewpoint geometry path) convey the clustering.
+                for region_data in self.geometries_dict.values():
+                    pcd_colors[region_data['indices']] = region_data['color']
+            else:
+                # Paint PCD with per-cluster colors (partitioning view).
+                for region_data in self.geometries_dict.values():
+                    for cluster_data in region_data.get('clusters', {}).values():
+                        pcd_colors[cluster_data['indices']] = cluster_data['color']
             self._recolor_meshes()
         else:
             mesh_mat = Materials.mesh_material_vertex_colors if self.mesh_has_vertex_colors else Materials.mesh_material

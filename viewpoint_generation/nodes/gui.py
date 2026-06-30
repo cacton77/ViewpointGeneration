@@ -53,6 +53,7 @@ class GUIClient():
     MENU_RENDER_LINES          = 30
     MENU_RENDER_VIEWPOINT_ONLY = 31
     MENU_RENDER_ORIGIN_SPHERE  = 32
+    MENU_RENDER_FOV_CYLINDER   = 33
 
     camera_updated = False
     camera_fov_width = 0.03
@@ -240,6 +241,7 @@ class GUIClient():
             render_mode_menu.add_item("Lines",          self.MENU_RENDER_LINES)
             render_mode_menu.add_item("Viewpoint Only", self.MENU_RENDER_VIEWPOINT_ONLY)
             render_mode_menu.add_item("Origin Sphere",  self.MENU_RENDER_ORIGIN_SPHERE)
+            render_mode_menu.add_item("FOV Cylinder",   self.MENU_RENDER_FOV_CYLINDER)
             render_mode_menu.set_checked(self.MENU_RENDER_CONVEX_HULL, True)
             view_menu.add_menu("Rendering Mode", render_mode_menu)
             view_menu.add_separator()
@@ -341,6 +343,9 @@ class GUIClient():
         w.set_on_menu_item_activated(
             self.MENU_RENDER_ORIGIN_SPHERE,
             lambda: self._on_menu_set_render_mode(ClusterViewpointMode.ORIGIN_SPHERE))
+        w.set_on_menu_item_activated(
+            self.MENU_RENDER_FOV_CYLINDER,
+            lambda: self._on_menu_set_render_mode(ClusterViewpointMode.FOV_CYLINDER))
 
         # w.set_on_menu_item_activated(self.MENU_SHOW_SETTINGS,
         #                              self._on_menu_toggle_settings_panel)
@@ -622,6 +627,7 @@ class GUIClient():
         menubar.set_checked(self.MENU_RENDER_LINES,          current == ClusterViewpointMode.LINES)
         menubar.set_checked(self.MENU_RENDER_VIEWPOINT_ONLY, current == ClusterViewpointMode.VIEWPOINT_ONLY)
         menubar.set_checked(self.MENU_RENDER_ORIGIN_SPHERE,  current == ClusterViewpointMode.ORIGIN_SPHERE)
+        menubar.set_checked(self.MENU_RENDER_FOV_CYLINDER,   current == ClusterViewpointMode.FOV_CYLINDER)
 
     # ============================================================================
     # INIT MAIN LAYOUT

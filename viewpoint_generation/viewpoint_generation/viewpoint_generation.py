@@ -184,10 +184,13 @@ class ViewpointGeneration():
 
         # Only reset results when a genuinely different mesh is loaded.
         # When launching from a saved config the results file is loaded first;
-        # set_mesh_file is then called with the same mesh path, so we preserve
-        # all regions/clusters already in self.results.
-        existing_mesh_file = self.results.get('meshes', [{}])[0].get('file', '')
-        if mesh_file != existing_mesh_file:
+        # set_mesh_file is then called with the same mesh path AND units, so we
+        # preserve all regions/clusters already in self.results. If either the
+        # file or the units differ, the derived data is invalid and we reset.
+        existing_mesh = self.results.get('meshes', [{}])[0]
+        existing_mesh_file = existing_mesh.get('file', '')
+        existing_mesh_units = existing_mesh.get('units', '')
+        if mesh_file != existing_mesh_file or units != existing_mesh_units:
             self.results = {'meshes': [
                     {
                     'file': mesh_file,
@@ -203,23 +206,9 @@ class ViewpointGeneration():
                 ]
             }
             self.results_file = None
-        else:
-            # Same file but units changed — derived data is invalid, reset results
-            self.results = {'meshes': [
-                    {
-                    'file': mesh_file,
-                    'units': units,
-                    'material': 'unknown',
-                    'dimensions': dimensions_str,
-                    'surface_area': surface_area_str,
-                    'point_cloud': {},
-                    'regions': [],
-                    'order': [],
-                    'noise_points': []
-                    }
-                ]
-            }
-            self.results_file = None
+        # else: same mesh file and units as the already-loaded results —
+        # preserve self.results and self.results_file so a saved config can be
+        # resumed without discarding its regions/clusters.
 
         if self.visualize:
             self.viewer.create_window(

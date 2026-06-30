@@ -100,7 +100,7 @@ def generate_launch_description():
             PathJoinSubstitution([
                 FindPackageShare("inspection_control"),
                 "launch",
-                "coupled_pendulum.launch.py"
+                "admittance_control.launch.py"
             ])
         ]),
         launch_arguments={
