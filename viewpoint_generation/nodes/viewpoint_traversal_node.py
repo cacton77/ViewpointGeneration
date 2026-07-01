@@ -1,4 +1,5 @@
 import rclpy
+import rclpy.logging
 import json
 import re
 import datetime
@@ -172,18 +173,22 @@ class ViewpointTraversalNode(Node):
         # Per-region summary table
         region_gaps = self.solver._region_gaps
         max_gap = max((v['gap_pct'] for v in region_gaps.values()), default=0.0)
-        self.get_logger().info('─' * 70)
+        self.get_logger().info('─' * 95)
         self.get_logger().info(
             f'{"Region":<10} {"N":>4}  {"Distance":>10}  {"LowerBound":>11}  '
-            f'{"Gap%":>7}  {"BoundType":>12}')
+            f'{"Gap%":>7}  {"BoundType":>12}  {"ArmTime":>8}  {"ArmDist":>8}  '
+            f'{"Unreach":>7}')
         for rname, info in sorted(region_gaps.items()):
             btype = 'Held-Karp' if info['exact'] else 'MST'
             opt_flag = ' ✓' if info['exact'] and info['gap_pct'] < 0.01 else ''
+            n_unreachable = len(info.get('unreachable', []))
             self.get_logger().info(
                 f'{rname:<10} {info["n"]:>4}  {info["distance"]:>10.4f}'
                 f'  {info["lower_bound"]:>11.4f}  {info["gap_pct"]:>6.2f}%'
-                f'  {btype:>12}{opt_flag}')
-        self.get_logger().info('─' * 70)
+                f'  {btype:>12}  {info.get("arm_time_s", 0.0):>7.1f}s'
+                f'  {info.get("arm_joint_distance", 0.0):>7.2f}r'
+                f'  {n_unreachable:>7}{opt_flag}')
+        self.get_logger().info('─' * 95)
 
         completed_str = ','.join(sorted(self.solver.completed_algorithms))
         self.get_logger().info(
@@ -191,6 +196,26 @@ class ViewpointTraversalNode(Node):
             f'MST total: {mst_total:.3f} m  |  '
             f'{self.tsp_algorithm}: {primary_total:.3f} m  |  '
             f'Overall gap: {gap_pct:.2f}%  |  Max region gap: {max_gap:.2f}%')
+
+        # Whole-inspection arm traversal cost/time (moveitpy-computed), summed
+        # across all regions for the selected algorithm's chosen path.
+        total_arm_time = sum(v.get('arm_time_s', 0.0) for v in region_gaps.values())
+        total_arm_distance = sum(
+            v.get('arm_joint_distance', 0.0) for v in region_gaps.values())
+        total_unreachable = sum(
+            len(v.get('unreachable', [])) for v in region_gaps.values())
+        regions_with_unreachable = sorted(
+            rname for rname, info in region_gaps.items() if info.get('unreachable'))
+        self.get_logger().info(
+            f'Arm traversal ({self.tsp_algorithm}): {total_arm_time:.1f}s  |  '
+            f'{total_arm_distance:.2f} rad joint distance  |  '
+            f'{total_unreachable} viewpoint(s) unreachable'
+            + (f' across regions {", ".join(regions_with_unreachable)}'
+               if regions_with_unreachable else ''))
+        for rname in regions_with_unreachable:
+            self.get_logger().warning(
+                f'  {rname}: unreachable viewpoints '
+                f'{region_gaps[rname]["unreachable"]}')
 
         # Per-algorithm path metrics (distance, etc.) are stored per region in
         # the results JSON under each algorithm's key, not in node parameters.
@@ -295,13 +320,20 @@ class ViewpointTraversalNode(Node):
                 }
 
                 jt_info = ''
-                if self.planning_component:
+                arm_time_s = 0.0
+                arm_joint_distance = 0.0
+                unreachable = []
+                if self.planning_component and len(path_to_save) > 1:
                     joint_traj = self._compute_joint_trajectory(
-                        list(path_to_save), clusters)
-                    if joint_traj['segments']:
-                        order_dict[primary]['joint_trajectory'] = joint_traj
-                        jt_info = (f' | arm: {joint_traj["total_time_s"]:.1f}s'
-                                   f' / {joint_traj["total_joint_distance"]:.2f} rad')
+                        list(path_to_save), clusters, region_key)
+                    order_dict[primary]['joint_trajectory'] = joint_traj
+                    arm_time_s = joint_traj['total_time_s']
+                    arm_joint_distance = joint_traj['total_joint_distance']
+                    unreachable = joint_traj.get('unreachable', [])
+                    jt_info = (f' | arm: {arm_time_s:.1f}s'
+                               f' / {arm_joint_distance:.2f} rad')
+                    if unreachable:
+                        jt_info += f' | {len(unreachable)} unreachable'
 
                 gap_pct = ((distance - lower_bound) / lower_bound * 100.0
                         if lower_bound > 1e-9 else 0.0)
@@ -316,7 +348,10 @@ class ViewpointTraversalNode(Node):
                     'distance': distance,
                     'lower_bound': lower_bound,
                     'gap_pct': gap_pct,
-                    'exact': n_vp <= 18
+                    'exact': n_vp <= 18,
+                    'arm_time_s': arm_time_s,
+                    'arm_joint_distance': arm_joint_distance,
+                    'unreachable': unreachable,
                 }
 
                 self.solver.completed_algorithms.add(primary)
@@ -425,7 +460,7 @@ class ViewpointTraversalNode(Node):
             self.planning_component.set_start_state_to_current_state()
 
         pose_goal = PoseStamped()
-        pose_goal.header.frame_id = "world"
+        pose_goal.header.frame_id = "object_frame"
         pos = viewpoint['position']
         orient = viewpoint['orientation']  # [x, y, z, w]
         pose_goal.pose.position.x = pos[0]
@@ -442,7 +477,7 @@ class ViewpointTraversalNode(Node):
         if not plan_result:
             return None, 0.0
 
-        jt = plan_result.trajectory.joint_trajectory
+        jt = plan_result.trajectory.get_robot_trajectory_msg().joint_trajectory
         if not jt.points:
             return None, 0.0
 
@@ -463,12 +498,12 @@ class ViewpointTraversalNode(Node):
             positions.append([float(T[0, 3]), float(T[1, 3]), float(T[2, 3])])
         return positions
 
-    def _compute_joint_trajectory(self, path, clusters):
+    def _compute_joint_trajectory(self, path, clusters, region_key):
         result = {
             'total_time_s': 0.0,
             'total_joint_distance': 0.0,
-            'segments': [],
             'cartesian_waypoints': [],
+            'unreachable': [],
         }
         prev_joint_state = None
 
@@ -477,14 +512,18 @@ class ViewpointTraversalNode(Node):
             to_vp = clusters[to_idx].get('viewpoint') if to_idx < len(clusters) else None
 
             if not to_vp:
-                result['segments'].append(
-                    {'from': from_idx, 'to': to_idx, 'planned': False})
+                result['unreachable'].append(to_idx)
+                self.get_logger().warning(
+                    f'  region {region_key}: viewpoint {to_idx} has no '
+                    f'viewpoint data, skipping')
                 continue
 
             waypoints, duration = self._plan_segment(to_vp, prev_joint_state)
             if waypoints is None:
-                result['segments'].append(
-                    {'from': from_idx, 'to': to_idx, 'planned': False})
+                result['unreachable'].append(to_idx)
+                self.get_logger().warning(
+                    f'  region {region_key}: viewpoint {to_idx} unreachable '
+                    f'from arm pose after viewpoint {from_idx}')
                 continue
 
             joint_dist = float(sum(
@@ -495,12 +534,6 @@ class ViewpointTraversalNode(Node):
             result['cartesian_waypoints'].extend(cartesian)
             result['total_time_s'] += duration
             result['total_joint_distance'] += joint_dist
-            result['segments'].append({
-                'from': from_idx, 'to': to_idx,
-                'time_s': round(duration, 3),
-                'joint_distance': round(joint_dist, 4),
-                'planned': True,
-            })
             prev_joint_state = waypoints[-1]
 
         self.planning_component.set_start_state_to_current_state()
@@ -532,6 +565,16 @@ class ViewpointTraversalNode(Node):
 
 def main():
     rclpy.init()
+    # MoveItPy and its internal moveit_cpp/OMPL loggers are extremely
+    # chatty at INFO/WARN level (adapter/planner-stage announcements and
+    # benign "planner_id not found"/"planning volume not specified"
+    # warnings repeated for every planned segment). Quiet everything
+    # down to ERROR by default, then re-enable INFO for this node's own
+    # logger so its progress/summary output is unaffected.
+    rclpy.logging.set_logger_level(
+        '', rclpy.logging.LoggingSeverity.ERROR)
+    rclpy.logging.set_logger_level(
+        'viewpoint_traversal', rclpy.logging.LoggingSeverity.INFO)
     traversal_node = ViewpointTraversalNode()
     rclpy.spin(traversal_node)
 

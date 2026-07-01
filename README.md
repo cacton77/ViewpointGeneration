@@ -299,7 +299,16 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
             }
           ],
           "order": {
-            "greedy": {"order": [0, 2, 1], "distance": 0.84},
+            "greedy": {
+              "order": [0, 2, 1],
+              "distance": 0.84,
+              "joint_trajectory": {
+                "total_time_s": 12.3,
+                "total_joint_distance": 4.56,
+                "cartesian_waypoints": [[0.1, 0.2, 0.3]],
+                "unreachable": [1]
+              }
+            },
             "LKH":    {"order": [0, 1, 2], "distance": 0.79}
           }
         }
@@ -338,6 +347,21 @@ existed simply skip that mode.
   Multiple algorithms accumulate in the same dict across runs, so the different
   optimization results — and their metrics — are stored together in the results
   file rather than in node parameters or a separate file.
+- Region-level `order.<algorithm>.joint_trajectory` -- moveit_py-computed arm
+  motion cost for that algorithm's cluster order, added by
+  `viewpoint_traversal_node`'s `optimize_traversal` service whenever the
+  planning component is available:
+  - `total_time_s` / `total_joint_distance` -- Summed trajectory duration
+    (seconds) and joint-space path length (radians) across all *successfully
+    planned* segments in the region.
+  - `cartesian_waypoints` -- Flattened list of `eoat_camera_link` positions
+    (metres) along every successfully planned segment, used to draw the arm's
+    actual path in the GUI (as opposed to the straight-line viewpoint-to-viewpoint
+    path).
+  - `unreachable` -- Cluster indices (within this region) that a segment could
+    not be planned to. The GUI highlights these viewpoints in the 3D view, and
+    `optimize_traversal` logs them (`region X:Y: viewpoint N unreachable ...`)
+    and reports per-region and whole-inspection totals in its summary output.
 - Selected algorithm -- Which algorithm's path the visualizer and motion
   consumers follow when a region's `order` is a dict is **not** stored in the
   results file. It is the `selected_traversal_algorithm` parameter on the

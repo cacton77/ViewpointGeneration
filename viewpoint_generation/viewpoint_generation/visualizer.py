@@ -1217,6 +1217,9 @@ class Visualizer:
                     new_geometries_dict[region_name]['joint_path'] = joint_path
                     new_geometries_dict[region_name]['joint_markers'] = joint_markers
 
+                    new_geometries_dict[region_name]['unreachable_markers'] = (
+                        self._build_unreachable_markers(region_dict, selected_algorithm))
+
         if self.point_cloud is None:
             print("No point cloud loaded; cannot import regions.")
             for mesh_name, mesh in new_meshes.items():
@@ -1323,6 +1326,11 @@ class Visualizer:
                         self.add_geometry(
                             f"{region_name}_joint_markers", joint_markers,
                             Materials.joint_marker_material)
+                    unreachable_markers = region_data.get('unreachable_markers')
+                    if unreachable_markers is not None:
+                        self.add_geometry(
+                            f"{region_name}_unreachable_markers", unreachable_markers,
+                            Materials.unreachable_marker_material)
 
         print(f"Loaded regions from {file_path}")
 
@@ -1404,6 +1412,7 @@ class Visualizer:
         for name in self.region_names:
             self.scene.remove_geometry(f"{name}_joint_path")
             self.scene.remove_geometry(f"{name}_joint_markers")
+            self.scene.remove_geometry(f"{name}_unreachable_markers")
 
     # ── Visibility (pure scene — no menu, no ROS, no cross-calls) ─────────────
 
@@ -1522,6 +1531,7 @@ class Visualizer:
             self.scene.show_geometry(f"{name}_path", visible)
             self.scene.show_geometry(f"{name}_joint_path", visible)
             self.scene.show_geometry(f"{name}_joint_markers", visible)
+            self.scene.show_geometry(f"{name}_unreachable_markers", visible)
 
     def _build_region_path(self, region: dict, algorithm) -> o3d.geometry.LineSet | None:
         """Build a region's traversal path LineSet (viewpoint positions joined
@@ -1572,6 +1582,38 @@ class Visualizer:
 
         return path_ls, marker_pcd
 
+    def _build_unreachable_markers(self, region: dict, algorithm) -> o3d.geometry.PointCloud | None:
+        """Build markers at the positions of viewpoints moveitpy could not
+        plan a motion to/through for the given algorithm's path, or None if
+        there are none (or no joint trajectory was computed)."""
+        order = region.get('order', {})
+        if not isinstance(order, dict):
+            return None
+        algo_entry = (order.get(algorithm)
+                      or (next(iter(order.values())) if order else None))
+        if not isinstance(algo_entry, dict):
+            return None
+        jt = algo_entry.get('joint_trajectory')
+        if not jt or not jt.get('unreachable'):
+            return None
+
+        clusters = region.get('clusters', [])
+        pts = []
+        for cluster_id in jt['unreachable']:
+            if not isinstance(cluster_id, int) or cluster_id < 0 or cluster_id >= len(clusters):
+                continue
+            viewpoint = clusters[cluster_id].get('viewpoint')
+            if not viewpoint:
+                continue
+            pts.append(1000.0 * np.array(viewpoint['position']))
+        if not pts:
+            return None
+
+        marker_pcd = o3d.geometry.PointCloud()
+        marker_pcd.points = o3d.utility.Vector3dVector(np.array(pts))
+        marker_pcd.paint_uniform_color([1.0, 0.85, 0.0])
+        return marker_pcd
+
     def set_traversal_algorithm(self, algorithm):
         """Switch the displayed traversal algorithm and rebuild each region's
         path LineSet in place (no full reload). The GUI calls this when the
@@ -1610,6 +1652,14 @@ class Visualizer:
                 if joint_markers is not None:
                     self.add_geometry(f"{region_name}_joint_markers", joint_markers,
                                       Materials.joint_marker_material)
+
+                unreachable_markers = self._build_unreachable_markers(
+                    regions[region_id], self.selected_traversal_algorithm)
+                self.scene.remove_geometry(f"{region_name}_unreachable_markers")
+                self.geometries_dict[region_name]['unreachable_markers'] = unreachable_markers
+                if unreachable_markers is not None:
+                    self.add_geometry(f"{region_name}_unreachable_markers", unreachable_markers,
+                                      Materials.unreachable_marker_material)
 
         self.show_path(self.show_path_flag)
 

@@ -126,6 +126,11 @@ class Materials:
     joint_marker_material.point_size = 7.0
     joint_marker_material.base_color = [1.0, 0.2, 0.2, 1.0]
 
+    unreachable_marker_material = rendering.MaterialRecord()
+    unreachable_marker_material.shader = 'defaultUnlit'
+    unreachable_marker_material.point_size = 14.0
+    unreachable_marker_material.base_color = [1.0, 0.85, 0.0, 1.0]
+
     ground_plane_material = MaterialRecord()
     ground_plane_material.shader = 'defaultLitTransparency'
     ground_plane_material.base_color = [0.0, 0.0, 0.0, 0.0]
