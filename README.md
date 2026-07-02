@@ -209,7 +209,10 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
 
 - **task_planning_node** -- State machine for robot motion control, manages servo/trajectory controller switching. Parameters are namespaced (`controllers.*`, `navigation.*`, `settings.*`) so the GUI renders one tab per namespace. Owns the mesh/region/viewpoint selection parameters (`navigation.selected_mesh`, `navigation.selected_region`, `navigation.selected_viewpoint`, declared with live slider ranges) and `navigation.selected_traversal_algorithm`; `settings.results_file` points it at the results JSON to plan/execute over; the GUI/visualizer track these to highlight the selected geometry
 - **viewpoint_traversal_node** -- MoveIt-based motion planning to viewpoints with TSP optimization and workspace constraints
-- **gui_node** -- Open3D visualization GUI with interactive mesh, region, cluster, and viewpoint rendering. The *View → Rendering Mode* menu selects how cluster-viewpoint pairs are drawn: `Convex Hull`, `Cluster Cloud`, `Frustum`, `Lines`, `Viewpoint Only`, `Origin Sphere`, and `FOV Cylinder`. **FOV Cylinder** draws a white wireframe cylinder (radius `fov_diameter/2`, height `dof`) centered on each cluster's surface target and aligned to its averaged view direction — the actual coverage volume. Because it depicts a *covering* solution (a point may lie in several overlapping FOVs), this mode leaves the surface colored by region instead of painting it per-cluster.
+- **gui_node** -- Open3D visualization GUI with interactive mesh, region, cluster, and viewpoint rendering. Visualization is split into two orthogonal axes:
+
+  - **Region surface (exclusive)** — *View → Region Surface* selects one coloring for the region surfaces: `Solid` (uniform region color) or `Cluster` (colored by owning cluster). Each region is its own triangle submesh (or a sub-cloud when no mesh is available), so selecting a region makes the **others semi-transparent** to focus on it. Selecting a region also shows only its path, shows the enabled overlays for its viewpoints, and auto-selects its first viewpoint.
+  - **Viewpoint overlays (inclusive)** — *View → Viewpoint Overlays* independently toggles any combination of per-viewpoint geometries: `Viewpoint Marker`, `FOV Cylinder`, `Origin Line` (surface origin → camera), `Frustum`, and `Origin Sphere`. **FOV Cylinder** is a white wireframe cylinder (radius `fov_diameter/2`, height `dof`) centered on each cluster's surface target and aligned to its averaged view direction — the literal coverage volume; overlapping FOVs visibly intersect, honestly depicting the *covering* solution. Selecting a viewpoint highlights its overlay geometries (and restores the previously selected one).
 
 ### Custom Interfaces (viewpoint_generation_interfaces)
 
@@ -334,8 +337,8 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
 **`camera_config`** records the FOV geometry the results were generated with
 (`fov_diameter`, `dof`, `focal_distance`). Besides documenting the capture
 settings, the visualizer reads `fov_diameter`/`dof` from here to draw the **FOV
-Cylinder** rendering mode (see below). Results files written before this field
-existed simply skip that mode.
+Cylinder** viewpoint overlay (see above). Results files written before this field
+existed simply skip that overlay.
 
 **Traversal order:**
 - Mesh-level `order` -- Region visit order (a list of region indices).

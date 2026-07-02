@@ -12,7 +12,7 @@ from pprint import pprint
 
 from viewpoint_generation.gui_node import ROSThread
 from viewpoint_generation.assets.materials import Materials
-from viewpoint_generation.visualizer import Visualizer, ClusterViewpointMode
+from viewpoint_generation.visualizer import Visualizer, RegionSurfaceMode, OverlayKind
 
 sys.stdout.reconfigure(line_buffering=True)
 isMacOS = sys.platform == 'darwin'
@@ -47,13 +47,24 @@ class GUIClient():
     MENU_SHOW_ERRORS = 24
     MENU_SHOW_PATH = 25
     MENU_ABOUT = 26
-    MENU_RENDER_CONVEX_HULL    = 27
-    MENU_RENDER_CLUSTER_CLOUD  = 28
-    MENU_RENDER_FRUSTUM        = 29
-    MENU_RENDER_LINES          = 30
-    MENU_RENDER_VIEWPOINT_ONLY = 31
-    MENU_RENDER_ORIGIN_SPHERE  = 32
-    MENU_RENDER_FOV_CYLINDER   = 33
+    # Region surface mode (exclusive)
+    MENU_SURFACE_SOLID   = 27
+    MENU_SURFACE_CLUSTER = 28
+    # Viewpoint overlays (inclusive)
+    MENU_OVERLAY_MARKER        = 34
+    MENU_OVERLAY_FOV_CYLINDER  = 35
+    MENU_OVERLAY_ORIGIN_LINE   = 36
+    MENU_OVERLAY_FRUSTUM       = 37
+    MENU_OVERLAY_ORIGIN_SPHERE = 38
+
+    # (menu id, overlay kind) pairs for the Viewpoint Overlays submenu.
+    _OVERLAY_MENU_ITEMS = [
+        (MENU_OVERLAY_MARKER,        OverlayKind.MARKER),
+        (MENU_OVERLAY_FOV_CYLINDER,  OverlayKind.FOV_CYLINDER),
+        (MENU_OVERLAY_ORIGIN_LINE,   OverlayKind.ORIGIN_LINE),
+        (MENU_OVERLAY_FRUSTUM,       OverlayKind.FRUSTUM),
+        (MENU_OVERLAY_ORIGIN_SPHERE, OverlayKind.ORIGIN_SPHERE),
+    ]
 
     camera_updated = False
     camera_fov_width = 0.03
@@ -233,17 +244,21 @@ class GUIClient():
             view_menu.set_checked(self.MENU_SHOW_PATH,
                                   self.ros_thread.show_path)
             view_menu.add_separator()
-            # Cluster-viewpoint rendering mode
-            render_mode_menu = gui.Menu()
-            render_mode_menu.add_item("Convex Hull",    self.MENU_RENDER_CONVEX_HULL)
-            render_mode_menu.add_item("Cluster Cloud",  self.MENU_RENDER_CLUSTER_CLOUD)
-            render_mode_menu.add_item("Frustum",        self.MENU_RENDER_FRUSTUM)
-            render_mode_menu.add_item("Lines",          self.MENU_RENDER_LINES)
-            render_mode_menu.add_item("Viewpoint Only", self.MENU_RENDER_VIEWPOINT_ONLY)
-            render_mode_menu.add_item("Origin Sphere",  self.MENU_RENDER_ORIGIN_SPHERE)
-            render_mode_menu.add_item("FOV Cylinder",   self.MENU_RENDER_FOV_CYLINDER)
-            render_mode_menu.set_checked(self.MENU_RENDER_CONVEX_HULL, True)
-            view_menu.add_menu("Rendering Mode", render_mode_menu)
+            # Region surface coloring — exclusive (one at a time).
+            surface_menu = gui.Menu()
+            surface_menu.add_item("Solid",   self.MENU_SURFACE_SOLID)
+            surface_menu.add_item("Cluster", self.MENU_SURFACE_CLUSTER)
+            surface_menu.set_checked(self.MENU_SURFACE_SOLID, True)
+            view_menu.add_menu("Region Surface", surface_menu)
+            # Viewpoint overlays — inclusive (any combination on).
+            overlay_menu = gui.Menu()
+            overlay_menu.add_item("Viewpoint Marker", self.MENU_OVERLAY_MARKER)
+            overlay_menu.add_item("FOV Cylinder",     self.MENU_OVERLAY_FOV_CYLINDER)
+            overlay_menu.add_item("Origin Line",      self.MENU_OVERLAY_ORIGIN_LINE)
+            overlay_menu.add_item("Frustum",          self.MENU_OVERLAY_FRUSTUM)
+            overlay_menu.add_item("Origin Sphere",    self.MENU_OVERLAY_ORIGIN_SPHERE)
+            overlay_menu.set_checked(self.MENU_OVERLAY_MARKER, True)
+            view_menu.add_menu("Viewpoint Overlays", overlay_menu)
             view_menu.add_separator()
             # Panel display options
             view_menu.add_item("Lighting & Materials",
@@ -326,26 +341,14 @@ class GUIClient():
             self.MENU_SHOW_REGION_VIEW_MANIFOLDS,
             self._on_menu_show_region_view_manifolds)
         w.set_on_menu_item_activated(
-            self.MENU_RENDER_CONVEX_HULL,
-            lambda: self._on_menu_set_render_mode(ClusterViewpointMode.CONVEX_HULL))
+            self.MENU_SURFACE_SOLID,
+            lambda: self._on_menu_set_surface_mode(RegionSurfaceMode.SOLID))
         w.set_on_menu_item_activated(
-            self.MENU_RENDER_CLUSTER_CLOUD,
-            lambda: self._on_menu_set_render_mode(ClusterViewpointMode.CLUSTER_CLOUD))
-        w.set_on_menu_item_activated(
-            self.MENU_RENDER_FRUSTUM,
-            lambda: self._on_menu_set_render_mode(ClusterViewpointMode.FRUSTUM))
-        w.set_on_menu_item_activated(
-            self.MENU_RENDER_LINES,
-            lambda: self._on_menu_set_render_mode(ClusterViewpointMode.LINES))
-        w.set_on_menu_item_activated(
-            self.MENU_RENDER_VIEWPOINT_ONLY,
-            lambda: self._on_menu_set_render_mode(ClusterViewpointMode.VIEWPOINT_ONLY))
-        w.set_on_menu_item_activated(
-            self.MENU_RENDER_ORIGIN_SPHERE,
-            lambda: self._on_menu_set_render_mode(ClusterViewpointMode.ORIGIN_SPHERE))
-        w.set_on_menu_item_activated(
-            self.MENU_RENDER_FOV_CYLINDER,
-            lambda: self._on_menu_set_render_mode(ClusterViewpointMode.FOV_CYLINDER))
+            self.MENU_SURFACE_CLUSTER,
+            lambda: self._on_menu_set_surface_mode(RegionSurfaceMode.CLUSTER))
+        for menu_id, kind in self._OVERLAY_MENU_ITEMS:
+            w.set_on_menu_item_activated(
+                menu_id, lambda k=kind, m=menu_id: self._on_menu_toggle_overlay(k, m))
 
         # w.set_on_menu_item_activated(self.MENU_SHOW_SETTINGS,
         #                              self._on_menu_toggle_settings_panel)
@@ -588,9 +591,14 @@ class GUIClient():
         self.viz.show_path(show)
         self._refresh_view_menu()
 
-    def _on_menu_set_render_mode(self, mode: ClusterViewpointMode):
-        self.viz.set_mode(mode)
+    def _on_menu_set_surface_mode(self, mode: RegionSurfaceMode):
+        self.viz.set_region_surface_mode(mode)
         self._refresh_render_mode_menu()
+
+    def _on_menu_toggle_overlay(self, kind: OverlayKind, menu_id: int):
+        on = not gui.Application.instance.menubar.is_checked(menu_id)
+        self.viz.set_overlay_enabled(kind, on)
+        gui.Application.instance.menubar.set_checked(menu_id, on)
 
     def show_axes(self, show=True):
         self.scene_widget.scene.show_axes(show)
@@ -618,16 +626,13 @@ class GUIClient():
         self.ros_thread.set_parameter('show_skybox', show)
 
     def _refresh_render_mode_menu(self):
-        """Update render-mode submenu checkmarks to reflect the active mode."""
-        current = self.viz._mode
+        """Update Region Surface / Viewpoint Overlay menu checkmarks."""
+        current = self.viz._surface_mode
         menubar = gui.Application.instance.menubar
-        menubar.set_checked(self.MENU_RENDER_CONVEX_HULL,    current == ClusterViewpointMode.CONVEX_HULL)
-        menubar.set_checked(self.MENU_RENDER_CLUSTER_CLOUD,  current == ClusterViewpointMode.CLUSTER_CLOUD)
-        menubar.set_checked(self.MENU_RENDER_FRUSTUM,        current == ClusterViewpointMode.FRUSTUM)
-        menubar.set_checked(self.MENU_RENDER_LINES,          current == ClusterViewpointMode.LINES)
-        menubar.set_checked(self.MENU_RENDER_VIEWPOINT_ONLY, current == ClusterViewpointMode.VIEWPOINT_ONLY)
-        menubar.set_checked(self.MENU_RENDER_ORIGIN_SPHERE,  current == ClusterViewpointMode.ORIGIN_SPHERE)
-        menubar.set_checked(self.MENU_RENDER_FOV_CYLINDER,   current == ClusterViewpointMode.FOV_CYLINDER)
+        menubar.set_checked(self.MENU_SURFACE_SOLID,   current == RegionSurfaceMode.SOLID)
+        menubar.set_checked(self.MENU_SURFACE_CLUSTER, current == RegionSurfaceMode.CLUSTER)
+        for menu_id, kind in self._OVERLAY_MENU_ITEMS:
+            menubar.set_checked(menu_id, kind in self.viz._enabled_overlays)
 
     # ============================================================================
     # INIT MAIN LAYOUT

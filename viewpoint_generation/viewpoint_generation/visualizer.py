@@ -8,7 +8,6 @@ import copy
 import enum
 import json
 import math
-from abc import ABC, abstractmethod
 
 import numpy as np
 import open3d as o3d
@@ -22,15 +21,19 @@ from viewpoint_generation.assets.materials import Materials
 # Rendering Mode Enum
 # ─────────────────────────────────────────────────────────────────────────────
 
-class ClusterViewpointMode(enum.Enum):
-    """Available rendering strategies for cluster-viewpoint pairs."""
-    CONVEX_HULL    = "convex_hull"    # Convex hull of the cluster points (default)
-    CLUSTER_CLOUD  = "cluster_cloud"  # Raw point cloud per cluster
-    FRUSTUM        = "frustum"        # Camera frustum at the viewpoint
-    LINES          = "lines"          # Line from viewpoint to cluster centroid
-    VIEWPOINT_ONLY = "viewpoint_only" # Only viewpoint markers, no cluster footprint
-    ORIGIN_SPHERE  = "origin_sphere"  # Small sphere at the surface origin of each cluster
-    FOV_CYLINDER   = "fov_cylinder"   # Wireframe FOV cylinder at the cluster's surface target
+class RegionSurfaceMode(enum.Enum):
+    """How a region's *surface* is colored. Exclusive (one at a time)."""
+    SOLID   = "solid"    # Uniform region color
+    CLUSTER = "cluster"  # Vertex/point colored by owning cluster
+
+
+class OverlayKind(enum.Enum):
+    """Per-viewpoint overlay geometries. Inclusive (any combination on)."""
+    MARKER        = "marker"         # Sphere/arrow/axes marker at the camera position
+    FOV_CYLINDER  = "fov_cylinder"   # Wireframe FOV coverage cylinder at the surface target
+    ORIGIN_LINE   = "origin_line"    # Line from the surface origin to the camera position
+    FRUSTUM       = "frustum"        # Camera frustum at the viewpoint
+    ORIGIN_SPHERE = "origin_sphere"  # Small sphere at the surface origin of each cluster
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -272,196 +275,66 @@ def _build_fov_cylinder(viewpoint_data: dict,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Renderer ABC
+# Viewpoint overlay builders + registry
+#
+# Each overlay kind builds one geometry per cluster-viewpoint. Overlays are
+# inclusive: any combination can be enabled at once, and each is added to the
+# scene under its own name (f"{cluster_name}_vp_{kind.value}") so they coexist.
+# The registry maps a kind to (builder, default_material, selected_material);
+# the builder takes the cluster's viewpoint_data dict and returns a geometry
+# (or None when it cannot be built, e.g. an FOV cylinder with no camera dims).
 # ─────────────────────────────────────────────────────────────────────────────
 
-class ClusterViewpointRenderer(ABC):
-    """Strategy for building the geometry of a single cluster-viewpoint pair."""
-
-    @abstractmethod
-    def build_cluster(
-        self,
-        cluster_pcd: o3d.geometry.PointCloud,
-        cluster_color: np.ndarray,
-    ) -> tuple | None:
-        """Return (geometry, material) for the cluster footprint, or None."""
-
-    @abstractmethod
-    def build_viewpoint(
-        self,
-        viewpoint_data: dict,
-    ) -> tuple | None:
-        """Return (geometry, material) for the viewpoint marker, or None."""
-
-    # Default materials — override in subclasses if needed
-    def cluster_material(self):
-        return Materials.cluster_material
-
-    def selected_cluster_material(self):
-        return Materials.selected_cluster_material
-
-    def viewpoint_material(self):
-        return Materials.viewpoint_material
-
-    def selected_viewpoint_material(self):
-        return Materials.selected_viewpoint_material
+def _build_origin_line(viewpoint_data: dict) -> o3d.geometry.LineSet:
+    """A line from the surface origin to the camera position (in mm)."""
+    origin   = 1000.0 * np.array(viewpoint_data['origin'], dtype=float)
+    position = 1000.0 * np.array(viewpoint_data['position'], dtype=float)
+    ls = o3d.geometry.LineSet()
+    ls.points = o3d.utility.Vector3dVector(np.array([origin, position]))
+    ls.lines  = o3d.utility.Vector2iVector(np.array([[0, 1]]))
+    ls.paint_uniform_color([0.9, 0.9, 0.9])
+    return ls
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Concrete Renderers
-# ─────────────────────────────────────────────────────────────────────────────
-
-class ConvexHullRenderer(ClusterViewpointRenderer):
-    """Convex hull of the cluster point cloud (original default behaviour)."""
-
-    def build_cluster(self, cluster_pcd, cluster_color):
-        pcd, _ = cluster_pcd.remove_statistical_outlier(
-            nb_neighbors=20, std_ratio=2.0)
-        mesh = pcd.compute_convex_hull(joggle_inputs=True)[0]
-        mesh.paint_uniform_color(cluster_color)
-        mesh.compute_vertex_normals()
-        avg_normal = np.mean(np.asarray(pcd.normals), axis=0)
-        mesh.translate(avg_normal * 0.20)
-        return mesh, Materials.cluster_material
-
-    def build_viewpoint(self, viewpoint_data):
-        return _build_standard_viewpoint_mesh(viewpoint_data), Materials.viewpoint_material
+def _build_origin_sphere(viewpoint_data: dict,
+                         radius: float = 2.0) -> o3d.geometry.TriangleMesh:
+    """A small sphere at the cluster's surface origin, coloured by cluster colour."""
+    origin = 1000.0 * np.array(viewpoint_data['origin'], dtype=float)
+    color  = viewpoint_data.get('cluster_color', [1.0, 1.0, 1.0])
+    sphere = o3d.geometry.TriangleMesh.create_sphere(radius=radius)
+    sphere.translate(origin)
+    sphere.paint_uniform_color(color)
+    sphere.compute_vertex_normals()
+    return sphere
 
 
-class ClusterCloudRenderer(ClusterViewpointRenderer):
-    """Raw point cloud coloured by cluster colour."""
-
-    def build_cluster(self, cluster_pcd, cluster_color):
-        pcd = copy.deepcopy(cluster_pcd)
-        pcd.paint_uniform_color(cluster_color)
-        return pcd, Materials.point_cloud_material
-
-    def build_viewpoint(self, viewpoint_data):
-        return _build_standard_viewpoint_mesh(viewpoint_data), Materials.viewpoint_material
-
-    def cluster_material(self):
-        return Materials.point_cloud_material
-
-    def selected_cluster_material(self):
-        return Materials.selected_cluster_material
-
-
-class FrustumRenderer(ClusterViewpointRenderer):
-    """Convex hull cluster footprint + camera frustum at the viewpoint."""
-
-    def __init__(self, fov_w: float = 0.03, fov_h: float = 0.02,
-                 depth: float = 30.0):
-        self.fov_w = fov_w
-        self.fov_h = fov_h
-        self.depth = depth
-
-    def build_cluster(self, cluster_pcd, cluster_color):
-        pcd, _ = cluster_pcd.remove_statistical_outlier(
-            nb_neighbors=20, std_ratio=2.0)
-        mesh = pcd.compute_convex_hull(joggle_inputs=True)[0]
-        mesh.paint_uniform_color(cluster_color)
-        mesh.compute_vertex_normals()
-        return mesh, Materials.cluster_material
-
-    def build_viewpoint(self, viewpoint_data):
-        frustum = _build_frustum(
-            viewpoint_data, self.fov_w, self.fov_h, self.depth)
-        return frustum, Materials.path_material
-
-    def viewpoint_material(self):
-        return Materials.path_material
-
-    def selected_viewpoint_material(self):
-        return Materials.selected_path_material
-
-
-class LinesRenderer(ClusterViewpointRenderer):
-    """A line from the viewpoint to the cluster centroid; no hull footprint."""
-
-    def build_cluster(self, _cluster_pcd, _cluster_color):
-        return None
-
-    def build_viewpoint(self, viewpoint_data):
-        vp_pos   = 1000.0 * np.array(viewpoint_data['position'])
-        centroid = np.array(viewpoint_data.get('cluster_centroid', vp_pos),
-                            dtype=float)
-
-        ls = o3d.geometry.LineSet()
-        ls.points = o3d.utility.Vector3dVector(np.array([vp_pos, centroid]))
-        ls.lines  = o3d.utility.Vector2iVector(np.array([[0, 1]]))
-        ls.paint_uniform_color([0.9, 0.9, 0.9])
-        return ls, Materials.path_material
-
-    def cluster_material(self):
-        return Materials.path_material
-
-    def selected_cluster_material(self):
-        return Materials.selected_path_material
-
-    def viewpoint_material(self):
-        return Materials.path_material
-
-    def selected_viewpoint_material(self):
-        return Materials.selected_path_material
-
-
-class ViewpointOnlyRenderer(ClusterViewpointRenderer):
-    """Only renders viewpoint markers; cluster footprint is suppressed."""
-
-    def build_cluster(self, _cluster_pcd, _cluster_color):
-        return None
-
-    def build_viewpoint(self, viewpoint_data):
-        return _build_standard_viewpoint_mesh(viewpoint_data), Materials.viewpoint_material
-
-
-class OriginSphereRenderer(ClusterViewpointRenderer):
-    """A small sphere at the surface origin of each cluster, coloured by cluster colour."""
-
-    def __init__(self, radius: float = 2.0):
-        self.radius = radius  # mm
-
-    def build_cluster(self, _cluster_pcd, _cluster_color):
-        return None
-
-    def build_viewpoint(self, viewpoint_data):
-        origin = 1000.0 * np.array(viewpoint_data['origin'])
-        color  = viewpoint_data.get('cluster_color', [1.0, 1.0, 1.0])
-        sphere = o3d.geometry.TriangleMesh.create_sphere(radius=self.radius)
-        sphere.translate(origin)
-        sphere.paint_uniform_color(color)
-        sphere.compute_vertex_normals()
-        return sphere, Materials.viewpoint_material
-
-
-class FOVCylinderRenderer(ClusterViewpointRenderer):
-    """White wireframe FOV cylinder at each cluster's surface target.
-
-    Represents the field-of-view coverage volume directly (radius = fov_diameter/2,
-    height = dof), so overlapping FOVs visibly intersect — the honest depiction of
-    a *covering* solution. The surface itself is left to region coloring; this
-    renderer never paints per-cluster footprints onto the cloud/mesh.
-    """
-
-    def build_cluster(self, _cluster_pcd, _cluster_color):
-        return None
-
-    def build_viewpoint(self, viewpoint_data):
-        ls = _build_fov_cylinder(viewpoint_data, color=(1.0, 1.0, 1.0))
-        if ls is None:
-            return None
-        return ls, Materials.fov_cylinder_material
-
-
-# Map from mode enum to renderer class
-_RENDERER_MAP: dict[ClusterViewpointMode, type[ClusterViewpointRenderer]] = {
-    ClusterViewpointMode.CONVEX_HULL:    ConvexHullRenderer,
-    ClusterViewpointMode.CLUSTER_CLOUD:  ClusterCloudRenderer,
-    ClusterViewpointMode.FRUSTUM:        FrustumRenderer,
-    ClusterViewpointMode.LINES:          LinesRenderer,
-    ClusterViewpointMode.VIEWPOINT_ONLY: ViewpointOnlyRenderer,
-    ClusterViewpointMode.ORIGIN_SPHERE:  OriginSphereRenderer,
-    ClusterViewpointMode.FOV_CYLINDER:   FOVCylinderRenderer,
+# kind -> (builder(viewpoint_data) -> geometry|None, default_material, selected_material)
+_OVERLAY_REGISTRY: dict = {
+    OverlayKind.MARKER: (
+        _build_standard_viewpoint_mesh,
+        Materials.viewpoint_material,
+        Materials.selected_viewpoint_material,
+    ),
+    OverlayKind.FOV_CYLINDER: (
+        lambda vp: _build_fov_cylinder(vp, color=(1.0, 1.0, 1.0)),
+        Materials.fov_cylinder_material,
+        Materials.selected_fov_cylinder_material,
+    ),
+    OverlayKind.ORIGIN_LINE: (
+        _build_origin_line,
+        Materials.path_material,
+        Materials.selected_path_material,
+    ),
+    OverlayKind.FRUSTUM: (
+        _build_frustum,
+        Materials.path_material,
+        Materials.selected_path_material,
+    ),
+    OverlayKind.ORIGIN_SPHERE: (
+        _build_origin_sphere,
+        Materials.viewpoint_material,
+        Materials.selected_viewpoint_material,
+    ),
 }
 
 
@@ -640,9 +513,11 @@ class Visualizer:
             eye=np.array([1., 1., 1.]),
         )
 
-        # Active rendering mode
-        self._mode:     ClusterViewpointMode     = ClusterViewpointMode.CONVEX_HULL
-        self._renderer: ClusterViewpointRenderer = ConvexHullRenderer()
+        # Visualization state: the region surface is colored by one exclusive
+        # mode, while any combination of per-viewpoint overlays may be enabled.
+        self._surface_mode: RegionSurfaceMode = RegionSurfaceMode.SOLID
+        self._enabled_overlays: set[OverlayKind] = {OverlayKind.MARKER}
+        self._built_overlays: set[OverlayKind] = set()
 
         # Model state
         self.mesh_name        = None
@@ -697,43 +572,140 @@ class Visualizer:
         """Delegate mouse events to the turntable camera controller."""
         return self.camera.on_mouse(event)
 
-    # ── Mode / Re-render ─────────────────────────────────────────────────────
+    # ── Region surface mode (exclusive) ──────────────────────────────────────
 
-    def set_mode(self, mode: ClusterViewpointMode):
-        """Switch cluster-viewpoint rendering mode and rebuild all cluster geometry."""
-        self._mode     = mode
-        self._renderer = _RENDERER_MAP[mode]()
-        self._rerender_clusters()
+    def set_region_surface_mode(self, mode: RegionSurfaceMode):
+        """Set how region surfaces are colored (solid vs. by cluster) and repaint."""
+        self._surface_mode = mode
+        self._render_surfaces()
 
-    def _rerender_clusters(self):
-        """Rebuild viewpoint geometry using the current renderer and repaint mesh."""
+    def _render_surfaces(self):
+        """Apply the active surface mode to every region surface, honoring the
+        current selection (selected region opaque/full-bright, others dimmed)."""
+        sel = self.selected_region_name
+        for region_name in self.geometries_dict:
+            selected = (not sel) or (region_name == sel)
+            self._apply_surface(region_name, selected)
+
+    def _apply_surface(self, region_name: str, selected: bool):
+        """Color one region's surface by the active mode and set its opacity.
+
+        Meshes flip opaque↔transparent via material; point-cloud surfaces (used
+        when no mesh is present) darken non-selected colors instead, since
+        Open3D point clouds do not alpha-blend reliably.
+        """
+        surf = self.geometries_dict.get(region_name, {}).get('surface')
+        if not surf:
+            return
+        name = surf['name']
+        base = (surf['colors_solid'] if self._surface_mode == RegionSurfaceMode.SOLID
+                else surf['colors_cluster'])
+        geom = surf['geometry']
+        self.scene.remove_geometry(name)
+        if surf['kind'] == 'mesh':
+            geom.vertex_colors = o3d.utility.Vector3dVector(base)
+            mat = (Materials.mesh_material_vertex_colors if selected
+                   else Materials.mesh_material_vertex_colors_transparent)
+            self.add_geometry(name, geom, mat)
+        else:  # point-cloud surface
+            disp = base if selected else base * 0.15
+            geom.colors = o3d.utility.Vector3dVector(disp)
+            self.add_geometry(name, geom, Materials.point_cloud_material)
+        self.scene.show_geometry(name, self.show_mesh_flag)
+
+    # ── Viewpoint overlays (inclusive) ───────────────────────────────────────
+
+    @staticmethod
+    def _overlay_geo_name(cluster_name: str, kind: OverlayKind) -> str:
+        return f"{cluster_name}_vp_{kind.value}"
+
+    def set_overlay_enabled(self, kind: OverlayKind, on: bool):
+        """Enable/disable one viewpoint overlay kind across all clusters."""
+        if on:
+            self._enabled_overlays.add(kind)
+            if kind not in self._built_overlays:
+                self._build_overlay_kind(kind)
+        else:
+            self._enabled_overlays.discard(kind)
+        self._update_overlay_visibility()
+        # Re-assert the selected viewpoint's highlight on the (possibly new) geometry.
+        if self.selected_cluster_name:
+            self._highlight_viewpoint(self.selected_cluster_name, True)
+
+    def _build_overlay_kind(self, kind: OverlayKind):
+        """Build geometry for one overlay kind for every cluster viewpoint."""
+        builder, default_mat, _ = _OVERLAY_REGISTRY[kind]
         for region_data in self.geometries_dict.values():
-            if 'clusters' not in region_data:
-                continue
-            for cluster_name, cluster_data in region_data['clusters'].items():
-                # Remove old viewpoint geometry
-                self.scene.remove_geometry(f"{cluster_name}_viewpoint")
+            for cluster_name, cdata in region_data.get('clusters', {}).items():
+                vp = cdata.get('viewpoint_data')
+                if not vp:
+                    continue
+                name = self._overlay_geo_name(cluster_name, kind)
+                self.scene.remove_geometry(name)
+                geo = builder(vp)
+                if geo is None:
+                    continue
+                self.add_geometry(name, geo, default_mat)
+        self._built_overlays.add(kind)
 
-                # Build viewpoint marker
-                vp_data = cluster_data.get('viewpoint_data')
-                if vp_data:
-                    # Inject centroid for LinesRenderer
-                    centroid = np.mean(
-                        np.asarray(cluster_data['pcd'].points), axis=0)
-                    vp_data_aug = dict(vp_data, cluster_centroid=centroid.tolist())
-                    result = self._renderer.build_viewpoint(vp_data_aug)
-                    if result:
-                        geo, mat = result
-                        self.add_geometry(f"{cluster_name}_viewpoint", geo, mat)
-        # Repaint mesh if clusters are currently shown
-        if self.show_clusters_flag:
-            self.show_fov_clusters(True)
+    def _update_overlay_visibility(self):
+        """Show enabled overlays for the selected region (all regions when none
+        is selected), gated by the master ``show_viewpoints`` flag."""
+        sel = self.selected_region_name
+        for region_name, region_data in self.geometries_dict.items():
+            region_visible = (not sel) or (region_name == sel)
+            for cluster_name in region_data.get('clusters', {}):
+                for kind in self._built_overlays:
+                    name = self._overlay_geo_name(cluster_name, kind)
+                    if not self.scene.has_geometry(name):
+                        continue
+                    visible = (self.show_viewpoints_flag
+                               and kind in self._enabled_overlays
+                               and region_visible)
+                    self.scene.show_geometry(name, visible)
+
+    def _highlight_viewpoint(self, cluster_name: str, selected: bool):
+        """Set selected/default materials on all built overlays of one cluster."""
+        for kind in self._built_overlays:
+            name = self._overlay_geo_name(cluster_name, kind)
+            if not self.scene.has_geometry(name):
+                continue
+            _, default_mat, selected_mat = _OVERLAY_REGISTRY[kind]
+            self.scene_widget.scene.modify_geometry_material(
+                name, selected_mat if selected else default_mat)
 
     # ── Core scene helper ────────────────────────────────────────────────────
 
     # Multiplier on the bounding-box diagonal that sets the camera's distance
     # from the scene center. Larger pulls the camera back; smaller zooms in.
     CAMERA_FRAMING_FACTOR = 1.0
+
+    def _content_bbox(self, mesh_bbox, view_positions):
+        """Model-space AABB spanning the loaded content used for framing.
+
+        Unions the mesh bounding box with the viewpoint positions (both in
+        correctly-scaled model space). Falls back to the point-cloud bounds when
+        no mesh is present. Deliberately excludes ``scene.bounding_box`` so
+        hidden/stale geometry (e.g. a mis-scaled point cloud) cannot distort the
+        ground grid or camera framing. Returns None when nothing is available.
+        """
+        bounds = []
+        if mesh_bbox is not None:
+            bounds.append(np.asarray(mesh_bbox.get_min_bound()))
+            bounds.append(np.asarray(mesh_bbox.get_max_bound()))
+        if view_positions:
+            vp = np.asarray(view_positions)
+            bounds.append(vp.min(axis=0))
+            bounds.append(vp.max(axis=0))
+        if not bounds and self.point_cloud is not None:
+            pcd_bbox = self.point_cloud.get_axis_aligned_bounding_box()
+            bounds.append(np.asarray(pcd_bbox.get_min_bound()))
+            bounds.append(np.asarray(pcd_bbox.get_max_bound()))
+        if not bounds:
+            return None
+        stacked = np.vstack(bounds)
+        return o3d.geometry.AxisAlignedBoundingBox(
+            min_bound=stacked.min(axis=0), max_bound=stacked.max(axis=0))
 
     def _reset_camera_to_bbox(self, bbox: o3d.geometry.AxisAlignedBoundingBox | None = None):
         """Reset the turntable camera so the mesh fills the view.
@@ -1025,6 +997,11 @@ class Visualizer:
         show_path       = False
         traversal_order: list[list[int]] = []
         all_noise_points: list = []
+        # Viewpoint positions (model-space, mm) accumulated across all regions.
+        # Used to frame the grid/camera without relying on scene.bounding_box,
+        # which also counts hidden geometry (e.g. a stale, mis-scaled point
+        # cloud) and would otherwise blow up the ground grid.
+        all_view_positions: list = []
 
         cmap = colormaps[Materials.regions_colormap]
         np.random.seed(1)
@@ -1174,6 +1151,7 @@ class Visualizer:
                             region_view_points.append(position.tolist())
                             region_view_normals.append(direction.tolist())
                             path_points.append(position)
+                            all_view_positions.append(position)
 
                             if i != cluster_id:
                                 show_path = True
@@ -1248,89 +1226,51 @@ class Visualizer:
         self.selected_region_name  = ''
         self.selected_cluster_name = ''
 
-        # ── Add meshes (deferred so vertex colors can be applied) ─────────
+        # ── Build per-region surfaces (one submesh per region, or a sub-cloud
+        #    when a region has no mesh triangles) ──────────────────────────────
+        self.mesh_names = []
         if new_geometries_dict and len(self.point_cloud.points) > 0:
-            avg_pcd_spacing = np.mean(
-                self.point_cloud.compute_nearest_neighbor_distance())
-
-            for mesh_name, mesh in new_meshes.items():
-                # Subdivide until mesh edge length ≈ point cloud spacing
-                triangles = np.asarray(mesh.triangles)
-                vertices = np.asarray(mesh.vertices)
-                edges = np.array([[tri[j], tri[(j + 1) % 3]]
-                                  for tri in triangles for j in range(3)])
-                avg_edge_length = np.mean(
-                    np.linalg.norm(vertices[edges[:, 0]] - vertices[edges[:, 1]],
-                                   axis=1))
-                iterations = max(
-                    0, math.ceil(math.log2(avg_edge_length / avg_pcd_spacing)))
-                if iterations > 0:
-                    print(f"{mesh_name}: subdividing {iterations}x "
-                          f"(edge {avg_edge_length:.2f} → ~{avg_pcd_spacing:.2f})")
-                    mesh = mesh.subdivide_midpoint(iterations)
-                    mesh.compute_vertex_normals()
-                    new_meshes[mesh_name] = mesh
-
-            pcd_tree = o3d.geometry.KDTreeFlann(self.point_cloud)
-            for mesh_name, mesh in new_meshes.items():
-                mesh_vertices = np.asarray(mesh.vertices)
-                vertex_to_pcd = np.zeros(len(mesh_vertices), dtype=int)
-                for i, vertex in enumerate(mesh_vertices):
-                    [_, idx, _] = pcd_tree.search_knn_vector_3d(vertex, 1)
-                    vertex_to_pcd[i] = idx[0]
-                self.mesh_vertex_to_pcd[mesh_name] = vertex_to_pcd
-                self.meshes[mesh_name] = mesh
-            self._recolor_meshes()
-            self.mesh_has_vertex_colors = True
+            self._build_region_surfaces(new_meshes, all_noise_points)
         else:
+            # No regions: show the plain mesh(es) as before.
             for mesh_name, mesh in new_meshes.items():
                 self.add_geometry(mesh_name, mesh, Materials.mesh_material)
+            self.mesh_names = new_mesh_names
+
+        for region_name, region_data in self.geometries_dict.items():
+            self.region_names.append(region_name)
+            for cluster_name in region_data.get('clusters', {}):
+                self.cluster_names.append(cluster_name)
+
+        # Add region surfaces (opaque, current surface mode) and per-region
+        # view-manifold / path geometry.
+        self._render_surfaces()
+        for region_name, region_data in self.geometries_dict.items():
+            view_mesh = region_data.get('view_mesh')
+            if view_mesh is not None:
+                self.add_geometry(f"{region_name}_view_mesh", view_mesh,
+                                  Materials.region_view_material)
+            path = region_data.get('path')
+            if path is not None:
+                self.add_geometry(f"{region_name}_path", path,
+                                  Materials.path_material)
+            joint_path = region_data.get('joint_path')
+            if joint_path is not None:
+                self.add_geometry(f"{region_name}_joint_path", joint_path,
+                                  Materials.joint_path_material)
+            joint_markers = region_data.get('joint_markers')
+            if joint_markers is not None:
+                self.add_geometry(f"{region_name}_joint_markers", joint_markers,
+                                  Materials.joint_marker_material)
+
+        # Build the currently-enabled viewpoint overlays for every cluster.
+        self._built_overlays = set()
+        if show_viewpoints:
+            for kind in list(self._enabled_overlays):
+                self._build_overlay_kind(kind)
 
         # ── Update single point cloud with region colors ──────────────────
         self._update_point_cloud_scene()
-
-        # ── Add region / cluster geometry ────────────────────────────────
-        for region_name, region_data in self.geometries_dict.items():
-            self.region_names.append(region_name)
-
-            if show_clusters:
-                for cluster_name, cluster_data in region_data['clusters'].items():
-                    self.cluster_names.append(cluster_name)
-
-                    if show_viewpoints and cluster_data['viewpoint_data']:
-                        result = self._renderer.build_viewpoint(
-                            cluster_data['viewpoint_data'])
-                        if result:
-                            geo, mat = result
-                            self.add_geometry(
-                                f"{cluster_name}_viewpoint", geo, mat)
-
-                if show_viewpoints:
-                    view_mesh = region_data.get('view_mesh')
-                    if view_mesh is not None:
-                        self.add_geometry(
-                            f"{region_name}_view_mesh", view_mesh,
-                            Materials.region_view_material)
-                    path = region_data.get('path')
-                    if path is not None:
-                        self.add_geometry(
-                            f"{region_name}_path", path,
-                            Materials.path_material)
-                    joint_path = region_data.get('joint_path')
-                    if joint_path is not None:
-                        self.add_geometry(
-                            f"{region_name}_joint_path", joint_path,
-                            Materials.joint_path_material)
-                    joint_markers = region_data.get('joint_markers')
-                    if joint_markers is not None:
-                        self.add_geometry(
-                            f"{region_name}_joint_markers", joint_markers,
-                            Materials.joint_marker_material)
-                    unreachable_markers = region_data.get('unreachable_markers')
-                    if unreachable_markers is not None:
-                        self.add_geometry(
-                            f"{region_name}_unreachable_markers", unreachable_markers,
-                            Materials.unreachable_marker_material)
 
         print(f"Loaded regions from {file_path}")
 
@@ -1343,33 +1283,141 @@ class Visualizer:
         self.show_mesh(True)
         self.show_curvatures(False)
         self.show_noise_points(False)
-        self.show_viewpoints(False)
 
         if show_clusters:
-            self.show_regions(False)
-            self.show_fov_clusters(True)
+            self.set_region_surface_mode(RegionSurfaceMode.CLUSTER)
+            self.show_viewpoints(show_viewpoints)
             if show_viewpoints:
-                self.show_viewpoints(True)
                 self.show_region_view_manifolds(True)
                 self.show_path(show_path)
-            # Frame the camera to the full built scene (mesh + clusters + any
-            # viewpoints/manifolds/paths) and rebuild the ground grid to match.
-            # This runs for the cluster-only case too — otherwise the freshly
-            # painted clusters are not framed/refreshed until a region is
-            # selected.
-            scene_bbox = self.scene_widget.scene.bounding_box
-            self.add_xy_plane(scene_bbox)
-            bb_size = np.linalg.norm(
-                scene_bbox.get_max_bound() - scene_bbox.get_min_bound())
-            self.camera.set_center(scene_bbox.get_center(),
-                                   distance=bb_size * self.CAMERA_FRAMING_FACTOR)
+            # Frame the grid/camera from a model-space content bbox (mesh ∪
+            # viewpoint positions) rather than scene.bounding_box. The scene box
+            # also counts hidden geometry — notably a stale, mis-scaled point
+            # cloud (e.g. after a wrong-units load is corrected) — which would
+            # otherwise inflate the ground grid enormously. Both the mesh bbox
+            # and the accumulated viewpoint positions are in correctly-scaled
+            # model space, and _reset_camera_to_bbox/add_xy_plane expect that.
+            content_bbox = self._content_bbox(bbox, all_view_positions)
+            if content_bbox is not None:
+                self.add_xy_plane(content_bbox)
+                self._reset_camera_to_bbox(content_bbox)
         elif self.region_names:
-            self.show_regions(True)
-            self.show_fov_clusters(False)
+            self.set_region_surface_mode(RegionSurfaceMode.SOLID)
+            self.show_viewpoints(False)
         else:
             self.show_point_cloud(True)
-            self.show_regions(False)
-            self.show_fov_clusters(False)
+            self.show_viewpoints(False)
+
+    # ── Per-region surface construction ──────────────────────────────────────
+
+    @staticmethod
+    def _submesh(mesh, tris):
+        """Build a standalone submesh from a subset of a mesh's triangles,
+        remapping vertex indices. Returns (submesh, used_vertex_indices)."""
+        verts = np.asarray(mesh.vertices)
+        used = np.unique(tris)
+        remap = np.full(len(verts), -1, dtype=int)
+        remap[used] = np.arange(len(used))
+        sub = o3d.geometry.TriangleMesh()
+        sub.vertices = o3d.utility.Vector3dVector(verts[used])
+        sub.triangles = o3d.utility.Vector3iVector(remap[tris])
+        sub.compute_vertex_normals()
+        return sub, used
+
+    def _build_region_surfaces(self, new_meshes, all_noise_points):
+        """Split each loaded mesh into per-region submeshes (falling back to a
+        per-region sub-cloud where a region has no mesh triangles), precomputing
+        solid and cluster vertex/point color arrays. Populates
+        ``geometries_dict[region]['surface']``."""
+        n_pcd = len(self.point_cloud.points)
+        region_list = list(self.geometries_dict.keys())
+        region_index = {name: i for i, name in enumerate(region_list)}
+
+        # Per-pcd-point lookups built from the populated geometries_dict.
+        pcd_region_color  = np.full((n_pcd, 3), 0.8)   # base gray
+        pcd_cluster_color = np.full((n_pcd, 3), 0.8)
+        pcd_region_id     = np.full(n_pcd, -1, dtype=int)
+        for region_name, rdata in self.geometries_dict.items():
+            idx = np.asarray(rdata['indices'])
+            pcd_region_color[idx]  = rdata['color']
+            pcd_cluster_color[idx] = rdata['color']   # default to region color
+            pcd_region_id[idx]     = region_index[region_name]
+            for cdata in rdata.get('clusters', {}).values():
+                pcd_cluster_color[cdata['indices']] = cdata['color']
+        if all_noise_points:
+            nidx = np.asarray(all_noise_points)
+            pcd_region_color[nidx]  = [1.0, 0.0, 0.0]
+            pcd_cluster_color[nidx] = [1.0, 0.0, 0.0]
+
+        pcd_tree = o3d.geometry.KDTreeFlann(self.point_cloud)
+        avg_pcd_spacing = np.mean(
+            self.point_cloud.compute_nearest_neighbor_distance())
+        handled = set()
+
+        for mesh_name, mesh in new_meshes.items():
+            mesh_idx = mesh_name.rsplit('_', 1)[-1]
+
+            # Subdivide until mesh edge length ≈ point cloud spacing so vertex
+            # coloring resolves region/cluster boundaries.
+            triangles = np.asarray(mesh.triangles)
+            vertices = np.asarray(mesh.vertices)
+            if len(triangles) > 0:
+                edges = np.array([[tri[j], tri[(j + 1) % 3]]
+                                  for tri in triangles for j in range(3)])
+                avg_edge_length = np.mean(np.linalg.norm(
+                    vertices[edges[:, 0]] - vertices[edges[:, 1]], axis=1))
+                iterations = max(
+                    0, math.ceil(math.log2(avg_edge_length / avg_pcd_spacing)))
+                if iterations > 0:
+                    mesh = mesh.subdivide_midpoint(iterations)
+                    mesh.compute_vertex_normals()
+
+            vertices = np.asarray(mesh.vertices)
+            triangles = np.asarray(mesh.triangles)
+            v2p = np.zeros(len(vertices), dtype=int)
+            for i, vertex in enumerate(vertices):
+                [_, idx, _] = pcd_tree.search_knn_vector_3d(vertex, 1)
+                v2p[i] = idx[0]
+            v_region  = pcd_region_id[v2p]
+            v_solid   = pcd_region_color[v2p]
+            v_cluster = pcd_cluster_color[v2p]
+
+            # Triangle → region by majority vote of its 3 vertices' regions.
+            a = v_region[triangles[:, 0]]
+            b = v_region[triangles[:, 1]]
+            c = v_region[triangles[:, 2]]
+            tri_region = np.where((a == b) | (a == c), a, np.where(b == c, b, a))
+
+            for region_name, rdata in self.geometries_dict.items():
+                if not region_name.startswith(f"mesh_{mesh_idx}_"):
+                    continue
+                mask = tri_region == region_index[region_name]
+                if not np.any(mask):
+                    continue
+                sub, used = self._submesh(mesh, triangles[mask])
+                rdata['surface'] = {
+                    'kind':           'mesh',
+                    'geometry':       sub,
+                    'name':           f"{region_name}_surface",
+                    'colors_solid':   v_solid[used].copy(),
+                    'colors_cluster': v_cluster[used].copy(),
+                }
+                handled.add(region_name)
+                self.mesh_has_vertex_colors = True
+
+        # Regions with no mesh triangles → per-region sub-cloud.
+        for region_name, rdata in self.geometries_dict.items():
+            if region_name in handled:
+                continue
+            idx_sorted = np.sort(np.asarray(rdata['indices']))
+            sub = self.point_cloud.select_by_index(idx_sorted)
+            rdata['surface'] = {
+                'kind':           'cloud',
+                'geometry':       sub,
+                'name':           f"{region_name}_surface",
+                'colors_solid':   pcd_region_color[idx_sorted].copy(),
+                'colors_cluster': pcd_cluster_color[idx_sorted].copy(),
+            }
 
 
     # ── Clear helpers ─────────────────────────────────────────────────────────
@@ -1387,11 +1435,16 @@ class Visualizer:
         self.clear_region_view_manifolds()
         self.clear_paths()
         self.clear_joint_paths()
+        self.clear_surfaces()
         self.clear_clusters()
         self.clear_regions()
 
     def clear_regions(self):
         self.region_names = []
+
+    def clear_surfaces(self):
+        for name in self.region_names:
+            self.scene.remove_geometry(f"{name}_surface")
 
     def clear_region_view_manifolds(self):
         for name in self.region_names:
@@ -1402,7 +1455,9 @@ class Visualizer:
 
     def clear_viewpoints(self):
         for name in self.cluster_names:
-            self.scene.remove_geometry(f"{name}_viewpoint")
+            self.scene.remove_geometry(f"{name}_viewpoint")  # legacy name
+            for kind in OverlayKind:
+                self.scene.remove_geometry(self._overlay_geo_name(name, kind))
 
     def clear_paths(self):
         for name in self.region_names:
@@ -1420,6 +1475,11 @@ class Visualizer:
         self.show_mesh_flag = show
         for name in self.mesh_names:
             self.scene.show_geometry(name, show)
+        # Per-region surfaces are the displayed model once results are loaded.
+        for region_data in self.geometries_dict.values():
+            surf = region_data.get('surface')
+            if surf and self.scene.has_geometry(surf['name']):
+                self.scene.show_geometry(surf['name'], show)
 
     def show_point_cloud(self, show: bool):
         # Never show the point cloud once regions have been generated
@@ -1447,69 +1507,42 @@ class Visualizer:
         if self.region_names:
             self.scene.show_geometry('point_cloud', False)
 
-    def _recolor_meshes(self):
-        """Recolor all meshes from current PCD colors using the stored vertex mapping."""
-        pcd_colors = np.asarray(self.point_cloud.colors)
-        if self.noise_indices:
-            pcd_colors[self.noise_indices] = [1.0, 0.0, 0.0]
-        for mesh_name, mesh in self.meshes.items():
-            mapping = self.mesh_vertex_to_pcd.get(mesh_name)
-            if mapping is None:
-                continue
-            mesh.vertex_colors = o3d.utility.Vector3dVector(pcd_colors[mapping])
-            self.scene.remove_geometry(mesh_name)
-            self.add_geometry(mesh_name, mesh, Materials.mesh_material_vertex_colors)
-
     def show_regions(self, show: bool):
-        """Toggle region visibility on the vertex-colored mesh."""
+        """Back-compat shim: selects the SOLID region-surface mode.
+
+        Region surface coloring is now an exclusive choice (see
+        ``set_region_surface_mode``); this keeps the legacy "Show Regions"
+        menu item / ROS parameter driving the solid-color view.
+        """
         self.show_regions_flag = show
         if show:
             self.show_point_cloud(False)
             self.show_curvatures(False)
             self.show_noise_points(False)
-            self.show_fov_clusters(False)
-            # Paint PCD with region colors
-            pcd_colors = np.asarray(self.point_cloud.colors)
-            pcd_colors[:] = [0.8, 0.8, 0.8]  # base gray
-            for region_data in self.geometries_dict.values():
-                pcd_colors[region_data['indices']] = region_data['color']
-            self._recolor_meshes()
-        else:
-            mesh_mat = Materials.mesh_material_vertex_colors if self.mesh_has_vertex_colors else Materials.mesh_material
-            for name in self.mesh_names:
-                self.scene_widget.scene.modify_geometry_material(name, mesh_mat)
+            self.show_clusters_flag = False
+            self.set_region_surface_mode(RegionSurfaceMode.SOLID)
 
     def show_fov_clusters(self, show: bool):
-        """Toggle cluster visibility via mesh vertex coloring."""
+        """Back-compat shim: selects the CLUSTER region-surface mode."""
         self.show_clusters_flag = show
         if show:
             self.show_point_cloud(False)
             self.show_curvatures(False)
-            self.show_regions(False)
-            pcd_colors = np.asarray(self.point_cloud.colors)
-            pcd_colors[:] = [0.8, 0.8, 0.8]  # base gray
-            if self._mode == ClusterViewpointMode.FOV_CYLINDER:
-                # Covering model: a surface point may lie in several FOVs, so
-                # painting it a single cluster color would misrepresent it.
-                # Color the surface by region and let the FOV cylinders (drawn
-                # via the viewpoint geometry path) convey the clustering.
-                for region_data in self.geometries_dict.values():
-                    pcd_colors[region_data['indices']] = region_data['color']
-            else:
-                # Paint PCD with per-cluster colors (partitioning view).
-                for region_data in self.geometries_dict.values():
-                    for cluster_data in region_data.get('clusters', {}).values():
-                        pcd_colors[cluster_data['indices']] = cluster_data['color']
-            self._recolor_meshes()
-        else:
-            mesh_mat = Materials.mesh_material_vertex_colors if self.mesh_has_vertex_colors else Materials.mesh_material
-            for name in self.mesh_names:
-                self.scene_widget.scene.modify_geometry_material(name, mesh_mat)
+            self.show_regions_flag = False
+            self.set_region_surface_mode(RegionSurfaceMode.CLUSTER)
 
     def show_viewpoints(self, show: bool):
+        """Master toggle for all enabled viewpoint overlays."""
         self.show_viewpoints_flag = show
-        for name in self.cluster_names:
-            self.scene.show_geometry(f"{name}_viewpoint", show)
+        if show:
+            # Build any enabled overlay kinds not yet realized (e.g. overlays
+            # were enabled while the master toggle was off, or off at load).
+            for kind in list(self._enabled_overlays):
+                if kind not in self._built_overlays:
+                    self._build_overlay_kind(kind)
+        self._update_overlay_visibility()
+        if self.selected_cluster_name:
+            self._highlight_viewpoint(self.selected_cluster_name, True)
 
     def show_region_view_manifolds(self, show: bool):
         self.show_region_view_manifolds_flag = show
@@ -1681,111 +1714,80 @@ class Visualizer:
         return None
 
     def select_mesh(self, mesh_idx: int) -> bool:
-        """Highlight the selected mesh; dim and hide geometry for all others."""
-        if not self.mesh_names:
-            return False
+        """Record the selected mesh and refresh per-region surfaces.
+
+        With per-region surfaces, mesh-level emphasis is handled by region
+        selection; this simply tracks the index and repaints.
+        """
         self.selected_mesh_idx = mesh_idx
-        selected_name = f"mesh_{mesh_idx}"
-        opaque_mat = Materials.mesh_material_vertex_colors if self.mesh_has_vertex_colors else Materials.mesh_material
-        transparent_mat = Materials.mesh_material_vertex_colors_transparent if self.mesh_has_vertex_colors else Materials.mesh_material_transparent
-        for name in self.mesh_names:
-            mat = opaque_mat if name == selected_name else transparent_mat
-            self.scene_widget.scene.modify_geometry_material(name, mat)
-        for region_name in self.region_names:
-            is_selected = region_name.startswith(f"mesh_{mesh_idx}_")
-            for cluster_name in self._cluster_names_for_region(region_name):
-                self.scene.show_geometry(f"{cluster_name}_viewpoint",
-                                         is_selected and self.show_clusters_flag
-                                         and self.show_viewpoints_flag)
+        self._render_surfaces()
         return True
 
     def select_region(self, region_idx: int) -> bool:
-        """Highlight the selected region; others keep their colors but dimmed."""
+        """Select a region: make others semi-transparent, color the selected
+        region's surface by the active mode, restrict paths/overlays to it, and
+        auto-select its first viewpoint."""
         if region_idx < 0 or region_idx >= len(self.region_names):
             return False
         selected_region_name = self.region_names[region_idx]
         self.selected_region_name = selected_region_name
 
-        # Selected region keeps its full color; all others are significantly
-        # dimmed so the selection clearly stands out.
-        pcd_colors = np.asarray(self.point_cloud.colors)
-        pcd_colors[:] = [0.8, 0.8, 0.8]  # base gray
-        for region_name, region_data in self.geometries_dict.items():
-            if region_name == selected_region_name:
-                color = np.array(region_data['color'])
-            else:
-                color = np.array(region_data['color']) * 0.15
-            pcd_colors[region_data['indices']] = color
-        self._recolor_meshes()
+        # Surfaces: selected opaque/full-bright, all others dimmed/transparent.
+        self._render_surfaces()
 
-        # Show/hide viewpoints, view manifold, and path for the selected region
+        # View manifold + path: only the selected region's.
         for region_name in self.region_names:
             is_selected = (region_name == selected_region_name)
-            for cluster_name in self._cluster_names_for_region(region_name):
-                self.scene.show_geometry(f"{cluster_name}_viewpoint",
-                                         is_selected and self.show_viewpoints_flag)
-            self.scene.show_geometry(
-                f"{region_name}_view_mesh",
-                is_selected and self.show_region_view_manifolds_flag)
-            self.scene.show_geometry(
-                f"{region_name}_path",
-                is_selected and self.show_path_flag)
-            self.scene.show_geometry(
-                f"{region_name}_joint_path",
-                is_selected and self.show_path_flag)
-            self.scene.show_geometry(
-                f"{region_name}_joint_markers",
-                is_selected and self.show_path_flag)
+            self._safe_show(f"{region_name}_view_mesh",
+                            is_selected and self.show_region_view_manifolds_flag)
+            self._safe_show(f"{region_name}_path",
+                            is_selected and self.show_path_flag)
+            self._safe_show(f"{region_name}_joint_path",
+                            is_selected and self.show_path_flag)
+            self._safe_show(f"{region_name}_joint_markers",
+                            is_selected and self.show_path_flag)
+
+        # Overlays: every enabled kind, for the selected region only.
+        self._update_overlay_visibility()
+
+        # Auto-select viewpoint 0 of this region.
+        self.select_cluster(0)
         return True
 
+    def _safe_show(self, name: str, visible: bool):
+        if self.scene.has_geometry(name):
+            self.scene.show_geometry(name, visible)
+
     def select_cluster(self, cluster_idx: int) -> bool:
-        """Highlight the selected cluster and its viewpoint via mesh vertex coloring."""
-        # Scope lookup to the currently selected region so the index is
-        # relative to that region rather than the flat list of all clusters.
+        """Select a viewpoint (cluster) within the active region: restore the
+        previously-selected viewpoint's overlays and highlight the new one."""
+        # Scope the index to the selected region's clusters.
         if self.selected_region_name and self.selected_region_name in self.geometries_dict:
             region_clusters = self._cluster_names_for_region(self.selected_region_name)
         else:
             region_clusters = self.cluster_names
         if cluster_idx < 0 or cluster_idx >= len(region_clusters):
             return False
-        # Reset previous viewpoint material
-        if self.selected_cluster_name in self.cluster_names:
-            self.scene_widget.scene.modify_geometry_material(
-                f"{self.selected_cluster_name}_viewpoint", Materials.viewpoint_material)
+
+        # Reset the previously-selected viewpoint's overlay materials.
+        if self.selected_cluster_name:
+            self._highlight_viewpoint(self.selected_cluster_name, False)
+
         selected_cluster_name = region_clusters[cluster_idx]
         self.selected_cluster_name = selected_cluster_name
 
-        # Recover the owning region from the cluster name when no region is
-        # currently selected. select_cluster is driven independently by the
-        # task_planning navigation.selected_viewpoint parameter, which can fire
-        # without a matching select_region (e.g. right after projecting
-        # viewpoints, when only the viewpoint slider's range changes). Without
-        # this, selected_region_name stays '' and the cluster-coloring loop
-        # below is skipped, leaving the whole mesh painted base gray ("white").
+        # select_cluster can be driven independently by the task_planning
+        # navigation.selected_viewpoint parameter without a matching
+        # select_region. Recover the owning region and, if it changed, refresh
+        # surfaces and overlay visibility so the selection is consistent.
         owning_region = selected_cluster_name.rsplit('_cluster_', 1)[0]
-        if owning_region in self.geometries_dict:
+        if owning_region in self.geometries_dict and owning_region != self.selected_region_name:
             self.selected_region_name = owning_region
+            self._render_surfaces()
+            self._update_overlay_visibility()
 
-        # Color only the clusters within the selected region; leave every
-        # other region gray. The selected cluster keeps its full color and the
-        # region's other clusters are significantly dimmed.
-        pcd_colors = np.asarray(self.point_cloud.colors)
-        pcd_colors[:] = [0.8, 0.8, 0.8]  # base gray
-        selected_region_data = self.geometries_dict.get(self.selected_region_name)
-        if selected_region_data is not None:
-            for cname, cdata in selected_region_data.get('clusters', {}).items():
-                if cname == selected_cluster_name:
-                    color = np.array(cdata['color'])
-                else:
-                    color = np.array(cdata['color']) * 0.15
-                pcd_colors[cdata['indices']] = color
-        self._recolor_meshes()
-
-        # Highlight selected viewpoint marker
-        cluster_data = self._get_cluster_data(selected_cluster_name)
-        if cluster_data and cluster_data.get('viewpoint_data'):
-            self.scene_widget.scene.modify_geometry_material(
-                f"{selected_cluster_name}_viewpoint", Materials.selected_viewpoint_material)
+        # Highlight the selected viewpoint's overlays.
+        self._highlight_viewpoint(selected_cluster_name, True)
         return True
 
     @property
