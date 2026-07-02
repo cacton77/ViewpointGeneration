@@ -47,6 +47,8 @@ class GUIClient():
     MENU_SHOW_ERRORS = 24
     MENU_SHOW_PATH = 25
     MENU_ABOUT = 26
+    MENU_SHOW_JOINT_PATH = 39
+    MENU_SHOW_UNREACHABLE = 40
     # Region surface mode (exclusive)
     MENU_SURFACE_SOLID   = 27
     MENU_SURFACE_CLUSTER = 28
@@ -243,6 +245,13 @@ class GUIClient():
             view_menu.add_item("Show Path", self.MENU_SHOW_PATH)
             view_menu.set_checked(self.MENU_SHOW_PATH,
                                   self.ros_thread.show_path)
+            view_menu.add_item("Show Cartesian Path", self.MENU_SHOW_JOINT_PATH)
+            view_menu.set_checked(self.MENU_SHOW_JOINT_PATH,
+                                  self.ros_thread.show_joint_path)
+            view_menu.add_item("Show Unreachable Viewpoints",
+                               self.MENU_SHOW_UNREACHABLE)
+            view_menu.set_checked(self.MENU_SHOW_UNREACHABLE,
+                                  self.ros_thread.show_unreachable)
             view_menu.add_separator()
             # Region surface coloring — exclusive (one at a time).
             surface_menu = gui.Menu()
@@ -337,6 +346,10 @@ class GUIClient():
                                      self._on_menu_show_viewpoints)
         w.set_on_menu_item_activated(
             self.MENU_SHOW_PATH, self._on_menu_show_path)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_JOINT_PATH, self._on_menu_show_joint_path)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_UNREACHABLE, self._on_menu_show_unreachable)
         w.set_on_menu_item_activated(
             self.MENU_SHOW_REGION_VIEW_MANIFOLDS,
             self._on_menu_show_region_view_manifolds)
@@ -519,6 +532,8 @@ class GUIClient():
         gui.Application.instance.menubar.set_checked(self.MENU_SHOW_VIEWPOINTS, self.viz.show_viewpoints_flag)
         gui.Application.instance.menubar.set_checked(self.MENU_SHOW_REGION_VIEW_MANIFOLDS, self.viz.show_region_view_manifolds_flag)
         gui.Application.instance.menubar.set_checked(self.MENU_SHOW_PATH, self.viz.show_path_flag)
+        gui.Application.instance.menubar.set_checked(self.MENU_SHOW_JOINT_PATH, self.viz.show_joint_path_flag)
+        gui.Application.instance.menubar.set_checked(self.MENU_SHOW_UNREACHABLE, self.viz.show_unreachable_flag)
 
     def _on_menu_show_axes(self):
         show = not gui.Application.instance.menubar.is_checked(
@@ -589,6 +604,21 @@ class GUIClient():
         show = not gui.Application.instance.menubar.is_checked(
             self.MENU_SHOW_PATH)
         self.viz.show_path(show)
+        self.ros_thread.show_path = show
+        self._refresh_view_menu()
+
+    def _on_menu_show_joint_path(self):
+        show = not gui.Application.instance.menubar.is_checked(
+            self.MENU_SHOW_JOINT_PATH)
+        self.viz.show_joint_path(show)
+        self.ros_thread.show_joint_path = show
+        self._refresh_view_menu()
+
+    def _on_menu_show_unreachable(self):
+        show = not gui.Application.instance.menubar.is_checked(
+            self.MENU_SHOW_UNREACHABLE)
+        self.viz.show_unreachable(show)
+        self.ros_thread.show_unreachable = show
         self._refresh_view_menu()
 
     def _on_menu_set_surface_mode(self, mode: RegionSurfaceMode):

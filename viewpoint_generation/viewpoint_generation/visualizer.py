@@ -566,7 +566,8 @@ class Visualizer:
         self.show_region_view_manifolds_flag = False
         self.show_path_flag                  = False
         self.mesh_has_vertex_colors          = False
-        self.show_joint_path_flag            = False
+        self.show_joint_path_flag            = True
+        self.show_unreachable_flag           = True
 
     def on_mouse(self, event) -> gui.Widget.EventCallbackResult:
         """Delegate mouse events to the turntable camera controller."""
@@ -587,19 +588,29 @@ class Visualizer:
             selected = (not sel) or (region_name == sel)
             self._apply_surface(region_name, selected)
 
-    def _apply_surface(self, region_name: str, selected: bool):
-        """Color one region's surface by the active mode and set its opacity.
+    # Flat grey applied to non-selected region surfaces so cluster/solid
+    # coloring only ever appears on the region currently in focus.
+    NONSELECTED_SURFACE_GREY = 0.6
 
-        Meshes flip opaque↔transparent via material; point-cloud surfaces (used
-        when no mesh is present) darken non-selected colors instead, since
-        Open3D point clouds do not alpha-blend reliably.
+    def _apply_surface(self, region_name: str, selected: bool):
+        """Color one region's surface and set its opacity.
+
+        The selected region is colored by the active mode (solid or by cluster);
+        every non-selected region is painted a flat grey regardless of the mode,
+        so cluster coloring never distracts from the region in focus. Meshes flip
+        opaque↔transparent via material; point-cloud surfaces (used when no mesh
+        is present) darken instead, since Open3D point clouds do not alpha-blend
+        reliably.
         """
         surf = self.geometries_dict.get(region_name, {}).get('surface')
         if not surf:
             return
         name = surf['name']
-        base = (surf['colors_solid'] if self._surface_mode == RegionSurfaceMode.SOLID
-                else surf['colors_cluster'])
+        if selected:
+            base = (surf['colors_solid'] if self._surface_mode == RegionSurfaceMode.SOLID
+                    else surf['colors_cluster'])
+        else:
+            base = np.full_like(surf['colors_solid'], self.NONSELECTED_SURFACE_GREY)
         geom = surf['geometry']
         self.scene.remove_geometry(name)
         if surf['kind'] == 'mesh':
@@ -1262,6 +1273,11 @@ class Visualizer:
             if joint_markers is not None:
                 self.add_geometry(f"{region_name}_joint_markers", joint_markers,
                                   Materials.joint_marker_material)
+            unreachable_markers = region_data.get('unreachable_markers')
+            if unreachable_markers is not None:
+                self.add_geometry(f"{region_name}_unreachable_markers",
+                                  unreachable_markers,
+                                  Materials.unreachable_marker_material)
 
         # Build the currently-enabled viewpoint overlays for every cluster.
         self._built_overlays = set()
@@ -1290,6 +1306,11 @@ class Visualizer:
             if show_viewpoints:
                 self.show_region_view_manifolds(True)
                 self.show_path(show_path)
+                # Cartesian path / unreachable markers only exist after traversal
+                # optimization; re-assert their current toggle state so any
+                # already-built geometry is scoped correctly on load.
+                self.show_joint_path(self.show_joint_path_flag)
+                self.show_unreachable(self.show_unreachable_flag)
             # Frame the grid/camera from a model-space content bbox (mesh ∪
             # viewpoint positions) rather than scene.bounding_box. The scene box
             # also counts hidden geometry — notably a stale, mis-scaled point
@@ -1554,17 +1575,32 @@ class Visualizer:
                 not self.selected_region_name or name == self.selected_region_name)
             self.scene.show_geometry(f"{name}_view_mesh", visible)
 
-    def show_path(self, show: bool):
-        self.show_path_flag = show
-        # See show_region_view_manifolds: with no selection show all paths,
-        # otherwise only the selected region's path.
+    def _show_region_scoped(self, suffixes, show: bool):
+        """Show/hide per-region geometry named ``{region}_{suffix}``. With no
+        region selected every region's geometry is affected; once a region is
+        selected only that region's is shown (mirrors the selection scoping used
+        for paths and view manifolds)."""
         for name in self.region_names:
             visible = show and (
                 not self.selected_region_name or name == self.selected_region_name)
-            self.scene.show_geometry(f"{name}_path", visible)
-            self.scene.show_geometry(f"{name}_joint_path", visible)
-            self.scene.show_geometry(f"{name}_joint_markers", visible)
-            self.scene.show_geometry(f"{name}_unreachable_markers", visible)
+            for suffix in suffixes:
+                self._safe_show(f"{name}_{suffix}", visible)
+
+    def show_path(self, show: bool):
+        """Toggle the straight-line viewpoint traversal path (TSP order)."""
+        self.show_path_flag = show
+        self._show_region_scoped(["path"], show)
+
+    def show_joint_path(self, show: bool):
+        """Toggle the cartesian path the robot's end-effector follows (from the
+        pre-computed joint trajectory), plus its waypoint markers."""
+        self.show_joint_path_flag = show
+        self._show_region_scoped(["joint_path", "joint_markers"], show)
+
+    def show_unreachable(self, show: bool):
+        """Toggle markers on viewpoints the arm could not plan a motion to."""
+        self.show_unreachable_flag = show
+        self._show_region_scoped(["unreachable_markers"], show)
 
     def _build_region_path(self, region: dict, algorithm) -> o3d.geometry.LineSet | None:
         """Build a region's traversal path LineSet (viewpoint positions joined
@@ -1694,7 +1730,10 @@ class Visualizer:
                     self.add_geometry(f"{region_name}_unreachable_markers", unreachable_markers,
                                       Materials.unreachable_marker_material)
 
+        # Re-apply each traversal-overlay toggle to the rebuilt geometry.
         self.show_path(self.show_path_flag)
+        self.show_joint_path(self.show_joint_path_flag)
+        self.show_unreachable(self.show_unreachable_flag)
 
     # ── Selection ─────────────────────────────────────────────────────────────
 
@@ -1735,7 +1774,8 @@ class Visualizer:
         # Surfaces: selected opaque/full-bright, all others dimmed/transparent.
         self._render_surfaces()
 
-        # View manifold + path: only the selected region's.
+        # View manifold, viewpoint path, cartesian path, and unreachable markers:
+        # only the selected region's, each gated by its own toggle.
         for region_name in self.region_names:
             is_selected = (region_name == selected_region_name)
             self._safe_show(f"{region_name}_view_mesh",
@@ -1743,9 +1783,11 @@ class Visualizer:
             self._safe_show(f"{region_name}_path",
                             is_selected and self.show_path_flag)
             self._safe_show(f"{region_name}_joint_path",
-                            is_selected and self.show_path_flag)
+                            is_selected and self.show_joint_path_flag)
             self._safe_show(f"{region_name}_joint_markers",
-                            is_selected and self.show_path_flag)
+                            is_selected and self.show_joint_path_flag)
+            self._safe_show(f"{region_name}_unreachable_markers",
+                            is_selected and self.show_unreachable_flag)
 
         # Overlays: every enabled kind, for the selected region only.
         self._update_overlay_visibility()
