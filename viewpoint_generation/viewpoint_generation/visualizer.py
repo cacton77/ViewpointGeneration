@@ -2013,12 +2013,21 @@ class Visualizer:
                     algo_children = []
                     if isinstance(info, dict):
                         for key, value in info.items():
-                            if key == 'order':
+                            if key in ('order', 'joint_trajectory'):
                                 continue
                             if isinstance(value, float):
                                 value = f"{value:.4f}"
                             algo_children.append(
                                 self._tree_node(f"{key}: {value}"))
+                        jt = info.get('joint_trajectory')
+                        if isinstance(jt, dict):
+                            for jt_key, jt_val in jt.items():
+                                if jt_key == 'cartesian_waypoints':
+                                    continue
+                                if isinstance(jt_val, float):
+                                    jt_val = f"{jt_val:.4f}"
+                                algo_children.append(
+                                    self._tree_node(f"{jt_key}: {jt_val}"))
                     path_children.append(self._tree_node(
                         algo, algo_children,
                         select={'type': 'algorithm', 'algorithm': algo}))
