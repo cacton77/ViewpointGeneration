@@ -18,6 +18,12 @@ sys.stdout.reconfigure(line_buffering=True)
 isMacOS = sys.platform == 'darwin'
 # o3d.visualization.webrtc_server.enable_webrtc()
 
+# Params handled entirely by the custom traversal section; excluded from auto-generation.
+_TRAVERSAL_CUSTOM_PARAMS = frozenset({
+    'tsp_algorithm', 'vrp_algorithm', 'vrp_joint_weights',
+    'vrp_aco_n_ants', 'vrp_aco_n_iter', 'vrp_aco_alpha', 'vrp_aco_beta', 'vrp_aco_rho',
+})
+
 
 class GUIClient():
 
@@ -727,6 +733,7 @@ class GUIClient():
         # action button at the tab level — mirroring the FOV clustering and
         # viewpoint projection buttons, which call their node's service.
         if node_name == 'viewpoint_traversal':
+            content.add_child(self._build_traversal_mode_section(node_name, tab_data, em))
             button = gui.Button("Optimize Traversal")
             button.background_color = Materials.button_background_color
             button.set_on_clicked(lambda: self.ros_thread.optimize_traversal())
@@ -740,6 +747,159 @@ class GUIClient():
         scroll_area.add_child(content)
 
         return scroll_area
+
+    def _build_traversal_mode_section(self, node_name, tab_data, em):
+        """TSP/VRP mode selector with a shared Algorithm dropdown and VRP parameter panel."""
+        def _val(key, default):
+            info = tab_data.get(key, {})
+            v = info.get('value', default) if isinstance(info, dict) else default
+            return v if v is not None else default
+
+        tsp_algos = ['greedy', '2opt', '3opt', 'ILS', 'LKH']
+        vrp_algos = ['vrp_greedy', 'vrp_2opt', 'vrp_3opt', 'vrp_ils', 'vrp_lkh', 'vrp_aco', 'vrp_hierarchical']
+        init_tsp = _val('tsp_algorithm', 'greedy')
+        init_vrp = _val('vrp_algorithm', '')
+        init_weights = list(_val('vrp_joint_weights', [0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]))
+        if len(init_weights) < 7:
+            init_weights = [0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        vrp_mode = bool(init_vrp and init_vrp in vrp_algos)
+
+        section = gui.Vert(0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        section.background_color = Materials.content_color
+
+        # ── Mode + Algorithm row ──────────────────────────────────────────────
+        top_row = gui.Horiz(0.5 * em, gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        tsp_check = gui.Checkbox("TSP")
+        tsp_check.checked = not vrp_mode
+        vrp_check = gui.Checkbox("VRP")
+        vrp_check.checked = vrp_mode
+        top_row.add_child(tsp_check)
+        top_row.add_child(vrp_check)
+        top_row.add_stretch()
+        algo_lbl = gui.Label("Algorithm:")
+        algo_lbl.text_color = Materials.text_color
+        top_row.add_child(algo_lbl)
+
+        tsp_combo = gui.Combobox()
+        for a in tsp_algos:
+            tsp_combo.add_item(a)
+        tsp_combo.selected_index = tsp_algos.index(init_tsp) if init_tsp in tsp_algos else 0
+        tsp_combo.visible = not vrp_mode
+        top_row.add_child(tsp_combo)
+
+        vrp_combo = gui.Combobox()
+        for a in vrp_algos:
+            vrp_combo.add_item(a)
+        vrp_combo.selected_index = vrp_algos.index(init_vrp) if init_vrp in vrp_algos else 0
+        vrp_combo.visible = vrp_mode
+        top_row.add_child(vrp_combo)
+
+        section.add_child(top_row)
+        self.parameter_widgets[node_name]['tsp_algorithm'] = tsp_combo
+        self.parameter_widgets[node_name]['vrp_algorithm'] = vrp_combo
+
+        # ── VRP parameters (collapsed unless VRP mode) ────────────────────────
+        vrp_params = gui.CollapsableVert(
+            "VRP Parameters", 0.25 * em,
+            gui.Margins(0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        vrp_params.background_color = Materials.collapsable_panel_color
+        vrp_params.set_is_open(vrp_mode)
+
+        jw_lbl = gui.Label("Joint Weights:")
+        jw_lbl.text_color = Materials.text_color
+        vrp_params.add_child(jw_lbl)
+
+        joint_labels = ['Turntable', 'Pan', 'Lift', 'Elbow', 'Wrist 1', 'Wrist 2', 'Wrist 3']
+        weight_edits = []
+        for jlbl, w0 in zip(joint_labels, init_weights):
+            jw_row = gui.Horiz(0.5 * em, gui.Margins(0.25 * em, 0.0 * em, 0.0 * em, 0.0 * em))
+            lbl = gui.Label(jlbl + ':')
+            lbl.text_color = Materials.text_color
+            jw_row.add_child(lbl)
+            jw_row.add_stretch()
+            ne = gui.NumberEdit(gui.NumberEdit.DOUBLE)
+            ne.double_value = float(w0)
+            ne.set_preferred_width(4 * em)
+            jw_row.add_child(ne)
+            vrp_params.add_child(jw_row)
+            weight_edits.append(ne)
+
+        def _on_weight(idx, v):
+            vals = [float(we.double_value) for we in weight_edits]
+            vals[idx] = float(v)
+            self.on_parameter_changed(node_name, 'vrp_joint_weights', vals)
+        for i, we in enumerate(weight_edits):
+            we.set_on_value_changed(lambda v, i=i: _on_weight(i, v))
+
+        aco_lbl = gui.Label("ACO Parameters:")
+        aco_lbl.text_color = Materials.text_color
+        vrp_params.add_child(aco_lbl)
+
+        aco_defs = [
+            ('vrp_aco_n_ants',  'Ants',       _val('vrp_aco_n_ants',  20),  gui.NumberEdit.INT),
+            ('vrp_aco_n_iter',  'Iterations', _val('vrp_aco_n_iter',  100), gui.NumberEdit.INT),
+            ('vrp_aco_alpha',   'Alpha',      _val('vrp_aco_alpha',   1.0), gui.NumberEdit.DOUBLE),
+            ('vrp_aco_beta',    'Beta',       _val('vrp_aco_beta',    2.0), gui.NumberEdit.DOUBLE),
+            ('vrp_aco_rho',     'Rho',        _val('vrp_aco_rho',     0.1), gui.NumberEdit.DOUBLE),
+        ]
+        for pkey, plbl, pval, ptype in aco_defs:
+            aco_row = gui.Horiz(0.5 * em, gui.Margins(0.25 * em, 0.0 * em, 0.0 * em, 0.0 * em))
+            lbl = gui.Label(plbl + ':')
+            lbl.text_color = Materials.text_color
+            aco_row.add_child(lbl)
+            aco_row.add_stretch()
+            ne = gui.NumberEdit(ptype)
+            if ptype == gui.NumberEdit.INT:
+                ne.int_value = int(pval)
+            else:
+                ne.double_value = float(pval)
+            ne.set_preferred_width(4 * em)
+            ne.set_on_value_changed(lambda v, k=pkey: self.on_parameter_changed(node_name, k, v))
+            aco_row.add_child(ne)
+            vrp_params.add_child(aco_row)
+            self.parameter_widgets[node_name][pkey] = ne
+
+        section.add_child(vrp_params)
+
+        # ── Checkbox callbacks (mutually exclusive) ───────────────────────────
+        _busy = [False]  # guard against re-entrant callbacks from programmatic checked changes
+
+        def _to_tsp():
+            if _busy[0]:
+                return
+            _busy[0] = True
+            tsp_check.checked = True
+            vrp_check.checked = False
+            tsp_combo.visible = True
+            vrp_combo.visible = False
+            vrp_params.set_is_open(False)
+            self.on_parameter_changed(node_name, 'vrp_algorithm', '')
+            self.on_parameter_changed(node_name, 'tsp_algorithm',
+                                      tsp_algos[tsp_combo.selected_index])
+            _busy[0] = False
+
+        def _to_vrp():
+            if _busy[0]:
+                return
+            _busy[0] = True
+            tsp_check.checked = False
+            vrp_check.checked = True
+            tsp_combo.visible = False
+            vrp_combo.visible = True
+            vrp_params.set_is_open(True)
+            self.on_parameter_changed(node_name, 'tsp_algorithm', 'Select Algorithm')
+            self.on_parameter_changed(node_name, 'vrp_algorithm',
+                                      vrp_algos[vrp_combo.selected_index])
+            _busy[0] = False
+
+        tsp_check.set_on_checked(lambda c: _to_tsp() if c else _to_vrp())
+        vrp_check.set_on_checked(lambda c: _to_vrp() if c else _to_tsp())
+        tsp_combo.set_on_selection_changed(
+            lambda t, _: self.on_parameter_changed(node_name, 'tsp_algorithm', t))
+        vrp_combo.set_on_selection_changed(
+            lambda t, _: self.on_parameter_changed(node_name, 'vrp_algorithm', t))
+
+        return section
 
     def create_collapsable_section(self, node_name, section_name, section_data, em, level):
         """Create a collapsable section for nested parameters"""
@@ -805,6 +965,8 @@ class GUIClient():
             for key, value in data.items():
                 if isinstance(value, dict):
                     if 'name' in value and 'type' in value and 'value' in value:
+                        if node_name == 'viewpoint_traversal' and key in _TRAVERSAL_CUSTOM_PARAMS:
+                            continue
                         # This is a parameter
                         widget_grid = self.create_parameter_widget(
                             node_name, value, em)
@@ -1014,14 +1176,14 @@ class GUIClient():
 
             elif 'tsp_algorithm' in param_name.lower():
                 widget = gui.Combobox()
-                algorithms = ['greedy', '2opt', '3opt', 'LKH', 'ILS'] # TSP algorithms
+                algorithms = ['greedy', '2opt', '3opt', 'LKH', 'ILS']
                 for algorithm in algorithms:
                     widget.add_item(algorithm)
-                widget.selected_index = algorithms.index(param_value)
+                widget.selected_index = algorithms.index(param_value) if param_value in algorithms else 0
                 widget.set_on_selection_changed(
                     lambda selected_text, selected_index: self.on_parameter_changed(
                         node_name, param_name, selected_text))
-                row.add_child(widget)  # ADD HERE
+                row.add_child(widget)
 
             elif 'controller_type' in param_name.lower():
                 widget = gui.Combobox()
@@ -1584,6 +1746,8 @@ class GUIClient():
                 widget.text_value = str(value)
                 if value == '':
                     widget.text_value = 'None'
+            elif hasattr(widget, 'selected_index'):
+                pass  # Combobox: selection driven only by user callbacks
             else:
                 print(f"Warning: Unknown widget type for value: {value}")
         except Exception as e:

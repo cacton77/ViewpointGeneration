@@ -776,6 +776,12 @@ class ROSThread(Node):
             elif param_info['type'] == 'string':
                 param_value.type = ParameterType.PARAMETER_STRING
                 param_value.string_value = str(new_value)
+            elif param_info['type'] == 'double_array':
+                param_value.type = ParameterType.PARAMETER_DOUBLE_ARRAY
+                param_value.double_array_value = [float(v) for v in new_value]
+            elif param_info['type'] == 'integer_array':
+                param_value.type = ParameterType.PARAMETER_INTEGER_ARRAY
+                param_value.integer_array_value = [int(v) for v in new_value]
             else:
                 self.get_logger().error(
                     f'Unsupported parameter type: {param_info["type"]}')

@@ -69,6 +69,9 @@ class FLAGS:
     verbose = False
     turntable_moving = False
     error = False
+    # Held True for the duration of the full inspection traversal so the
+    # state machine does not cycle back to servo between viewpoints.
+    inspect_active = False
 
 
 class TaskPlanningNode(Node):
@@ -345,11 +348,10 @@ class TaskPlanningNode(Node):
         self.results_dict = results_dict
 
         mesh_dict = results_dict['meshes'][0]
-        region_order = mesh_dict['order']
-        # The chosen algorithm comes from this node's parameter (set via the
-        # GUI), not the results file. Empty string falls back to the first
-        # available algorithm in _resolve_order_indices.
         selected_algorithm = self.selected_traversal_algorithm or None
+        vrp_orders = mesh_dict.get('vrp_orders', {})
+        # VRP stores its optimized inter-region sequence in vrp_orders; TSP leaves mesh_dict['order'] unchanged.
+        region_order = vrp_orders.get(selected_algorithm) or mesh_dict['order']
 
         try:
             for region_id in region_order:
@@ -583,7 +585,8 @@ class TaskPlanningNode(Node):
         if self.flags.move_to_viewpoint and not self.flags.move_to_viewpoint_request_sent:
             self.move_to_viewpoint()
             self.flags.move_to_viewpoint_request_sent = True
-        elif not self.flags.move_to_viewpoint and not self.flags.turntable_moving:
+        elif not self.flags.move_to_viewpoint and not self.flags.turntable_moving \
+                and not self.flags.inspect_active:
             self.transition_to(State.ACTIVATING_SERVO_CONTROL)
 
     # SHUTDOWN
@@ -764,23 +767,22 @@ class TaskPlanningNode(Node):
     # ============================================================================
 
     def execute_inspect_region_callback(self, goal_handle):
-        self.get_logger().info('Executing inspect region...')
-        feedback_msg = InspectRegion.Feedback()
+        self.get_logger().info('Executing full region traversal...')
+        self.flags.inspect_active = True
 
-        selected_region = self.get_parameter(
-            'navigation.selected_region').get_parameter_value().integer_value
-        for i in range(len(self.viewpoints[selected_region])-1):
-            self.select_viewpoint(selected_region, i)
-            self.flags.move_to_viewpoint = True
-            while self.flags.move_to_viewpoint:
-                self.get_logger().info(
-                    f'Moving to viewpoint {i} in region {selected_region}...')
-                time.sleep(0.1)
-            while self.flags.turntable_moving:
-                self.get_logger().info(
-                    f'Waiting for turntable to stop moving...')
-                time.sleep(0.1)
+        for region_idx, region_viewpoints in enumerate(self.viewpoints):
+            for i in range(len(region_viewpoints)):
+                self.select_viewpoint(region_idx, i)
+                self.flags.move_to_viewpoint = True
+                while self.flags.move_to_viewpoint:
+                    self.get_logger().info(
+                        f'Moving to viewpoint {i} in region {region_idx}...')
+                    time.sleep(0.1)
+                while self.flags.turntable_moving:
+                    self.get_logger().info('Waiting for turntable to stop moving...')
+                    time.sleep(0.1)
 
+        self.flags.inspect_active = False
         goal_handle.succeed()
 
         result = InspectRegion.Result()

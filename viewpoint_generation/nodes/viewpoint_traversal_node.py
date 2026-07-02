@@ -18,6 +18,7 @@ from shape_msgs.msg import SolidPrimitive
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 from .tsp_solver import TSPSolver
+from .vrp_solver import VRPSolver
 
 
 class ViewpointTraversalNode(Node):
@@ -40,6 +41,13 @@ class ViewpointTraversalNode(Node):
                 ('workspace.max_z', 1.0),
                 ('clear_paths', False),
                 ('tsp_algorithm', 'greedy'),
+                ('vrp_algorithm', ''),
+                ('vrp_joint_weights', [0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),  # turntable=0.5, arm joints=1.0 (configurable)
+                ('vrp_aco_n_ants', 20),    # configurable
+                ('vrp_aco_n_iter', 100),   # configurable
+                ('vrp_aco_alpha', 1.0),    # pheromone weight (configurable)
+                ('vrp_aco_beta', 2.0),     # heuristic weight (configurable)
+                ('vrp_aco_rho', 0.1),      # evaporation rate (configurable)
             ]
         )
 
@@ -64,6 +72,15 @@ class ViewpointTraversalNode(Node):
         }
 
         self.solver = TSPSolver(logger=self.get_logger())
+
+        self.vrp_algorithm = self.get_parameter('vrp_algorithm').get_parameter_value().string_value
+        self.vrp_aco_n_ants = self.get_parameter('vrp_aco_n_ants').get_parameter_value().integer_value
+        self.vrp_aco_n_iter = self.get_parameter('vrp_aco_n_iter').get_parameter_value().integer_value
+        self.vrp_aco_alpha = self.get_parameter('vrp_aco_alpha').get_parameter_value().double_value
+        self.vrp_aco_beta = self.get_parameter('vrp_aco_beta').get_parameter_value().double_value
+        self.vrp_aco_rho = self.get_parameter('vrp_aco_rho').get_parameter_value().double_value
+        vrp_weights = list(self.get_parameter('vrp_joint_weights').get_parameter_value().double_array_value)
+        self.vrp_solver = VRPSolver(joint_weights=vrp_weights or None, logger=self.get_logger())
 
         self.robot = MoveItPy(node_name='moveit_py')
         self.planning_scene_monitor = self.robot.get_planning_scene_monitor()
@@ -134,12 +151,17 @@ class ViewpointTraversalNode(Node):
             response.message = "No viewpoint dictionary path provided"
             return response
 
+        vrp_ran = bool(self.vrp_algorithm and self.vrp_algorithm not in ('', 'Select Algorithm'))
+        primary_algorithm = self.vrp_algorithm if vrp_ran else self.tsp_algorithm
         self.get_logger().info(
-            f'Optimizing traversal using \'{self.tsp_algorithm}\' for {request.viewpoint_dict_path}')
+            f'Optimizing traversal using \'{primary_algorithm}\' for {request.viewpoint_dict_path}')
         with open(request.viewpoint_dict_path, 'r') as f:
             viewpoint_dict = json.load(f)
 
         viewpoint_dict_optimized = self.tsp(viewpoint_dict)
+        self._last_vrp_cost = 0.0
+        if vrp_ran:
+            viewpoint_dict_optimized = self.vrp(viewpoint_dict_optimized)
 
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         new_viewpoint_dict_path = re.sub(
@@ -151,75 +173,94 @@ class ViewpointTraversalNode(Node):
         with open(new_viewpoint_dict_path, 'w') as f:
             json.dump(viewpoint_dict_optimized, f, indent=4)
 
-        # Compute total distance across all regions for display
-        primary_total = sum(
-            v.get('distance', 0.0)
-            for v in self.solver.algorithm_results.get(self.tsp_algorithm, {}).values()
-        )
-
-        # MST lower bound (summed across all regions of all meshes)
-        mst_total = 0.0
-        for mesh_entry in viewpoint_dict.get('meshes', []):
-            for region in mesh_entry.get('regions', []):
-                clusters = region.get('clusters', [])
-                vps = [c['viewpoint']['position']
-                       for c in clusters if 'viewpoint' in c]
-                if len(vps) >= 2:
-                    mst_total += self.solver._mst_cost(self.solver.dist_matrix(vps))
-
-        gap_pct = ((primary_total - mst_total) / mst_total * 100.0
-                   if mst_total > 1e-9 else 0.0)
-
-        # Per-region summary table
-        region_gaps = self.solver._region_gaps
-        max_gap = max((v['gap_pct'] for v in region_gaps.values()), default=0.0)
-        self.get_logger().info('─' * 95)
-        self.get_logger().info(
-            f'{"Region":<10} {"N":>4}  {"Distance":>10}  {"LowerBound":>11}  '
-            f'{"Gap%":>7}  {"BoundType":>12}  {"ArmTime":>8}  {"ArmDist":>8}  '
-            f'{"Unreach":>7}')
-        for rname, info in sorted(region_gaps.items()):
-            btype = 'Held-Karp' if info['exact'] else 'MST'
-            opt_flag = ' ✓' if info['exact'] and info['gap_pct'] < 0.01 else ''
-            n_unreachable = len(info.get('unreachable', []))
+        if vrp_ran:
+            # VRP already logged its per-region breakdown inside vrp(); just show totals.
+            primary_total = self._last_vrp_cost
+            completed_str = ','.join(sorted(self.solver.completed_algorithms)) or '(none)'
             self.get_logger().info(
-                f'{rname:<10} {info["n"]:>4}  {info["distance"]:>10.4f}'
-                f'  {info["lower_bound"]:>11.4f}  {info["gap_pct"]:>6.2f}%'
-                f'  {btype:>12}  {info.get("arm_time_s", 0.0):>7.1f}s'
-                f'  {info.get("arm_joint_distance", 0.0):>7.2f}r'
-                f'  {n_unreachable:>7}{opt_flag}')
-        self.get_logger().info('─' * 95)
-
-        completed_str = ','.join(sorted(self.solver.completed_algorithms))
-        self.get_logger().info(
-            f'Completed: {completed_str}  |  '
-            f'MST total: {mst_total:.3f} m  |  '
-            f'{self.tsp_algorithm}: {primary_total:.3f} m  |  '
-            f'Overall gap: {gap_pct:.2f}%  |  Max region gap: {max_gap:.2f}%')
-
-        # Whole-inspection arm traversal cost/time (moveitpy-computed), summed
-        # across all regions for the selected algorithm's chosen path.
-        total_arm_time = sum(v.get('arm_time_s', 0.0) for v in region_gaps.values())
-        total_arm_distance = sum(
-            v.get('arm_joint_distance', 0.0) for v in region_gaps.values())
-        total_unreachable = sum(
-            len(v.get('unreachable', [])) for v in region_gaps.values())
-        regions_with_unreachable = sorted(
-            rname for rname, info in region_gaps.items() if info.get('unreachable'))
-        self.get_logger().info(
-            f'Arm traversal ({self.tsp_algorithm}): {total_arm_time:.1f}s  |  '
-            f'{total_arm_distance:.2f} rad joint distance  |  '
-            f'{total_unreachable} viewpoint(s) unreachable'
-            + (f' across regions {", ".join(regions_with_unreachable)}'
-               if regions_with_unreachable else ''))
-        for rname in regions_with_unreachable:
-            self.get_logger().warning(
-                f'  {rname}: unreachable viewpoints '
-                f'{region_gaps[rname]["unreachable"]}')
-
-        # Per-algorithm path metrics (distance, etc.) are stored per region in
-        # the results JSON under each algorithm's key, not in node parameters.
-        msg = f"Algorithm: {self.tsp_algorithm}  Total: {primary_total:.3f} m"
+                f'Completed TSP: {completed_str}  |  '
+                f'VRP {primary_algorithm}: {primary_total:.4f} rad (joint-space)')
+            total_arm_time = 0.0
+            total_arm_distance = 0.0
+            total_unreachable = 0
+            regions_with_unreachable = []
+            for mesh_entry in viewpoint_dict.get('meshes', []):
+                for region in mesh_entry.get('regions', []):
+                    algo_data = region.get('order', {}).get(primary_algorithm, {})
+                    jt = algo_data.get('joint_trajectory', {})
+                    total_arm_time += jt.get('time_s', 0.0)
+                    total_arm_distance += jt.get('joint_distance', 0.0)
+                    ur = algo_data.get('unreachable', [])
+                    if ur:
+                        total_unreachable += len(ur)
+                        rname = region.get('name', '?')
+                        regions_with_unreachable.append(rname)
+                        self.get_logger().warning(f'  {rname}: unreachable viewpoints {ur}')
+            self.get_logger().info(
+                f'Arm traversal ({primary_algorithm}): {total_arm_time:.1f}s  |  '
+                f'{total_arm_distance:.2f} rad joint distance  |  '
+                f'{total_unreachable} viewpoint(s) unreachable'
+                + (f' across regions {", ".join(regions_with_unreachable)}'
+                   if regions_with_unreachable else ''))
+            msg = f"Algorithm: {primary_algorithm}  Total: {primary_total:.4f} rad"
+        else:
+            # TSP summary: Cartesian distance + per-region gap table
+            primary_total = sum(
+                v.get('distance', 0.0)
+                for v in self.solver.algorithm_results.get(primary_algorithm, {}).values()
+            )
+            mst_total = 0.0
+            for mesh_entry in viewpoint_dict.get('meshes', []):
+                for region in mesh_entry.get('regions', []):
+                    clusters = region.get('clusters', [])
+                    vps = [c['viewpoint']['position']
+                           for c in clusters if 'viewpoint' in c]
+                    if len(vps) >= 2:
+                        mst_total += self.solver._mst_cost(self.solver.dist_matrix(vps))
+            gap_pct = ((primary_total - mst_total) / mst_total * 100.0
+                       if mst_total > 1e-9 else 0.0)
+            region_gaps = self.solver._region_gaps
+            max_gap = max((v['gap_pct'] for v in region_gaps.values()), default=0.0)
+            self.get_logger().info('─' * 95)
+            self.get_logger().info(
+                f'{"Region":<10} {"N":>4}  {"Distance":>10}  {"LowerBound":>11}  '
+                f'{"Gap%":>7}  {"BoundType":>12}  {"ArmTime":>8}  {"ArmDist":>8}  '
+                f'{"Unreach":>7}')
+            for rname, info in sorted(region_gaps.items()):
+                btype = 'Held-Karp' if info['exact'] else 'MST'
+                opt_flag = ' ✓' if info['exact'] and info['gap_pct'] < 0.01 else ''
+                n_unreachable = len(info.get('unreachable', []))
+                self.get_logger().info(
+                    f'{rname:<10} {info["n"]:>4}  {info["distance"]:>10.4f}'
+                    f'  {info["lower_bound"]:>11.4f}  {info["gap_pct"]:>6.2f}%'
+                    f'  {btype:>12}  {info.get("arm_time_s", 0.0):>7.1f}s'
+                    f'  {info.get("arm_joint_distance", 0.0):>7.2f}r'
+                    f'  {n_unreachable:>7}{opt_flag}')
+            self.get_logger().info('─' * 95)
+            completed_str = ','.join(sorted(self.solver.completed_algorithms))
+            self.get_logger().info(
+                f'Completed: {completed_str}  |  '
+                f'MST total: {mst_total:.3f} m  |  '
+                f'{primary_algorithm}: {primary_total:.3f} m  |  '
+                f'Overall gap: {gap_pct:.2f}%  |  Max region gap: {max_gap:.2f}%')
+            total_arm_time = sum(v.get('arm_time_s', 0.0) for v in region_gaps.values())
+            total_arm_distance = sum(
+                v.get('arm_joint_distance', 0.0) for v in region_gaps.values())
+            total_unreachable = sum(
+                len(v.get('unreachable', [])) for v in region_gaps.values())
+            regions_with_unreachable = sorted(
+                rname for rname, info in region_gaps.items() if info.get('unreachable'))
+            self.get_logger().info(
+                f'Arm traversal ({primary_algorithm}): {total_arm_time:.1f}s  |  '
+                f'{total_arm_distance:.2f} rad joint distance  |  '
+                f'{total_unreachable} viewpoint(s) unreachable'
+                + (f' across regions {", ".join(regions_with_unreachable)}'
+                   if regions_with_unreachable else ''))
+            for rname in regions_with_unreachable:
+                self.get_logger().warning(
+                    f'  {rname}: unreachable viewpoints '
+                    f'{region_gaps[rname]["unreachable"]}')
+            msg = f"Algorithm: {primary_algorithm}  Total: {primary_total:.3f} m"
         self.get_logger().info(msg)
 
         response.success = True
@@ -240,8 +281,9 @@ class ViewpointTraversalNode(Node):
         if self.clear_paths:
             self.solver.algorithm_results.clear()
             self.solver.completed_algorithms.clear()
-            # Reset every region's order back to an identity list.
+            # Reset every region's order back to an identity list (clears TSP and VRP paths).
             for mesh_entry in viewpoint_dict.get('meshes', []):
+                mesh_entry.pop('vrp_orders', None)
                 for region in mesh_entry.get('regions', []):
                     region['order'] = list(range(len(region.get('clusters', []))))
             viewpoint_dict.pop('selected_traversal_algorithm', None)
@@ -363,6 +405,77 @@ class ViewpointTraversalNode(Node):
         # algorithm can be chosen.
         return viewpoint_dict
 
+    def _run_vrp_algorithm(self, ik_result, region_offsets):
+        """Dispatch to the selected VRP algorithm on vrp_solver."""
+        algo = self.vrp_algorithm
+        if algo == 'vrp_greedy':
+            return self.vrp_solver.run_greedy(ik_result, region_offsets)
+        if algo == 'vrp_2opt':
+            return self.vrp_solver.run_2opt(ik_result, region_offsets)
+        if algo == 'vrp_3opt':
+            return self.vrp_solver.run_3opt(ik_result, region_offsets)
+        if algo == 'vrp_ils':
+            return self.vrp_solver.run_ils(ik_result, region_offsets)
+        if algo == 'vrp_lkh':
+            return self.vrp_solver.run_lkh(ik_result, region_offsets)
+        if algo == 'vrp_aco':
+            return self.vrp_solver.run_aco(
+                ik_result, region_offsets,
+                n_ants=self.vrp_aco_n_ants, n_iter=self.vrp_aco_n_iter,
+                alpha=self.vrp_aco_alpha, beta=self.vrp_aco_beta, rho=self.vrp_aco_rho)
+        if algo == 'vrp_hierarchical':
+            return self.vrp_solver.run_hierarchical(ik_result, region_offsets)
+        self.get_logger().warning(f'Unknown VRP algorithm: {algo}')
+        return None
+
+    def vrp(self, viewpoint_dict):
+        if self.clear_paths:
+            for mesh_entry in viewpoint_dict.get('meshes', []):
+                mesh_entry.pop('vrp_orders', None)
+                for region in mesh_entry.get('regions', []):
+                    if isinstance(region.get('order'), dict):
+                        for key in list(region['order'].keys()):
+                            if key.startswith('vrp_'):
+                                del region['order'][key]
+            return viewpoint_dict
+
+        algo = self.vrp_algorithm
+        robot_model = self.robot.get_robot_model()
+
+        for mesh_entry in viewpoint_dict.get('meshes', []):
+            self.get_logger().info(f'VRP {algo}: running IK precomputation...')
+            ik_result, region_offsets = self.vrp_solver.precompute_ik(
+                mesh_entry, robot_model, self.planning_group)
+            solution = self._run_vrp_algorithm(ik_result, region_offsets)
+            if solution is None:
+                continue
+
+            mesh_entry.setdefault('vrp_orders', {})[algo] = solution.region_order
+            dm = self.vrp_solver.build_cost_matrix(ik_result)
+            regions = mesh_entry.get('regions', [])
+
+            for r_idx, region in enumerate(regions):
+                if r_idx not in solution.region_paths:
+                    continue
+                path = solution.region_paths[r_idx]
+                off = region_offsets[r_idx]
+                intra_r = float(sum(dm[off + path[k], off + path[k + 1]]
+                                    for k in range(len(path) - 1)))
+                order_dict = self._ensure_order_dict(region)
+                order_dict[algo] = {'order': list(path), 'distance': intra_r}
+                if self.planning_component and len(path) > 1:
+                    jt = self._compute_joint_trajectory(
+                        list(path), region.get('clusters', []), f'vrp_{r_idx}')
+                    order_dict[algo]['joint_trajectory'] = jt
+
+            self._last_vrp_cost = solution.cost
+            self.get_logger().info(
+                f'VRP {algo}: total={solution.cost:.4f} rad  '
+                f'(intra={solution.intra_cost:.4f}  inter={solution.inter_cost:.4f}  '
+                f'depot={solution.depot_cost:.4f})  region_order={solution.region_order}')
+
+        return viewpoint_dict
+
     def clear_paths_callback(self, request, response):
         self.solver.algorithm_results.clear()
         self.solver.completed_algorithms.clear()
@@ -377,17 +490,9 @@ class ViewpointTraversalNode(Node):
             response.message = "Planning component is not initialized"
             return response
 
-        # Create a RobotState object
-        robot_state = RobotState(self.robot.get_robot_model())
-        # Set the pose from the request
         self.planning_component.set_goal_state(
             pose_stamped_msg=request.pose_goal, pose_link="eoat_camera_link")
-
-        # Log the request
         self.get_logger().info(f"Received request: {request}")
-
-        # Set the robot state to the current state
-        robot_state.set_to_default_values()
         # Plan and execute
         multi_pipeline_plan_request_params = MultiPipelinePlanRequestParameters(
             self.robot, ["ompl_rrtc"]
@@ -414,11 +519,7 @@ class ViewpointTraversalNode(Node):
             self.get_logger().error("Planning component is not valid")
             return False
 
-        # Create a RobotState object
-        robot_state = RobotState(self.robot.get_robot_model())
-
-        # Set the robot state to the current state
-        robot_state.set_to_default_values()
+        self.planning_component.set_start_state_to_current_state()
 
         # plan to the specified pose and execute the trajectory
         self.get_logger().info("Planning and executing trajectory")
@@ -531,7 +632,8 @@ class ViewpointTraversalNode(Node):
                 for i in range(len(waypoints) - 1)
             ))
             cartesian = self._fk_waypoints(waypoints)
-            result['cartesian_waypoints'].extend(cartesian)
+            step = max(1, len(cartesian) // 20)
+            result['cartesian_waypoints'].extend(cartesian[::step])
             result['total_time_s'] += duration
             result['total_joint_distance'] += joint_dist
             prev_joint_state = waypoints[-1]
@@ -559,6 +661,21 @@ class ViewpointTraversalNode(Node):
                 self.tsp_algorithm = param.value
             elif param.name == 'clear_paths':
                 self.clear_paths = param.value
+            elif param.name == 'vrp_algorithm':
+                self.vrp_algorithm = param.value
+            elif param.name == 'vrp_joint_weights':
+                self.vrp_solver.joint_weights = np.array(list(param.value), dtype=float)
+                self.vrp_solver._w = np.sqrt(self.vrp_solver.joint_weights)
+            elif param.name == 'vrp_aco_n_ants':
+                self.vrp_aco_n_ants = param.value
+            elif param.name == 'vrp_aco_n_iter':
+                self.vrp_aco_n_iter = param.value
+            elif param.name == 'vrp_aco_alpha':
+                self.vrp_aco_alpha = param.value
+            elif param.name == 'vrp_aco_beta':
+                self.vrp_aco_beta = param.value
+            elif param.name == 'vrp_aco_rho':
+                self.vrp_aco_rho = param.value
 
         return SetParametersResult(successful=True)
 
