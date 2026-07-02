@@ -680,6 +680,33 @@ class Visualizer:
     # from the scene center. Larger pulls the camera back; smaller zooms in.
     CAMERA_FRAMING_FACTOR = 1.0
 
+    def _content_bbox(self, mesh_bbox, view_positions):
+        """Model-space AABB spanning the loaded content used for framing.
+
+        Unions the mesh bounding box with the viewpoint positions (both in
+        correctly-scaled model space). Falls back to the point-cloud bounds when
+        no mesh is present. Deliberately excludes ``scene.bounding_box`` so
+        hidden/stale geometry (e.g. a mis-scaled point cloud) cannot distort the
+        ground grid or camera framing. Returns None when nothing is available.
+        """
+        bounds = []
+        if mesh_bbox is not None:
+            bounds.append(np.asarray(mesh_bbox.get_min_bound()))
+            bounds.append(np.asarray(mesh_bbox.get_max_bound()))
+        if view_positions:
+            vp = np.asarray(view_positions)
+            bounds.append(vp.min(axis=0))
+            bounds.append(vp.max(axis=0))
+        if not bounds and self.point_cloud is not None:
+            pcd_bbox = self.point_cloud.get_axis_aligned_bounding_box()
+            bounds.append(np.asarray(pcd_bbox.get_min_bound()))
+            bounds.append(np.asarray(pcd_bbox.get_max_bound()))
+        if not bounds:
+            return None
+        stacked = np.vstack(bounds)
+        return o3d.geometry.AxisAlignedBoundingBox(
+            min_bound=stacked.min(axis=0), max_bound=stacked.max(axis=0))
+
     def _reset_camera_to_bbox(self, bbox: o3d.geometry.AxisAlignedBoundingBox | None = None):
         """Reset the turntable camera so the mesh fills the view.
 
@@ -970,6 +997,11 @@ class Visualizer:
         show_path       = False
         traversal_order: list[list[int]] = []
         all_noise_points: list = []
+        # Viewpoint positions (model-space, mm) accumulated across all regions.
+        # Used to frame the grid/camera without relying on scene.bounding_box,
+        # which also counts hidden geometry (e.g. a stale, mis-scaled point
+        # cloud) and would otherwise blow up the ground grid.
+        all_view_positions: list = []
 
         cmap = colormaps[Materials.regions_colormap]
         np.random.seed(1)
@@ -1119,6 +1151,7 @@ class Visualizer:
                             region_view_points.append(position.tolist())
                             region_view_normals.append(direction.tolist())
                             path_points.append(position)
+                            all_view_positions.append(position)
 
                             if i != cluster_id:
                                 show_path = True
@@ -1254,15 +1287,17 @@ class Visualizer:
             if show_viewpoints:
                 self.show_region_view_manifolds(True)
                 self.show_path(show_path)
-            # Frame the camera to the full built scene and rebuild the ground
-            # grid to match — otherwise the freshly built scene is not framed
-            # until a region is selected.
-            scene_bbox = self.scene_widget.scene.bounding_box
-            self.add_xy_plane(scene_bbox)
-            bb_size = np.linalg.norm(
-                scene_bbox.get_max_bound() - scene_bbox.get_min_bound())
-            self.camera.set_center(scene_bbox.get_center(),
-                                   distance=bb_size * self.CAMERA_FRAMING_FACTOR)
+            # Frame the grid/camera from a model-space content bbox (mesh ∪
+            # viewpoint positions) rather than scene.bounding_box. The scene box
+            # also counts hidden geometry — notably a stale, mis-scaled point
+            # cloud (e.g. after a wrong-units load is corrected) — which would
+            # otherwise inflate the ground grid enormously. Both the mesh bbox
+            # and the accumulated viewpoint positions are in correctly-scaled
+            # model space, and _reset_camera_to_bbox/add_xy_plane expect that.
+            content_bbox = self._content_bbox(bbox, all_view_positions)
+            if content_bbox is not None:
+                self.add_xy_plane(content_bbox)
+                self._reset_camera_to_bbox(content_bbox)
         elif self.region_names:
             self.set_region_surface_mode(RegionSurfaceMode.SOLID)
             self.show_viewpoints(False)
