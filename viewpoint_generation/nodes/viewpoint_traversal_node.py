@@ -11,7 +11,7 @@ from moveit.planning import (
     MultiPipelinePlanRequestParameters,
 )
 from rcl_interfaces.msg import SetParametersResult
-from viewpoint_generation_interfaces.srv import MoveToPoseStamped, OptimizeViewpointTraversal
+from viewpoint_generation_interfaces.srv import MoveToPoseStamped, OptimizeViewpointTraversal, FindNearestViewpoint
 from geometry_msgs.msg import Pose, PoseStamped
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
@@ -81,6 +81,8 @@ class ViewpointTraversalNode(Node):
         self.vrp_aco_rho = self.get_parameter('vrp_aco_rho').get_parameter_value().double_value
         vrp_weights = list(self.get_parameter('vrp_joint_weights').get_parameter_value().double_array_value)
         self.vrp_solver = VRPSolver(joint_weights=vrp_weights or None, logger=self.get_logger())
+        self._ik_result = None
+        self._region_offsets = None
 
         self.robot = MoveItPy(node_name='moveit_py')
         self.planning_scene_monitor = self.robot.get_planning_scene_monitor()
@@ -108,6 +110,12 @@ class ViewpointTraversalNode(Node):
             OptimizeViewpointTraversal,
             f'{node_name}/optimize_traversal',
             self.optimize_traversal,
+            callback_group=services_cb_group
+        )
+        self.create_service(
+            FindNearestViewpoint,
+            f'{node_name}/find_nearest_viewpoint',
+            self.find_nearest_viewpoint_callback,
             callback_group=services_cb_group
         )
 
@@ -162,6 +170,11 @@ class ViewpointTraversalNode(Node):
         self._last_vrp_cost = 0.0
         if vrp_ran:
             viewpoint_dict_optimized = self.vrp(viewpoint_dict_optimized)
+
+        # Auto-reset after a clear so the next optimize call runs the algorithm.
+        if self.clear_paths:
+            self.clear_paths = False
+            self.set_parameters([rclpy.parameter.Parameter('clear_paths', False)])
 
         timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         new_viewpoint_dict_path = re.sub(
@@ -366,7 +379,7 @@ class ViewpointTraversalNode(Node):
                 arm_joint_distance = 0.0
                 unreachable = []
                 if self.planning_component and len(path_to_save) > 1:
-                    joint_traj = self._compute_joint_trajectory(
+                    joint_traj, _ = self._compute_joint_trajectory(
                         list(path_to_save), clusters, region_key)
                     order_dict[primary]['joint_trajectory'] = joint_traj
                     arm_time_s = joint_traj['total_time_s']
@@ -446,6 +459,24 @@ class ViewpointTraversalNode(Node):
             self.get_logger().info(f'VRP {algo}: running IK precomputation...')
             ik_result, region_offsets = self.vrp_solver.precompute_ik(
                 mesh_entry, robot_model, self.planning_group)
+            self._region_offsets = region_offsets
+
+            # Pass 1: initial region ordering using DEPOT_Q-seeded IK
+            solution = self._run_vrp_algorithm(ik_result, region_offsets)
+            if solution is None:
+                continue
+
+            # Pass 2: re-seed IK along the initial VRP path so joint configs form a
+            # continuous chain from depot through all regions rather than all clustering
+            # near the home position. Re-running the optimizer on the chained IK gives
+            # accurate dm values and removes the artificial depot-proximity bias.
+            self.get_logger().info(f'VRP {algo}: reseeding IK along initial path...')
+            ik_result = self.vrp_solver.recompute_ik_chained(
+                ik_result, region_offsets,
+                solution.region_order, solution.region_paths,
+                mesh_entry, robot_model, self.planning_group)
+            self._ik_result = ik_result
+
             solution = self._run_vrp_algorithm(ik_result, region_offsets)
             if solution is None:
                 continue
@@ -463,16 +494,33 @@ class ViewpointTraversalNode(Node):
                                     for k in range(len(path) - 1)))
                 order_dict = self._ensure_order_dict(region)
                 order_dict[algo] = {'order': list(path), 'distance': intra_r}
-                if self.planning_component and len(path) > 1:
-                    jt = self._compute_joint_trajectory(
-                        list(path), region.get('clusters', []), f'vrp_{r_idx}')
+
+            # Compute joint trajectories in VRP order so inter-region transitions chain
+            if self.planning_component:
+                prev_exit_joints = None
+                for r_idx in solution.region_order:
+                    region = regions[r_idx]
+                    path = solution.region_paths.get(r_idx)
+                    if not path or len(path) <= 1:
+                        continue
+                    order_dict = self._ensure_order_dict(region)
+                    jt, prev_exit_joints = self._compute_joint_trajectory(
+                        list(path), region.get('clusters', []), f'vrp_{r_idx}',
+                        initial_joint_state=prev_exit_joints)
                     order_dict[algo]['joint_trajectory'] = jt
 
             self._last_vrp_cost = solution.cost
+            arm_c, tt_c = self.vrp_solver.tour_cost_breakdown(
+                solution, ik_result, region_offsets)
             self.get_logger().info(
                 f'VRP {algo}: total={solution.cost:.4f} rad  '
                 f'(intra={solution.intra_cost:.4f}  inter={solution.inter_cost:.4f}  '
                 f'depot={solution.depot_cost:.4f})  region_order={solution.region_order}')
+            self.get_logger().info(
+                f'VRP {algo}: arm={arm_c:.4f} rad  turntable={tt_c:.4f} rad  '
+                f'combined={solution.cost:.4f} rad  '
+                f'(arm {arm_c/(solution.cost+1e-10)*100:.1f}%  '
+                f'tt {tt_c/(solution.cost+1e-10)*100:.1f}%)')
 
         return viewpoint_dict
 
@@ -599,24 +647,68 @@ class ViewpointTraversalNode(Node):
             positions.append([float(T[0, 3]), float(T[1, 3]), float(T[2, 3])])
         return positions
 
-    def _compute_joint_trajectory(self, path, clusters, region_key):
+    def find_nearest_viewpoint_callback(self, request, response):
+        r = request.region_idx
+        if self._ik_result is None or self._region_offsets is None:
+            response.nearest_viewpoint_idx = 0
+            return response
+
+        with self.robot.get_planning_scene_monitor().read_only() as scene:
+            rs = scene.current_state
+            current_q = np.array(rs.get_joint_group_positions(self.planning_group))
+
+        off = self._region_offsets[r]
+        n_total = len(self._ik_result.q_all)
+        next_off = self._region_offsets[r + 1] if r + 1 < len(self._region_offsets) else n_total
+        region_q = self._ik_result.q_all[off:next_off]
+        fallback = self._ik_result.cartesian_fallback[off:next_off]
+        w = self.vrp_solver._w
+
+        best_idx, best_dist = 0, float('inf')
+        for local_i, (q, is_fallback) in enumerate(zip(region_q, fallback)):
+            if is_fallback:
+                continue
+            d = float(np.linalg.norm((q - current_q) * w))
+            if d < best_dist:
+                best_dist, best_idx = d, local_i
+
+        response.nearest_viewpoint_idx = best_idx
+        return response
+
+    def _compute_joint_trajectory(self, path, clusters, region_key, initial_joint_state=None):
         result = {
             'total_time_s': 0.0,
             'total_joint_distance': 0.0,
             'cartesian_waypoints': [],
             'unreachable': [],
         }
-        prev_joint_state = None
+        prev_joint_state = initial_joint_state
 
-        for step in range(len(path) - 1):
-            from_idx, to_idx = path[step], path[step + 1]
+        # If chaining from a previous region, plan approach to entry viewpoint first
+        if initial_joint_state is not None and path:
+            entry_vp = clusters[path[0]].get('viewpoint') if path[0] < len(clusters) else None
+            if entry_vp:
+                waypoints, duration = self._plan_segment(entry_vp, prev_joint_state)
+                if waypoints is not None:
+                    joint_dist = float(sum(
+                        np.linalg.norm(np.array(waypoints[i + 1]) - np.array(waypoints[i]))
+                        for i in range(len(waypoints) - 1)
+                    ))
+                    cartesian = self._fk_waypoints(waypoints)
+                    ds = max(1, len(cartesian) // 20)
+                    result['cartesian_waypoints'].extend(cartesian[::ds])
+                    result['total_time_s'] += duration
+                    result['total_joint_distance'] += joint_dist
+                    prev_joint_state = waypoints[-1]
+
+        for i in range(len(path) - 1):
+            from_idx, to_idx = path[i], path[i + 1]
             to_vp = clusters[to_idx].get('viewpoint') if to_idx < len(clusters) else None
 
             if not to_vp:
                 result['unreachable'].append(to_idx)
                 self.get_logger().warning(
-                    f'  region {region_key}: viewpoint {to_idx} has no '
-                    f'viewpoint data, skipping')
+                    f'  region {region_key}: viewpoint {to_idx} has no viewpoint data, skipping')
                 continue
 
             waypoints, duration = self._plan_segment(to_vp, prev_joint_state)
@@ -632,8 +724,8 @@ class ViewpointTraversalNode(Node):
                 for i in range(len(waypoints) - 1)
             ))
             cartesian = self._fk_waypoints(waypoints)
-            step = max(1, len(cartesian) // 20)
-            result['cartesian_waypoints'].extend(cartesian[::step])
+            ds = max(1, len(cartesian) // 20)
+            result['cartesian_waypoints'].extend(cartesian[::ds])
             result['total_time_s'] += duration
             result['total_joint_distance'] += joint_dist
             prev_joint_state = waypoints[-1]
@@ -641,7 +733,7 @@ class ViewpointTraversalNode(Node):
         self.planning_component.set_start_state_to_current_state()
         result['total_time_s'] = round(result['total_time_s'], 3)
         result['total_joint_distance'] = round(result['total_joint_distance'], 4)
-        return result
+        return result, prev_joint_state
 
     def parameter_callback(self, params):
         for param in params:

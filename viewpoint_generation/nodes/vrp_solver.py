@@ -52,6 +52,18 @@ class SingularityHandler:
         J = robot_state.get_jacobian(self._group, np.zeros((3, 1)))
         return float(np.sqrt(max(0.0, np.linalg.det(J @ J.T))))
 
+    def solve_ik_from_seed(self, pose: Pose, seed_q: np.ndarray,
+                            tip_link: str = 'eoat_camera_link') -> tuple:
+        """IK seeded from seed_q (tier 0). Falls through to standard 3-tier on failure."""
+        state = RobotState(self._model)
+        state.set_joint_group_positions(self._group, seed_q)
+        if state.set_from_ik(self._group, pose, tip_link):
+            state.update()
+            manip = self.manipulability(state)
+            if manip >= self.threshold:
+                return np.array(state.get_joint_group_positions(self._group)), manip, 0
+        return self.solve_ik(pose, tip_link)
+
     def solve_ik(self, pose: Pose, tip_link: str = 'eoat_camera_link') -> tuple:
         """3-tier IK with singularity avoidance. Returns (q, manip, tier) or (None, 0.0, 3)."""
         state = RobotState(self._model)
@@ -200,6 +212,105 @@ class VRPSolver:
             positions=np.array(pos_rows),
             status=status,
         ), region_offsets
+
+    def recompute_ik_chained(self, initial_ik: IKResult, region_offsets: list,
+                              region_order: list, region_paths: dict,
+                              mesh_entry: dict, robot_model,
+                              planning_group: str = 'disc_to_ur5e') -> IKResult:
+        """Re-solve IK along the VRP path using sequential seeding.
+
+        Seeds the first viewpoint of the first region from DEPOT_Q.
+        Each subsequent viewpoint is seeded from the previous viewpoint's IK solution,
+        so configs form a continuous chain through joint space rather than clustering
+        at the home position. This makes dm values along the path direction much
+        smaller, giving the optimizer a strong and accurate traversal-cost signal.
+
+        The q_all array preserves the same index layout as initial_ik (region_offsets
+        remain valid). Only viewpoints included in region_paths are recomputed;
+        the rest keep their initial_ik values.
+        """
+        sing = SingularityHandler(robot_model, planning_group, self.singularity_threshold)
+        regions = mesh_entry.get('regions', [])
+
+        q_new = initial_ik.q_all.copy()
+        manip_new = initial_ik.manip_all.copy()
+        fallback_new = initial_ik.cartesian_fallback.copy()
+
+        prev_q = DEPOT_Q.copy()
+
+        for r_idx in region_order:
+            path = region_paths.get(r_idx, [])
+            if not path:
+                continue
+            off = region_offsets[r_idx]
+            clusters = regions[r_idx].get('clusters', []) if r_idx < len(regions) else []
+
+            for local_i in path:
+                vp = clusters[local_i].get('viewpoint') if local_i < len(clusters) else None
+                if vp is None:
+                    continue
+
+                pos = vp['position']
+                ori = vp['orientation']
+                pose = Pose()
+                pose.position.x, pose.position.y, pose.position.z = pos[0], pos[1], pos[2]
+                pose.orientation.x, pose.orientation.y = ori[0], ori[1]
+                pose.orientation.z, pose.orientation.w = ori[2], ori[3]
+
+                q, manip, tier = sing.solve_ik_from_seed(pose, prev_q)
+                g = off + local_i
+                if q is not None:
+                    q_new[g] = q
+                    manip_new[g] = manip
+                    fallback_new[g] = False
+                    prev_q = q
+                # On IK failure: keep initial solution, do not update prev_q seed
+
+        return IKResult(
+            q_all=q_new,
+            manip_all=manip_new,
+            cartesian_fallback=fallback_new,
+            positions=initial_ik.positions,
+            status=initial_ik.status,
+        )
+
+    def tour_cost_breakdown(self, solution: 'VRPSolution',
+                             ik_result: 'IKResult',
+                             region_offsets: list) -> tuple:
+        """Separate arm and turntable cost along the optimized tour.
+
+        Returns (arm_cost, tt_cost) in weighted-radian units:
+          arm_cost = Σ_edges  ||_w[1:] ⊙ dq[1:]||   (6 UR5e joints)
+          tt_cost  = Σ_edges  _w[0] * |dq[0]|        (turntable)
+
+        Note: arm_cost² + tt_cost² ≠ total_tour_cost² in general because
+        the per-edge values don't add linearly; these are the *summed*
+        component contributions, useful for tuning joint_weights.
+        """
+        q = ik_result.q_all
+        w = self._w
+
+        def _edge(i, j):
+            qi, qj = q[i], q[j]
+            if np.any(np.isnan(qi)) or np.any(np.isnan(qj)):
+                return 0.0, 0.0
+            dq = qi - qj
+            return float(np.linalg.norm(dq[1:] * w[1:])), float(abs(dq[0]) * w[0])
+
+        arm = tt = 0.0
+        prev_g = None
+        for r_idx in solution.region_order:
+            path = solution.region_paths[r_idx]
+            off = region_offsets[r_idx]
+            first_g = off + path[0]
+            if prev_g is not None:
+                a, t = _edge(prev_g, first_g)
+                arm += a; tt += t
+            for k in range(len(path) - 1):
+                a, t = _edge(off + path[k], off + path[k + 1])
+                arm += a; tt += t
+            prev_g = off + path[-1]
+        return round(arm, 4), round(tt, 4)
 
     # ── Algorithm helpers ─────────────────────────────────────────────────────
 
@@ -682,6 +793,8 @@ class VRPSolver:
                     dm, dd, region_offsets, sizes, tau_inter, tau_intra, alpha, beta, k_entries)
                 for r_idx in order:
                     paths[r_idx] = self._intra_local_search(paths[r_idx], region_offsets[r_idx], dm)
+                # Inter-region relocation after intra local search (same as 2opt/3opt/ILS)
+                order, paths = self._inter_region_improve(order, paths, dm, dd, region_offsets)
                 c = self._compute_tour_cost(order, paths, dm, dd, region_offsets)
                 if c < iter_cost:
                     iter_cost, iter_order, iter_paths = c, order[:], dict(paths)
@@ -695,7 +808,8 @@ class VRPSolver:
 
             delta = 1.0 / (iter_cost + 1e-10)
             tau_max = 1.0 / (rho * best_cost)
-            tau_min = tau_max / (R * 2)
+            # tau_min per matrix: inter uses R cities, intra uses n_r viewpoints
+            tau_min_inter = tau_max / (R * 2)
 
             prev_r = R
             for r_idx in iter_order:
@@ -706,9 +820,15 @@ class VRPSolver:
                 for k in range(len(path) - 1):
                     tau_intra[r_idx][path[k], path[k + 1]] += delta
 
-            np.clip(tau_inter, tau_min, tau_max, out=tau_inter)
+            np.clip(tau_inter, tau_min_inter, tau_max, out=tau_inter)
             for r in range(R):
-                np.clip(tau_intra[r], tau_min, tau_max, out=tau_intra[r])
+                # intra pheromone needs tighter floor: n_r viewpoints, not R regions
+                tau_min_intra = tau_max / (sizes[r] * 2)
+                np.clip(tau_intra[r], tau_min_intra, tau_max, out=tau_intra[r])
+
+        # Final polish: one full local search pass on the global best
+        best_order, best_paths = self._vrp_local_search(best_order, best_paths, dm, dd, region_offsets)
+        best_cost = self._compute_tour_cost(best_order, best_paths, dm, dd, region_offsets)
 
         sol = VRPSolution(
             region_order=best_order, region_paths=best_paths,

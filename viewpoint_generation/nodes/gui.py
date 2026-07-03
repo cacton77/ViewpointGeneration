@@ -734,10 +734,16 @@ class GUIClient():
         # viewpoint projection buttons, which call their node's service.
         if node_name == 'viewpoint_traversal':
             content.add_child(self._build_traversal_mode_section(node_name, tab_data, em))
-            button = gui.Button("Optimize Traversal")
-            button.background_color = Materials.button_background_color
-            button.set_on_clicked(lambda: self.ros_thread.optimize_traversal())
-            content.add_child(button)
+            btn_row = gui.Horiz(0.5 * em, gui.Margins(0, 0, 0, 0))
+            opt_btn = gui.Button("Optimize Traversal")
+            opt_btn.background_color = Materials.button_background_color
+            opt_btn.set_on_clicked(lambda: self.ros_thread.optimize_traversal())
+            clear_btn = gui.Button("Clear Paths")
+            clear_btn.background_color = Materials.button_background_color
+            clear_btn.set_on_clicked(lambda: self.ros_thread.clear_traversal_paths())
+            btn_row.add_child(opt_btn)
+            btn_row.add_child(clear_btn)
+            content.add_child(btn_row)
         elif node_name == self.ros_thread.tsdf_node_name:
             button = gui.Button("Reset Voxel Block Grid")
             button.background_color = Materials.button_background_color

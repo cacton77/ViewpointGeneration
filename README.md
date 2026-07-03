@@ -208,7 +208,7 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
 ### Other Nodes
 
 - **task_planning_node** -- State machine for robot motion control, manages servo/trajectory controller switching. Parameters are namespaced (`controllers.*`, `navigation.*`, `settings.*`) so the GUI renders one tab per namespace. Owns the mesh/region/viewpoint selection parameters (`navigation.selected_mesh`, `navigation.selected_region`, `navigation.selected_viewpoint`, declared with live slider ranges) and `navigation.selected_traversal_algorithm`; `settings.results_file` points it at the results JSON to plan/execute over; the GUI/visualizer track these to highlight the selected geometry
-- **viewpoint_traversal_node** -- MoveIt-based motion planning to viewpoints with TSP optimization and workspace constraints
+- **viewpoint_traversal_node** -- MoveIt-based motion planning to viewpoints with TSP/VRP optimization and workspace constraints. Exposes `move_to_pose_stamped`, `optimize_viewpoint_traversal`, and `find_nearest_viewpoint` services. The `find_nearest_viewpoint` service returns the viewpoint in a given region that is closest to the robot's actual current joint state (weighted L2), enabling dynamic entry-point selection at execution time rather than relying on precomputed IK-based distances
 - **gui_node** -- Open3D visualization GUI with interactive mesh, region, cluster, and viewpoint rendering. The *View → Rendering Mode* menu selects how cluster-viewpoint pairs are drawn: `Convex Hull`, `Cluster Cloud`, `Frustum`, `Lines`, `Viewpoint Only`, `Origin Sphere`, and `FOV Cylinder`. **FOV Cylinder** draws a white wireframe cylinder (radius `fov_diameter/2`, height `dof`) centered on each cluster's surface target and aligned to its averaged view direction — the actual coverage volume. Because it depicts a *covering* solution (a point may lie in several overlapping FOVs), this mode leaves the surface colored by region instead of painting it per-cluster.
 
 ### Custom Interfaces (viewpoint_generation_interfaces)
@@ -221,6 +221,7 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
 - `ImportCadModel.srv` -- Load a CAD model (file path + units)
 - `MoveToPoseStamped.srv` -- Move robot to a target pose
 - `OptimizeViewpointTraversal.srv` -- Optimize traversal order for a results file
+- `FindNearestViewpoint.srv` -- Given a region index, return the viewpoint in that region nearest to the robot's current joint state (used for dynamic entry selection at execution time)
 
 **Messages:**
 - `OrientationControlData.msg` -- Orientation control feedback (pitch/yaw/roll errors, PID gains)

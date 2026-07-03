@@ -141,7 +141,7 @@ class ROSThread(Node):
                 callback_group=set_params_cb_group
             )
             # Wait for the list parameters service to be available as a test of connectivity to the node
-            if not list_params_client.wait_for_service(timeout_sec=1.0):
+            if not list_params_client.wait_for_service(timeout_sec=10.0):
                 self.get_logger().warning(
                     f'Failed to connect to {target_node}/list_parameters service')
                 failed_targets.append(target_node)
@@ -406,6 +406,23 @@ class ROSThread(Node):
         else:
             self.get_logger().error('Failed to trigger optimize traversal')
             return False
+
+    def clear_traversal_paths(self):
+        """Set clear_paths=True on the traversal node, then trigger optimize_traversal."""
+        node = self.traversal_node_name
+        if node not in self.set_params_clients:
+            self.get_logger().warning(f'Node {node} not connected')
+            return
+        param_msg = ParameterMsg()
+        param_msg.name = 'clear_paths'
+        pv = ParameterValue()
+        pv.type = ParameterType.PARAMETER_BOOL
+        pv.bool_value = True
+        param_msg.value = pv
+        req = SetParameters.Request()
+        req.parameters = [param_msg]
+        future = self.set_params_clients[node].call_async(req)
+        future.add_done_callback(lambda f: self.optimize_traversal())
 
     # ============================================================================
     # TASK PLANNING
