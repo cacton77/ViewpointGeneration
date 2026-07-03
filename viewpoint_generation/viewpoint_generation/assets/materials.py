@@ -74,14 +74,6 @@ class Materials:
     selected_cluster_material.shader = "defaultUnlit"
     selected_cluster_material.base_color = [0.0, 0.0, 1.0, 1.0]
 
-    region_view_material = rendering.MaterialRecord()
-    region_view_material.shader = "defaultLitTransparency"
-    region_view_material.base_color = [1.0, 1.0, 1.0, 0.25]
-
-    selected_region_view_material = rendering.MaterialRecord()
-    selected_region_view_material.shader = "defaultLitTransparency"
-    selected_region_view_material.base_color = [0.0, 1.0, 1.0, 0.25]
-
     viewpoint_material = rendering.MaterialRecord()
     viewpoint_material.shader = "defaultUnlit"
     viewpoint_material.base_color = [1.0, 1.0, 1.0, 1.0]
@@ -94,6 +86,19 @@ class Materials:
     selected_viewpoint_material.shader = "defaultUnlit"
     selected_viewpoint_material.base_color = [0.0, 0.0, 1.0, 1.0]
     # selected_viewpoint_material.base_color = [193/255, 76/255, 61/255, 1.0]
+
+    # Fat-point viewpoint markers (same style as the unreachable markers).
+    # Geometry is painted white so base_color tints it — green when unselected,
+    # blue when the viewpoint is the current selection.
+    viewpoint_marker_material = rendering.MaterialRecord()
+    viewpoint_marker_material.shader = 'defaultUnlit'
+    viewpoint_marker_material.point_size = 12.0
+    viewpoint_marker_material.base_color = [0.1, 0.85, 0.2, 1.0]
+
+    selected_viewpoint_marker_material = rendering.MaterialRecord()
+    selected_viewpoint_marker_material.shader = 'defaultUnlit'
+    selected_viewpoint_marker_material.point_size = 12.0
+    selected_viewpoint_marker_material.base_color = [0.2, 0.45, 1.0, 1.0]
 
     fov_material = rendering.MaterialRecord()
     fov_material.shader = "defaultUnlit"
@@ -116,20 +121,23 @@ class Materials:
     selected_path_material.line_width = 3.0
     selected_path_material.base_color = [0.0, 1.0, 1.0, 1.0]
 
+    # Cartesian robot path — orange (an "active route" color) rather than red,
+    # which reads as an error/"bad" state.
     joint_path_material = MaterialRecord()
     joint_path_material.shader = 'unlitLine'
     joint_path_material.line_width = 2.5
-    joint_path_material.base_color = [1.0, 0.2, 0.2, 1.0]
+    joint_path_material.base_color = [1.0, 0.55, 0.1, 1.0]
 
     joint_marker_material = rendering.MaterialRecord()
     joint_marker_material.shader = 'defaultUnlit'
     joint_marker_material.point_size = 7.0
-    joint_marker_material.base_color = [1.0, 0.2, 0.2, 1.0]
+    joint_marker_material.base_color = [1.0, 0.55, 0.1, 1.0]
 
+    # Unreachable / inaccessible viewpoints — red (a genuine "cannot do this").
     unreachable_marker_material = rendering.MaterialRecord()
     unreachable_marker_material.shader = 'defaultUnlit'
     unreachable_marker_material.point_size = 14.0
-    unreachable_marker_material.base_color = [1.0, 0.85, 0.0, 1.0]
+    unreachable_marker_material.base_color = [1.0, 0.0, 0.0, 1.0]
 
     ground_plane_material = MaterialRecord()
     ground_plane_material.shader = 'defaultLitTransparency'

@@ -413,15 +413,19 @@ class TaskPlanningNode(Node):
             self.get_logger().info(
                 'Service call failed %r' % (e,))
 
-    def _make_descriptor(self, field_info):
-        """Build a ParameterDescriptor from a selection_config entry."""
+    def _make_descriptor(self, field_info, with_range=True):
+        """Build a ParameterDescriptor from a selection_config entry.
+
+        ``with_range`` controls whether the IntegerRange constraint is applied.
+        It must be omitted at declaration time (see _declare_selection_parameters).
+        """
         descriptor = ParameterDescriptor()
         descriptor.description = field_info.get('description', '')
         descriptor.additional_constraints = field_info.get('control', '')
         range_val = field_info.get('range')
         if field_info.get('type') == 'integer':
             descriptor.type = ParameterType.PARAMETER_INTEGER
-        if range_val is not None and field_info.get('type') == 'integer':
+        if with_range and range_val is not None and field_info.get('type') == 'integer':
             ir = IntegerRange()
             ir.from_value = int(range_val[0])
             ir.to_value = int(range_val[1])
@@ -430,12 +434,21 @@ class TaskPlanningNode(Node):
         return descriptor
 
     def _declare_selection_parameters(self):
-        """Declare the selection parameters from self.selection_config with
-        full descriptors so the GUI renders them as sliders."""
+        """Declare the selection parameters from self.selection_config.
+
+        The IntegerRange constraint is intentionally NOT applied here. At
+        declaration time the results file has not been loaded yet, so the real
+        [0, count-1] range is unknown; the config's placeholder range is [0, 0].
+        Declaring with that range makes rclpy reject any parameter override
+        outside it (e.g. a saved ``navigation.selected_region: 3`` from a loaded
+        results config), crashing node startup. The correct range is installed
+        by ``update_selection`` -> ``_set_selection_descriptor`` immediately
+        after the viewpoints load, which also clamps the override to valid data.
+        """
         for field_name, field_info in self.selection_config.items():
             self.declare_parameter(
                 field_name, field_info['value'],
-                self._make_descriptor(field_info))
+                self._make_descriptor(field_info, with_range=False))
 
     def _set_selection_descriptor(self, name, count):
         """Resize the IntegerRange descriptor of a selection slider to [0, count-1]."""

@@ -48,7 +48,6 @@ class GUIClient():
     MENU_SHOW_NOISE_POINTS = 19
     MENU_SHOW_CLUSTERS = 20
     MENU_SHOW_VIEWPOINTS = 21
-    MENU_SHOW_REGION_VIEW_MANIFOLDS = 22
     MENU_SHOW_SETTINGS = 23
     MENU_SHOW_ERRORS = 24
     MENU_SHOW_PATH = 25
@@ -72,6 +71,21 @@ class GUIClient():
         (MENU_OVERLAY_ORIGIN_LINE,   OverlayKind.ORIGIN_LINE),
         (MENU_OVERLAY_FRUSTUM,       OverlayKind.FRUSTUM),
         (MENU_OVERLAY_ORIGIN_SPHERE, OverlayKind.ORIGIN_SPHERE),
+    ]
+
+    MENU_SEL_OVERLAY_MARKER        = 41
+    MENU_SEL_OVERLAY_FOV_CYLINDER  = 42
+    MENU_SEL_OVERLAY_ORIGIN_LINE   = 43
+    MENU_SEL_OVERLAY_FRUSTUM       = 44
+    MENU_SEL_OVERLAY_ORIGIN_SPHERE = 45
+
+    # (menu id, overlay kind) pairs for the Selected Viewpoint Overlays submenu.
+    _SELECTED_OVERLAY_MENU_ITEMS = [
+        (MENU_SEL_OVERLAY_MARKER,        OverlayKind.MARKER),
+        (MENU_SEL_OVERLAY_FOV_CYLINDER,  OverlayKind.FOV_CYLINDER),
+        (MENU_SEL_OVERLAY_ORIGIN_LINE,   OverlayKind.ORIGIN_LINE),
+        (MENU_SEL_OVERLAY_FRUSTUM,       OverlayKind.FRUSTUM),
+        (MENU_SEL_OVERLAY_ORIGIN_SPHERE, OverlayKind.ORIGIN_SPHERE),
     ]
 
     camera_updated = False
@@ -243,11 +257,6 @@ class GUIClient():
             view_menu.add_item("Show Viewpoints", self.MENU_SHOW_VIEWPOINTS)
             view_menu.set_checked(self.MENU_SHOW_VIEWPOINTS,
                                   self.ros_thread.show_viewpoints)
-            view_menu.add_item("Show Region View Manifolds",
-                               self.MENU_SHOW_REGION_VIEW_MANIFOLDS)
-            view_menu.set_checked(
-                self.MENU_SHOW_REGION_VIEW_MANIFOLDS, self.ros_thread.show_region_view_manifolds)
-
             view_menu.add_item("Show Path", self.MENU_SHOW_PATH)
             view_menu.set_checked(self.MENU_SHOW_PATH,
                                   self.ros_thread.show_path)
@@ -274,6 +283,15 @@ class GUIClient():
             overlay_menu.add_item("Origin Sphere",    self.MENU_OVERLAY_ORIGIN_SPHERE)
             overlay_menu.set_checked(self.MENU_OVERLAY_MARKER, True)
             view_menu.add_menu("Viewpoint Overlays", overlay_menu)
+            # Overlays for the selected viewpoint only (independent set).
+            sel_overlay_menu = gui.Menu()
+            sel_overlay_menu.add_item("Viewpoint Marker", self.MENU_SEL_OVERLAY_MARKER)
+            sel_overlay_menu.add_item("FOV Cylinder",     self.MENU_SEL_OVERLAY_FOV_CYLINDER)
+            sel_overlay_menu.add_item("Origin Line",      self.MENU_SEL_OVERLAY_ORIGIN_LINE)
+            sel_overlay_menu.add_item("Frustum",          self.MENU_SEL_OVERLAY_FRUSTUM)
+            sel_overlay_menu.add_item("Origin Sphere",    self.MENU_SEL_OVERLAY_ORIGIN_SPHERE)
+            sel_overlay_menu.set_checked(self.MENU_SEL_OVERLAY_MARKER, True)
+            view_menu.add_menu("Selected Viewpoint Overlays", sel_overlay_menu)
             view_menu.add_separator()
             # Panel display options
             view_menu.add_item("Lighting & Materials",
@@ -357,9 +375,6 @@ class GUIClient():
         w.set_on_menu_item_activated(
             self.MENU_SHOW_UNREACHABLE, self._on_menu_show_unreachable)
         w.set_on_menu_item_activated(
-            self.MENU_SHOW_REGION_VIEW_MANIFOLDS,
-            self._on_menu_show_region_view_manifolds)
-        w.set_on_menu_item_activated(
             self.MENU_SURFACE_SOLID,
             lambda: self._on_menu_set_surface_mode(RegionSurfaceMode.SOLID))
         w.set_on_menu_item_activated(
@@ -368,6 +383,10 @@ class GUIClient():
         for menu_id, kind in self._OVERLAY_MENU_ITEMS:
             w.set_on_menu_item_activated(
                 menu_id, lambda k=kind, m=menu_id: self._on_menu_toggle_overlay(k, m))
+        for menu_id, kind in self._SELECTED_OVERLAY_MENU_ITEMS:
+            w.set_on_menu_item_activated(
+                menu_id,
+                lambda k=kind, m=menu_id: self._on_menu_toggle_selected_overlay(k, m))
 
         # w.set_on_menu_item_activated(self.MENU_SHOW_SETTINGS,
         #                              self._on_menu_toggle_settings_panel)
@@ -536,7 +555,6 @@ class GUIClient():
         gui.Application.instance.menubar.set_checked(self.MENU_SHOW_NOISE_POINTS, self.viz.show_noise_points_flag)
         gui.Application.instance.menubar.set_checked(self.MENU_SHOW_CLUSTERS, self.viz.show_clusters_flag)
         gui.Application.instance.menubar.set_checked(self.MENU_SHOW_VIEWPOINTS, self.viz.show_viewpoints_flag)
-        gui.Application.instance.menubar.set_checked(self.MENU_SHOW_REGION_VIEW_MANIFOLDS, self.viz.show_region_view_manifolds_flag)
         gui.Application.instance.menubar.set_checked(self.MENU_SHOW_PATH, self.viz.show_path_flag)
         gui.Application.instance.menubar.set_checked(self.MENU_SHOW_JOINT_PATH, self.viz.show_joint_path_flag)
         gui.Application.instance.menubar.set_checked(self.MENU_SHOW_UNREACHABLE, self.viz.show_unreachable_flag)
@@ -600,12 +618,6 @@ class GUIClient():
         self.viz.show_noise_points(show)
         self._refresh_view_menu()
 
-    def _on_menu_show_region_view_manifolds(self):
-        show = not gui.Application.instance.menubar.is_checked(
-            self.MENU_SHOW_REGION_VIEW_MANIFOLDS)
-        self.viz.show_region_view_manifolds(show)
-        self._refresh_view_menu()
-
     def _on_menu_show_path(self):
         show = not gui.Application.instance.menubar.is_checked(
             self.MENU_SHOW_PATH)
@@ -634,6 +646,11 @@ class GUIClient():
     def _on_menu_toggle_overlay(self, kind: OverlayKind, menu_id: int):
         on = not gui.Application.instance.menubar.is_checked(menu_id)
         self.viz.set_overlay_enabled(kind, on)
+        gui.Application.instance.menubar.set_checked(menu_id, on)
+
+    def _on_menu_toggle_selected_overlay(self, kind: OverlayKind, menu_id: int):
+        on = not gui.Application.instance.menubar.is_checked(menu_id)
+        self.viz.set_selected_overlay_enabled(kind, on)
         gui.Application.instance.menubar.set_checked(menu_id, on)
 
     def show_axes(self, show=True):
@@ -669,6 +686,8 @@ class GUIClient():
         menubar.set_checked(self.MENU_SURFACE_CLUSTER, current == RegionSurfaceMode.CLUSTER)
         for menu_id, kind in self._OVERLAY_MENU_ITEMS:
             menubar.set_checked(menu_id, kind in self.viz._enabled_overlays)
+        for menu_id, kind in self._SELECTED_OVERLAY_MENU_ITEMS:
+            menubar.set_checked(menu_id, kind in self.viz._selected_overlays)
 
     # ============================================================================
     # INIT MAIN LAYOUT

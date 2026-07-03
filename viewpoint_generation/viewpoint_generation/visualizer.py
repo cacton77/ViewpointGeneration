@@ -61,101 +61,6 @@ def _resolve_order_indices(order, selected_algorithm=None):
     return order
 
 
-def _filter_large_triangles(mesh, method='iqr', threshold_multiplier=1.5):
-    """
-    Filter out triangles with anomalously large areas from a mesh
-
-    Args:
-        mesh: open3d.geometry.TriangleMesh
-        method: Method for determining anomalies
-                'iqr' - Interquartile range (robust to outliers)
-                'std' - Standard deviation
-                'percentile' - Keep triangles below a percentile
-                'absolute' - Absolute threshold
-        threshold_multiplier: For 'iqr': multiplier for IQR (default 1.5, like boxplot)
-                             For 'std': number of standard deviations
-                             For 'percentile': percentile value (0-100)
-                             For 'absolute': maximum allowed area
-
-    Returns:
-        open3d.geometry.TriangleMesh with filtered triangles
-    """
-    vertices = np.asarray(mesh.vertices)
-    triangles = np.asarray(mesh.triangles)
-
-    if len(triangles) == 0:
-        return mesh
-
-    # Compute area for each triangle
-    areas = []
-    for tri in triangles:
-        v0, v1, v2 = vertices[tri[0]], vertices[tri[1]], vertices[tri[2]]
-
-        # Compute area using cross product: Area = 0.5 * ||(v1-v0) × (v2-v0)||
-        edge1 = v1 - v0
-        edge2 = v2 - v0
-        area = 0.5 * np.linalg.norm(np.cross(edge1, edge2))
-        areas.append(area)
-
-    areas = np.array(areas)
-
-    # Determine threshold based on method
-    if method == 'iqr':
-        # Interquartile range method (robust)
-        q1 = np.percentile(areas, 25)
-        q3 = np.percentile(areas, 75)
-        iqr = q3 - q1
-        threshold = q3 + threshold_multiplier * iqr
-        print(
-            f"IQR method: Q1={q1:.6f}, Q3={q3:.6f}, IQR={iqr:.6f}, Threshold={threshold:.6f}")
-
-    elif method == 'std':
-        # Standard deviation method
-        mean_area = np.mean(areas)
-        std_area = np.std(areas)
-        threshold = mean_area + threshold_multiplier * std_area
-        print(
-            f"STD method: Mean={mean_area:.6f}, Std={std_area:.6f}, Threshold={threshold:.6f}")
-
-    elif method == 'percentile':
-        # Percentile method
-        threshold = np.percentile(areas, threshold_multiplier)
-        print(
-            f"Percentile method: {threshold_multiplier}th percentile={threshold:.6f}")
-
-    elif method == 'absolute':
-        # Absolute threshold
-        threshold = threshold_multiplier
-        print(f"Absolute method: Threshold={threshold:.6f}")
-
-    else:
-        raise ValueError(f"Unknown method: {method}")
-
-    # Filter triangles
-    filtered_triangles = []
-    for i, tri in enumerate(triangles):
-        if areas[i] <= threshold:
-            filtered_triangles.append(tri)
-
-    num_removed = len(triangles) - len(filtered_triangles)
-    print(
-        f"Removed {num_removed}/{len(triangles)} triangles ({100*num_removed/len(triangles):.1f}%)")
-    print(f"Area range: [{np.min(areas):.6f}, {np.max(areas):.6f}]")
-
-    # Create filtered mesh
-    filtered_mesh = o3d.geometry.TriangleMesh()
-    filtered_mesh.vertices = mesh.vertices
-    filtered_mesh.triangles = o3d.utility.Vector3iVector(filtered_triangles)
-
-    # Copy colors and normals if they exist
-    if mesh.has_vertex_colors():
-        filtered_mesh.vertex_colors = mesh.vertex_colors
-    if mesh.has_vertex_normals():
-        filtered_mesh.vertex_normals = mesh.vertex_normals
-
-    return filtered_mesh
-
-
 def _build_standard_viewpoint_mesh(viewpoint_data: dict) -> o3d.geometry.TriangleMesh:
     """Build a viewpoint marker (sphere/arrow/axes) from raw viewpoint_data."""
     if Materials.viewpoint_type == "sphere":
@@ -308,12 +213,23 @@ def _build_origin_sphere(viewpoint_data: dict,
     return sphere
 
 
+def _build_viewpoint_point_marker(viewpoint_data: dict) -> o3d.geometry.PointCloud:
+    """A single fat point at the camera position — the same marker style as the
+    unreachable viewpoints. Painted white so the overlay material tints it
+    (green when unselected, the selected material when highlighted)."""
+    position = 1000.0 * np.array(viewpoint_data['position'], dtype=float)
+    marker = o3d.geometry.PointCloud()
+    marker.points = o3d.utility.Vector3dVector(position.reshape(1, 3))
+    marker.paint_uniform_color([1.0, 1.0, 1.0])
+    return marker
+
+
 # kind -> (builder(viewpoint_data) -> geometry|None, default_material, selected_material)
 _OVERLAY_REGISTRY: dict = {
     OverlayKind.MARKER: (
-        _build_standard_viewpoint_mesh,
-        Materials.viewpoint_material,
-        Materials.selected_viewpoint_material,
+        _build_viewpoint_point_marker,
+        Materials.viewpoint_marker_material,
+        Materials.selected_viewpoint_marker_material,
     ),
     OverlayKind.FOV_CYLINDER: (
         lambda vp: _build_fov_cylinder(vp, color=(1.0, 1.0, 1.0)),
@@ -492,7 +408,6 @@ class Visualizer:
                     },
                     ...
                 },
-                "view_mesh": TriangleMesh | None,
                 "path":      LineSet | None,
             },
             ...
@@ -516,7 +431,11 @@ class Visualizer:
         # Visualization state: the region surface is colored by one exclusive
         # mode, while any combination of per-viewpoint overlays may be enabled.
         self._surface_mode: RegionSurfaceMode = RegionSurfaceMode.SOLID
+        # Overlays shown for non-selected viewpoints vs. the selected viewpoint.
+        # Independent sets so the selected viewpoint can show a different subset
+        # (e.g. only the selected viewpoint shows its FOV cylinder).
         self._enabled_overlays: set[OverlayKind] = {OverlayKind.MARKER}
+        self._selected_overlays: set[OverlayKind] = {OverlayKind.MARKER}
         self._built_overlays: set[OverlayKind] = set()
 
         # Model state
@@ -563,7 +482,6 @@ class Visualizer:
         self.show_noise_points_flag          = False
         self.show_clusters_flag              = False
         self.show_viewpoints_flag            = False
-        self.show_region_view_manifolds_flag = False
         self.show_path_flag                  = False
         self.mesh_has_vertex_colors          = False
         self.show_joint_path_flag            = True
@@ -631,7 +549,7 @@ class Visualizer:
         return f"{cluster_name}_vp_{kind.value}"
 
     def set_overlay_enabled(self, kind: OverlayKind, on: bool):
-        """Enable/disable one viewpoint overlay kind across all clusters."""
+        """Enable/disable one overlay kind for the non-selected viewpoints."""
         if on:
             self._enabled_overlays.add(kind)
             if kind not in self._built_overlays:
@@ -639,9 +557,16 @@ class Visualizer:
         else:
             self._enabled_overlays.discard(kind)
         self._update_overlay_visibility()
-        # Re-assert the selected viewpoint's highlight on the (possibly new) geometry.
-        if self.selected_cluster_name:
-            self._highlight_viewpoint(self.selected_cluster_name, True)
+
+    def set_selected_overlay_enabled(self, kind: OverlayKind, on: bool):
+        """Enable/disable one overlay kind for the currently-selected viewpoint."""
+        if on:
+            self._selected_overlays.add(kind)
+            if kind not in self._built_overlays:
+                self._build_overlay_kind(kind)
+        else:
+            self._selected_overlays.discard(kind)
+        self._update_overlay_visibility()
 
     def _build_overlay_kind(self, kind: OverlayKind):
         """Build geometry for one overlay kind for every cluster viewpoint."""
@@ -660,30 +585,32 @@ class Visualizer:
         self._built_overlays.add(kind)
 
     def _update_overlay_visibility(self):
-        """Show enabled overlays for the selected region (all regions when none
-        is selected), gated by the master ``show_viewpoints`` flag."""
-        sel = self.selected_region_name
+        """Show/colour overlays for the selected region (all regions when none is
+        selected), gated by the master ``show_viewpoints`` flag.
+
+        The selected viewpoint uses its own overlay set (``_selected_overlays``)
+        and the highlight materials; every other viewpoint uses the shared
+        ``_enabled_overlays`` set and default materials.
+        """
+        sel_region  = self.selected_region_name
+        sel_cluster = self.selected_cluster_name
         for region_name, region_data in self.geometries_dict.items():
-            region_visible = (not sel) or (region_name == sel)
+            region_visible = (not sel_region) or (region_name == sel_region)
             for cluster_name in region_data.get('clusters', {}):
+                is_selected_vp = (cluster_name == sel_cluster)
+                kinds = (self._selected_overlays if is_selected_vp
+                         else self._enabled_overlays)
                 for kind in self._built_overlays:
                     name = self._overlay_geo_name(cluster_name, kind)
                     if not self.scene.has_geometry(name):
                         continue
                     visible = (self.show_viewpoints_flag
-                               and kind in self._enabled_overlays
-                               and region_visible)
+                               and region_visible
+                               and kind in kinds)
                     self.scene.show_geometry(name, visible)
-
-    def _highlight_viewpoint(self, cluster_name: str, selected: bool):
-        """Set selected/default materials on all built overlays of one cluster."""
-        for kind in self._built_overlays:
-            name = self._overlay_geo_name(cluster_name, kind)
-            if not self.scene.has_geometry(name):
-                continue
-            _, default_mat, selected_mat = _OVERLAY_REGISTRY[kind]
-            self.scene_widget.scene.modify_geometry_material(
-                name, selected_mat if selected else default_mat)
+                    _, default_mat, selected_mat = _OVERLAY_REGISTRY[kind]
+                    self.scene_widget.scene.modify_geometry_material(
+                        name, selected_mat if is_selected_vp else default_mat)
 
     # ── Core scene helper ────────────────────────────────────────────────────
 
@@ -1101,8 +1028,6 @@ class Visualizer:
                     'color': region_color,
                 }
 
-                region_view_points : list = []
-                region_view_normals: list = []
                 path_points        : list = []
                 path_line = o3d.geometry.LineSet()
 
@@ -1158,9 +1083,6 @@ class Visualizer:
                             }
 
                             position  = 1000.0 * np.array(vp_raw['position'])
-                            direction = np.array(vp_raw['direction'])
-                            region_view_points.append(position.tolist())
-                            region_view_normals.append(direction.tolist())
                             path_points.append(position)
                             all_view_positions.append(position)
 
@@ -1172,26 +1094,14 @@ class Visualizer:
                             'indices':        global_cluster_indices,
                             'color':          cluster_color,
                             'viewpoint_data': vp_data,
+                            # Cluster index in the results JSON. The geometry name
+                            # is numbered by the frozen load-time traversal order,
+                            # but selection is driven by the *live* algorithm order
+                            # (see select_cluster), so we keep the stable id here.
+                            'cluster_id':     cluster_id,
                         }
 
-                # Region view surface (convex hull of viewpoint positions)
-                if show_viewpoints and region_view_points:
-                    region_view_cloud = o3d.geometry.PointCloud()
-                    region_view_cloud.points = o3d.utility.Vector3dVector(
-                        np.array(region_view_points))
-                    region_view_cloud.normals = o3d.utility.Vector3dVector(
-                        np.array(region_view_normals))
-
-                    if len(region_view_points) > 4:
-                        view_mesh = region_view_cloud.compute_convex_hull(
-                            joggle_inputs=True)[0]
-                        view_mesh = _filter_large_triangles(
-                            view_mesh, method='iqr', threshold_multiplier=5.0)
-                        view_mesh.compute_vertex_normals()
-                        new_geometries_dict[region_name]['view_mesh'] = view_mesh
-                    else:
-                        new_geometries_dict[region_name]['view_mesh'] = None
-
+                if show_viewpoints and path_points:
                     if len(path_points) > 1:
                         path_line.points = o3d.utility.Vector3dVector(
                             np.array(path_points))
@@ -1254,13 +1164,9 @@ class Visualizer:
                 self.cluster_names.append(cluster_name)
 
         # Add region surfaces (opaque, current surface mode) and per-region
-        # view-manifold / path geometry.
+        # path geometry.
         self._render_surfaces()
         for region_name, region_data in self.geometries_dict.items():
-            view_mesh = region_data.get('view_mesh')
-            if view_mesh is not None:
-                self.add_geometry(f"{region_name}_view_mesh", view_mesh,
-                                  Materials.region_view_material)
             path = region_data.get('path')
             if path is not None:
                 self.add_geometry(f"{region_name}_path", path,
@@ -1279,10 +1185,11 @@ class Visualizer:
                                   unreachable_markers,
                                   Materials.unreachable_marker_material)
 
-        # Build the currently-enabled viewpoint overlays for every cluster.
+        # Build every overlay kind used by either the shared or the
+        # selected-viewpoint set, for every cluster.
         self._built_overlays = set()
         if show_viewpoints:
-            for kind in list(self._enabled_overlays):
+            for kind in self._enabled_overlays | self._selected_overlays:
                 self._build_overlay_kind(kind)
 
         # ── Update single point cloud with region colors ──────────────────
@@ -1304,7 +1211,6 @@ class Visualizer:
             self.set_region_surface_mode(RegionSurfaceMode.CLUSTER)
             self.show_viewpoints(show_viewpoints)
             if show_viewpoints:
-                self.show_region_view_manifolds(True)
                 self.show_path(show_path)
                 # Cartesian path / unreachable markers only exist after traversal
                 # optimization; re-assert their current toggle state so any
@@ -1444,16 +1350,15 @@ class Visualizer:
     # ── Clear helpers ─────────────────────────────────────────────────────────
 
     def _clear_result_geometry(self):
-        """Remove all region/cluster/viewpoint/path/view-manifold geometry and
-        reset the tracking lists.
+        """Remove all region/cluster/viewpoint/path geometry and reset the
+        tracking lists.
 
-        The geometry-removing clears (viewpoints, paths, view manifolds) iterate
-        the cluster/region name lists, so they must run *before* clear_clusters
+        The geometry-removing clears (viewpoints, paths) iterate the
+        cluster/region name lists, so they must run *before* clear_clusters
         and clear_regions empty those lists — otherwise nothing is removed and
         stale geometry from the previous file lingers in the scene.
         """
         self.clear_viewpoints()
-        self.clear_region_view_manifolds()
         self.clear_paths()
         self.clear_joint_paths()
         self.clear_surfaces()
@@ -1466,10 +1371,6 @@ class Visualizer:
     def clear_surfaces(self):
         for name in self.region_names:
             self.scene.remove_geometry(f"{name}_surface")
-
-    def clear_region_view_manifolds(self):
-        for name in self.region_names:
-            self.scene.remove_geometry(f"{name}_view_mesh")
 
     def clear_clusters(self):
         self.cluster_names = []
@@ -1553,33 +1454,21 @@ class Visualizer:
             self.set_region_surface_mode(RegionSurfaceMode.CLUSTER)
 
     def show_viewpoints(self, show: bool):
-        """Master toggle for all enabled viewpoint overlays."""
+        """Master toggle for all viewpoint overlays."""
         self.show_viewpoints_flag = show
         if show:
             # Build any enabled overlay kinds not yet realized (e.g. overlays
             # were enabled while the master toggle was off, or off at load).
-            for kind in list(self._enabled_overlays):
+            for kind in self._enabled_overlays | self._selected_overlays:
                 if kind not in self._built_overlays:
                     self._build_overlay_kind(kind)
         self._update_overlay_visibility()
-        if self.selected_cluster_name:
-            self._highlight_viewpoint(self.selected_cluster_name, True)
-
-    def show_region_view_manifolds(self, show: bool):
-        self.show_region_view_manifolds_flag = show
-        # When no region is explicitly selected (e.g. right after a results
-        # file loads) show every region's manifold; once a region is selected
-        # restrict visibility to that region.
-        for name in self.region_names:
-            visible = show and (
-                not self.selected_region_name or name == self.selected_region_name)
-            self.scene.show_geometry(f"{name}_view_mesh", visible)
 
     def _show_region_scoped(self, suffixes, show: bool):
         """Show/hide per-region geometry named ``{region}_{suffix}``. With no
         region selected every region's geometry is affected; once a region is
         selected only that region's is shown (mirrors the selection scoping used
-        for paths and view manifolds)."""
+        for paths)."""
         for name in self.region_names:
             visible = show and (
                 not self.selected_region_name or name == self.selected_region_name)
@@ -1680,7 +1569,7 @@ class Visualizer:
 
         marker_pcd = o3d.geometry.PointCloud()
         marker_pcd.points = o3d.utility.Vector3dVector(np.array(pts))
-        marker_pcd.paint_uniform_color([1.0, 0.85, 0.0])
+        marker_pcd.paint_uniform_color([1.0, 0.0, 0.0])
         return marker_pcd
 
     def set_traversal_algorithm(self, algorithm):
@@ -1745,6 +1634,48 @@ class Visualizer:
         prefix = f"{region_name}_cluster_"
         return [n for n in self.cluster_names if n.startswith(prefix)]
 
+    def _live_cluster_order(self, region_name: str) -> list:
+        """Cluster ids for a region in the *live* traversal-algorithm order.
+
+        The cluster geometry is numbered by the frozen load-time order (so the
+        file tree stays stable), but the task_planning selected_viewpoint slider
+        walks the currently-selected algorithm's path. Resolve that live order
+        from the results dict so selection can follow it.
+        """
+        if not self.results_dict:
+            return []
+        parts = region_name.split('_')
+        try:
+            mesh_idx, region_id = int(parts[1]), int(parts[3])
+        except (IndexError, ValueError):
+            return []
+        meshes = self.results_dict.get('meshes', [])
+        if mesh_idx >= len(meshes):
+            return []
+        regions = meshes[mesh_idx].get('regions', [])
+        if region_id >= len(regions):
+            return []
+        return _resolve_order_indices(
+            regions[region_id].get('order', []), self.selected_traversal_algorithm)
+
+    def _region_cluster_names_in_order(self, region_name: str) -> list[str]:
+        """Cluster geometry names for a region ordered by the live traversal
+        algorithm (so index k is the k-th stop on the drawn path, matching
+        task_planning). Falls back to the frozen load order when unavailable."""
+        frozen_names = self._cluster_names_for_region(region_name)
+        live_order = self._live_cluster_order(region_name)
+        if not live_order:
+            return frozen_names
+        clusters = self.geometries_dict.get(region_name, {}).get('clusters', {})
+        id_to_name = {data.get('cluster_id'): name
+                      for name, data in clusters.items()}
+        ordered = [id_to_name[cid] for cid in live_order if cid in id_to_name]
+        # Include any clusters the live order didn't cover, preserving them.
+        for name in frozen_names:
+            if name not in ordered:
+                ordered.append(name)
+        return ordered
+
     def _get_cluster_data(self, cluster_name: str) -> dict | None:
         for region_data in self.geometries_dict.values():
             clusters = region_data.get('clusters', {})
@@ -1774,12 +1705,10 @@ class Visualizer:
         # Surfaces: selected opaque/full-bright, all others dimmed/transparent.
         self._render_surfaces()
 
-        # View manifold, viewpoint path, cartesian path, and unreachable markers:
-        # only the selected region's, each gated by its own toggle.
+        # Viewpoint path, cartesian path, and unreachable markers: only the
+        # selected region's, each gated by its own toggle.
         for region_name in self.region_names:
             is_selected = (region_name == selected_region_name)
-            self._safe_show(f"{region_name}_view_mesh",
-                            is_selected and self.show_region_view_manifolds_flag)
             self._safe_show(f"{region_name}_path",
                             is_selected and self.show_path_flag)
             self._safe_show(f"{region_name}_joint_path",
@@ -1803,17 +1732,16 @@ class Visualizer:
     def select_cluster(self, cluster_idx: int) -> bool:
         """Select a viewpoint (cluster) within the active region: restore the
         previously-selected viewpoint's overlays and highlight the new one."""
-        # Scope the index to the selected region's clusters.
+        # Scope the index to the selected region's clusters, ordered by the live
+        # traversal algorithm so index k highlights the k-th viewpoint on the
+        # drawn path (matching the task_planning selected_viewpoint slider),
+        # rather than the frozen load-time cluster numbering.
         if self.selected_region_name and self.selected_region_name in self.geometries_dict:
-            region_clusters = self._cluster_names_for_region(self.selected_region_name)
+            region_clusters = self._region_cluster_names_in_order(self.selected_region_name)
         else:
             region_clusters = self.cluster_names
         if cluster_idx < 0 or cluster_idx >= len(region_clusters):
             return False
-
-        # Reset the previously-selected viewpoint's overlay materials.
-        if self.selected_cluster_name:
-            self._highlight_viewpoint(self.selected_cluster_name, False)
 
         selected_cluster_name = region_clusters[cluster_idx]
         self.selected_cluster_name = selected_cluster_name
@@ -1821,15 +1749,15 @@ class Visualizer:
         # select_cluster can be driven independently by the task_planning
         # navigation.selected_viewpoint parameter without a matching
         # select_region. Recover the owning region and, if it changed, refresh
-        # surfaces and overlay visibility so the selection is consistent.
+        # surfaces so the selection is consistent.
         owning_region = selected_cluster_name.rsplit('_cluster_', 1)[0]
         if owning_region in self.geometries_dict and owning_region != self.selected_region_name:
             self.selected_region_name = owning_region
             self._render_surfaces()
-            self._update_overlay_visibility()
 
-        # Highlight the selected viewpoint's overlays.
-        self._highlight_viewpoint(selected_cluster_name, True)
+        # Update overlay visibility + highlight materials for the new selection
+        # (the selected viewpoint uses its own overlay set and highlight colors).
+        self._update_overlay_visibility()
         return True
 
     @property
@@ -1846,11 +1774,12 @@ class Visualizer:
         """Index of the currently selected cluster, relative to its region.
 
         Mirrors how ``select_cluster`` scopes cluster indices to the selected
-        region. Returns -1 when no cluster is selected."""
+        region and orders them by the live traversal algorithm. Returns -1 when
+        no cluster is selected."""
         if not self.selected_cluster_name:
             return -1
         if self.selected_region_name:
-            region_clusters = self._cluster_names_for_region(self.selected_region_name)
+            region_clusters = self._region_cluster_names_in_order(self.selected_region_name)
         else:
             region_clusters = self.cluster_names
         if self.selected_cluster_name in region_clusters:
@@ -1925,11 +1854,11 @@ class Visualizer:
         if not self.results_dict:
             return nodes
 
-        # Order/number clusters by the load-time algorithm, not the live
-        # selection, so picking a different path algorithm doesn't change the
-        # tree contents (which would force a disruptive rebuild). Matches how
-        # the scene's clusters are numbered.
-        cluster_order_algorithm = self._cluster_order_algorithm
+        # Order/number clusters by the *live* traversal algorithm so the tree,
+        # the task_planning selected_viewpoint slider, and select_cluster all
+        # agree on what "viewpoint k" means (the k-th stop on the drawn path).
+        # The tree rebuilds when the algorithm changes, which is expected.
+        cluster_order_algorithm = self.selected_traversal_algorithm
 
         # ── Meshes ────────────────────────────────────────────────────────
         mesh_children = []
@@ -1961,9 +1890,9 @@ class Visualizer:
         """Build the 'Regions' dropdown for a mesh: numbered, selectable region
         nodes each containing a 'Clusters' and a 'Paths' dropdown.
 
-        ``cluster_order_algorithm`` orders/numbers the clusters and is frozen at
-        load time (see _cluster_order_algorithm) so the tree is stable across
-        path-algorithm changes."""
+        ``cluster_order_algorithm`` orders/numbers the clusters. It is the live
+        traversal algorithm so tree/slider/selection indices all mean the same
+        viewpoint (the k-th stop on the drawn path)."""
         regions = mesh_entry.get('regions', [])
         region_order = mesh_entry.get('order', list(range(len(regions))))
 

@@ -75,7 +75,6 @@ class ROSThread(Node):
                 ('show_noise_points', True),
                 ('show_fov_clusters', True),
                 ('show_viewpoints', True),
-                ('show_region_view_manifolds', True),
                 ('show_path', False),
                 ('show_joint_path', True),
                 ('show_unreachable', True),
@@ -106,8 +105,6 @@ class ROSThread(Node):
             'show_fov_clusters').get_parameter_value().bool_value
         self.show_viewpoints = self.get_parameter(
             'show_viewpoints').get_parameter_value().bool_value
-        self.show_region_view_manifolds = self.get_parameter(
-            'show_region_view_manifolds').get_parameter_value().bool_value
         self.show_path = self.get_parameter(
             'show_path').get_parameter_value().bool_value
         self.show_joint_path = self.get_parameter(
