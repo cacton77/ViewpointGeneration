@@ -18,7 +18,7 @@ from shape_msgs.msg import SolidPrimitive
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 from .tsp_solver import TSPSolver
-from .vrp_solver import VRPSolver
+from .vrp_solver import VRPSolver, VRPSolution
 
 
 class ViewpointTraversalNode(Node):
@@ -42,12 +42,23 @@ class ViewpointTraversalNode(Node):
                 ('clear_paths', False),
                 ('tsp_algorithm', 'greedy'),
                 ('vrp_algorithm', ''),
-                ('vrp_joint_weights', [0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),  # turntable=0.5, arm joints=1.0 (configurable)
+                # Objective: 'time' = MoveIt TOTG execution-time surrogate (seconds);
+                # 'joint' = weighted joint-space distance (radians).
+                ('vrp_cost_mode', 'time'),
+                ('vrp_max_velocity', 0.5),      # rad/s, per-joint limit for the time model
+                ('vrp_max_acceleration', 1.0),  # rad/s², per-joint limit for the time model
+                ('vrp_joint_weights', [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]),  # only used in 'joint' mode
+                ('vrp_validate_topk', 1),  # >1: plan top-K candidate tours, keep the fastest real time
                 ('vrp_aco_n_ants', 20),    # configurable
                 ('vrp_aco_n_iter', 100),   # configurable
                 ('vrp_aco_alpha', 1.0),    # pheromone weight (configurable)
                 ('vrp_aco_beta', 2.0),     # heuristic weight (configurable)
                 ('vrp_aco_rho', 0.1),      # evaporation rate (configurable)
+                ('vrp_aco_n_jobs', 1),     # >1: run ACO ants across processes
+                ('vrp_clustered_k', 6),    # candidate entry/exit ports per region (vrp_clustered)
+                ('vrp_n_turntable_samples', 0),  # >0 enables the multi-config turntable sweep
+                ('vrp_max_configs_per_vp', 8),   # cap on IK configs kept per viewpoint
+                ('vrp_config_dedup_tol', 0.1),   # rad, configs within this L∞ are merged
             ]
         )
 
@@ -74,13 +85,33 @@ class ViewpointTraversalNode(Node):
         self.solver = TSPSolver(logger=self.get_logger())
 
         self.vrp_algorithm = self.get_parameter('vrp_algorithm').get_parameter_value().string_value
+        self.vrp_cost_mode = self.get_parameter('vrp_cost_mode').get_parameter_value().string_value
+        self.vrp_max_velocity = self.get_parameter('vrp_max_velocity').get_parameter_value().double_value
+        self.vrp_max_acceleration = self.get_parameter('vrp_max_acceleration').get_parameter_value().double_value
+        self.vrp_validate_topk = self.get_parameter('vrp_validate_topk').get_parameter_value().integer_value
         self.vrp_aco_n_ants = self.get_parameter('vrp_aco_n_ants').get_parameter_value().integer_value
         self.vrp_aco_n_iter = self.get_parameter('vrp_aco_n_iter').get_parameter_value().integer_value
         self.vrp_aco_alpha = self.get_parameter('vrp_aco_alpha').get_parameter_value().double_value
         self.vrp_aco_beta = self.get_parameter('vrp_aco_beta').get_parameter_value().double_value
         self.vrp_aco_rho = self.get_parameter('vrp_aco_rho').get_parameter_value().double_value
+        self.vrp_aco_n_jobs = self.get_parameter('vrp_aco_n_jobs').get_parameter_value().integer_value
+        self.vrp_clustered_k = self.get_parameter('vrp_clustered_k').get_parameter_value().integer_value
+        self.vrp_n_turntable_samples = self.get_parameter(
+            'vrp_n_turntable_samples').get_parameter_value().integer_value
+        self.vrp_max_configs_per_vp = self.get_parameter(
+            'vrp_max_configs_per_vp').get_parameter_value().integer_value
+        self.vrp_config_dedup_tol = self.get_parameter(
+            'vrp_config_dedup_tol').get_parameter_value().double_value
         vrp_weights = list(self.get_parameter('vrp_joint_weights').get_parameter_value().double_array_value)
-        self.vrp_solver = VRPSolver(joint_weights=vrp_weights or None, logger=self.get_logger())
+        self.vrp_solver = VRPSolver(
+            joint_weights=vrp_weights or None,
+            cost_mode=self.vrp_cost_mode,
+            max_velocity=self.vrp_max_velocity,
+            max_acceleration=self.vrp_max_acceleration,
+            n_turntable_samples=self.vrp_n_turntable_samples,
+            max_configs_per_vp=self.vrp_max_configs_per_vp,
+            config_dedup_tol=self.vrp_config_dedup_tol,
+            logger=self.get_logger())
         self._ik_result = None
         self._region_offsets = None
 
@@ -189,10 +220,12 @@ class ViewpointTraversalNode(Node):
         if vrp_ran:
             # VRP already logged its per-region breakdown inside vrp(); just show totals.
             primary_total = self._last_vrp_cost
+            units = self.vrp_solver.cost_units
+            obj = 'execution-time' if units == 's' else 'joint-space'
             completed_str = ','.join(sorted(self.solver.completed_algorithms)) or '(none)'
             self.get_logger().info(
                 f'Completed TSP: {completed_str}  |  '
-                f'VRP {primary_algorithm}: {primary_total:.4f} rad (joint-space)')
+                f'VRP {primary_algorithm}: {primary_total:.4f} {units} ({obj})')
             total_arm_time = 0.0
             total_arm_distance = 0.0
             total_unreachable = 0
@@ -201,9 +234,9 @@ class ViewpointTraversalNode(Node):
                 for region in mesh_entry.get('regions', []):
                     algo_data = region.get('order', {}).get(primary_algorithm, {})
                     jt = algo_data.get('joint_trajectory', {})
-                    total_arm_time += jt.get('time_s', 0.0)
-                    total_arm_distance += jt.get('joint_distance', 0.0)
-                    ur = algo_data.get('unreachable', [])
+                    total_arm_time += jt.get('total_time_s', 0.0)
+                    total_arm_distance += jt.get('total_joint_distance', 0.0)
+                    ur = jt.get('unreachable', [])
                     if ur:
                         total_unreachable += len(ur)
                         rname = region.get('name', '?')
@@ -215,7 +248,7 @@ class ViewpointTraversalNode(Node):
                 f'{total_unreachable} viewpoint(s) unreachable'
                 + (f' across regions {", ".join(regions_with_unreachable)}'
                    if regions_with_unreachable else ''))
-            msg = f"Algorithm: {primary_algorithm}  Total: {primary_total:.4f} rad"
+            msg = f"Algorithm: {primary_algorithm}  Total: {primary_total:.4f} {units}"
         else:
             # TSP summary: Cartesian distance + per-region gap table
             primary_total = sum(
@@ -427,17 +460,22 @@ class ViewpointTraversalNode(Node):
             return self.vrp_solver.run_2opt(ik_result, region_offsets)
         if algo == 'vrp_3opt':
             return self.vrp_solver.run_3opt(ik_result, region_offsets)
+        topk = max(1, self.vrp_validate_topk)
         if algo == 'vrp_ils':
-            return self.vrp_solver.run_ils(ik_result, region_offsets)
+            return self.vrp_solver.run_ils(ik_result, region_offsets, n_candidates=topk)
         if algo == 'vrp_lkh':
-            return self.vrp_solver.run_lkh(ik_result, region_offsets)
+            return self.vrp_solver.run_lkh(ik_result, region_offsets, n_candidates=topk)
         if algo == 'vrp_aco':
             return self.vrp_solver.run_aco(
                 ik_result, region_offsets,
                 n_ants=self.vrp_aco_n_ants, n_iter=self.vrp_aco_n_iter,
-                alpha=self.vrp_aco_alpha, beta=self.vrp_aco_beta, rho=self.vrp_aco_rho)
+                alpha=self.vrp_aco_alpha, beta=self.vrp_aco_beta, rho=self.vrp_aco_rho,
+                n_candidates=topk, n_jobs=max(1, self.vrp_aco_n_jobs))
         if algo == 'vrp_hierarchical':
             return self.vrp_solver.run_hierarchical(ik_result, region_offsets)
+        if algo == 'vrp_clustered':
+            return self.vrp_solver.run_clustered(
+                ik_result, region_offsets, K=max(2, self.vrp_clustered_k))
         self.get_logger().warning(f'Unknown VRP algorithm: {algo}')
         return None
 
@@ -466,63 +504,149 @@ class ViewpointTraversalNode(Node):
             if solution is None:
                 continue
 
-            # Pass 2: re-seed IK along the initial VRP path so joint configs form a
-            # continuous chain from depot through all regions rather than all clustering
-            # near the home position. Re-running the optimizer on the chained IK gives
-            # accurate dm values and removes the artificial depot-proximity bias.
-            self.get_logger().info(f'VRP {algo}: reseeding IK along initial path...')
-            ik_result = self.vrp_solver.recompute_ik_chained(
-                ik_result, region_offsets,
-                solution.region_order, solution.region_paths,
-                mesh_entry, robot_model, self.planning_group)
-            self._ik_result = ik_result
+            multi_config = (ik_result.q_configs is not None
+                            and any(len(c) > 1 for c in ik_result.q_configs))
+            if multi_config:
+                # Config-aware solve already selects the per-viewpoint config to form a
+                # continuous chain, so the single-config reseed pass would only discard
+                # that freedom. Keep the swept configs and the pass-1 solution.
+                self._ik_result = ik_result
+            else:
+                # Pass 2: re-seed IK along the initial VRP path so joint configs form a
+                # continuous chain from depot through all regions rather than clustering
+                # near home. Re-running the optimizer on the chained IK gives accurate dm
+                # values and removes the artificial depot-proximity bias.
+                self.get_logger().info(f'VRP {algo}: reseeding IK along initial path...')
+                ik_result = self.vrp_solver.recompute_ik_chained(
+                    ik_result, region_offsets,
+                    solution.region_order, solution.region_paths,
+                    mesh_entry, robot_model, self.planning_group)
+                self._ik_result = ik_result
 
-            solution = self._run_vrp_algorithm(ik_result, region_offsets)
-            if solution is None:
-                continue
+                solution = self._run_vrp_algorithm(ik_result, region_offsets)
+                if solution is None:
+                    continue
+
+            dm = self.vrp_solver.build_cost_matrix(ik_result)
+            dd = self.vrp_solver.depot_dists(ik_result)
+            regions = mesh_entry.get('regions', [])
+            units = self.vrp_solver.cost_units
+
+            # Validation: plan the top-K candidate tours with MoveIt and keep the one
+            # with the lowest real execution time. This grounds the surrogate objective
+            # in true planned motion. With validate_topk == 1 this simply plans the
+            # single winning tour (no extra cost).
+            jt_map, validated_time = {}, None
+            if self.planning_component:
+                candidates = (solution.candidates
+                              if (self.vrp_validate_topk > 1 and solution.candidates)
+                              else [(solution.region_order, solution.region_paths, solution.cost)])
+                best_time, best, best_sel = float('inf'), None, None
+                for c_order, c_paths, _ in candidates:
+                    # When multiple IK configs exist (turntable sweep), pick the swing-free
+                    # config assignment for this tour so *every* algorithm — not just
+                    # vrp_clustered — plans to joint goals instead of free-IK poses.
+                    sel = (self.vrp_solver.select_tour_configs(
+                               c_order, c_paths, ik_result, region_offsets)
+                           if multi_config else None)
+                    cfg = sel[0] if sel else None
+                    t, jm = self._plan_vrp_tour(c_order, c_paths, regions, region_configs=cfg)
+                    if t < best_time:
+                        best_time, jt_map, best, best_sel = t, jm, (c_order, c_paths), sel
+                validated_time = best_time
+                if len(candidates) > 1:
+                    self.get_logger().info(
+                        f'VRP {algo}: validated {len(candidates)} candidate tour(s); '
+                        f'best real MoveIt time={best_time:.1f}s')
+                # Adopt the validated winner and its cost breakdown.
+                w_order, w_paths = best
+                if best_sel is not None:
+                    # config-aware winner: config-space cost + chosen configs
+                    cfg_map, total, intra_c, inter_c, depot_c = best_sel
+                    solution = VRPSolution(w_order, w_paths, total, intra_c, inter_c, depot_c,
+                                           algorithm=algo, region_configs=cfg_map)
+                else:
+                    solution = VRPSolution(w_order, w_paths, 0.0, 0.0, 0.0, 0.0, algorithm=algo)
+                    solution.cost, solution.intra_cost, solution.inter_cost, solution.depot_cost = \
+                        self.vrp_solver.full_tour_cost(solution, dm, dd, region_offsets)
 
             mesh_entry.setdefault('vrp_orders', {})[algo] = solution.region_order
-            dm = self.vrp_solver.build_cost_matrix(ik_result)
-            regions = mesh_entry.get('regions', [])
-
             for r_idx, region in enumerate(regions):
                 if r_idx not in solution.region_paths:
                     continue
                 path = solution.region_paths[r_idx]
                 off = region_offsets[r_idx]
-                intra_r = float(sum(dm[off + path[k], off + path[k + 1]]
-                                    for k in range(len(path) - 1)))
+                goal = self._resolve_goal_configs(r_idx, list(path), solution.region_configs)
+                if goal is not None and all(g is not None for g in goal):
+                    intra_r = float(sum(self.vrp_solver._config_cost(goal[k] - goal[k + 1])
+                                        for k in range(len(path) - 1)))
+                else:
+                    intra_r = float(sum(dm[off + path[k], off + path[k + 1]]
+                                        for k in range(len(path) - 1)))
                 order_dict = self._ensure_order_dict(region)
                 order_dict[algo] = {'order': list(path), 'distance': intra_r}
-
-            # Compute joint trajectories in VRP order so inter-region transitions chain
-            if self.planning_component:
-                prev_exit_joints = None
-                for r_idx in solution.region_order:
-                    region = regions[r_idx]
-                    path = solution.region_paths.get(r_idx)
-                    if not path or len(path) <= 1:
-                        continue
-                    order_dict = self._ensure_order_dict(region)
-                    jt, prev_exit_joints = self._compute_joint_trajectory(
-                        list(path), region.get('clusters', []), f'vrp_{r_idx}',
-                        initial_joint_state=prev_exit_joints)
-                    order_dict[algo]['joint_trajectory'] = jt
+                if solution.region_configs is not None and r_idx in solution.region_configs:
+                    order_dict[algo]['configs'] = list(solution.region_configs[r_idx])
+                if r_idx in jt_map:
+                    order_dict[algo]['joint_trajectory'] = jt_map[r_idx]
 
             self._last_vrp_cost = solution.cost
             arm_c, tt_c = self.vrp_solver.tour_cost_breakdown(
                 solution, ik_result, region_offsets)
             self.get_logger().info(
-                f'VRP {algo}: total={solution.cost:.4f} rad  '
+                f'VRP {algo}: total={solution.cost:.4f} {units}  '
                 f'(intra={solution.intra_cost:.4f}  inter={solution.inter_cost:.4f}  '
                 f'depot={solution.depot_cost:.4f})  region_order={solution.region_order}')
             self.get_logger().info(
-                f'VRP {algo}: arm={arm_c:.4f} rad  turntable={tt_c:.4f} rad  '
-                f'combined={solution.cost:.4f} rad  '
+                f'VRP {algo}: arm={arm_c:.4f} {units}  turntable={tt_c:.4f} {units}  '
                 f'(arm {arm_c/(solution.cost+1e-10)*100:.1f}%  '
                 f'tt {tt_c/(solution.cost+1e-10)*100:.1f}%)')
+            if validated_time is not None:
+                self.get_logger().info(
+                    f'VRP {algo}: planned MoveIt tour time={validated_time:.1f}s')
 
         return viewpoint_dict
+
+    def _plan_vrp_tour(self, region_order, region_paths, regions, region_configs=None):
+        """Plan the full VRP tour with MoveIt, chaining inter-region transitions.
+
+        When region_configs is provided (vrp_clustered config-aware solve), each
+        viewpoint is planned to its chosen IK config as a joint-space goal rather than
+        letting MoveIt re-resolve IK from the Cartesian pose.
+
+        Returns (total_time_s, {r_idx: joint_trajectory}).
+        """
+        total_time, jt_map, prev_exit = 0.0, {}, None
+        for r_idx in region_order:
+            path = region_paths.get(r_idx)
+            if not path:
+                continue
+            goal_qs = self._resolve_goal_configs(r_idx, list(path), region_configs)
+            jt, prev_exit = self._compute_joint_trajectory(
+                list(path), regions[r_idx].get('clusters', []), f'vrp_{r_idx}',
+                initial_joint_state=prev_exit, goal_qs=goal_qs)
+            jt_map[r_idx] = jt
+            total_time += jt['total_time_s']
+        return total_time, jt_map
+
+    def _resolve_goal_configs(self, r_idx, path, region_configs):
+        """Map region_configs[r_idx] (config idx per path position) to joint goal vectors
+        via the precomputed q_configs, aligned to `path`. Returns None if unavailable."""
+        if (region_configs is None or self._ik_result is None
+                or self._ik_result.q_configs is None
+                or r_idx not in region_configs or self._region_offsets is None):
+            return None
+        off = self._region_offsets[r_idx]
+        cfg_idx = region_configs[r_idx]
+        if len(cfg_idx) != len(path):
+            return None
+        qc = self._ik_result.q_configs
+        goal_qs = []
+        for k, vp in enumerate(path):
+            configs = qc[off + vp]
+            q = configs[cfg_idx[k]] if 0 <= cfg_idx[k] < len(configs) else None
+            goal_qs.append(None if q is None or np.any(np.isnan(q)) else np.asarray(q))
+        return goal_qs
 
     def clear_paths_callback(self, request, response):
         self.solver.algorithm_results.clear()
@@ -599,7 +723,7 @@ class ViewpointTraversalNode(Node):
             self.get_logger().error("No trajectory found to execute")
             return False
 
-    def _plan_segment(self, viewpoint, start_joint_positions=None):
+    def _plan_segment(self, viewpoint, start_joint_positions=None, goal_joints=None):
         if start_joint_positions is not None:
             start_state = RobotState(self.robot.get_robot_model())
             start_state.set_joint_group_positions(
@@ -608,19 +732,26 @@ class ViewpointTraversalNode(Node):
         else:
             self.planning_component.set_start_state_to_current_state()
 
-        pose_goal = PoseStamped()
-        pose_goal.header.frame_id = "object_frame"
-        pos = viewpoint['position']
-        orient = viewpoint['orientation']  # [x, y, z, w]
-        pose_goal.pose.position.x = pos[0]
-        pose_goal.pose.position.y = pos[1]
-        pose_goal.pose.position.z = pos[2]
-        pose_goal.pose.orientation.x = orient[0]
-        pose_goal.pose.orientation.y = orient[1]
-        pose_goal.pose.orientation.z = orient[2]
-        pose_goal.pose.orientation.w = orient[3]
-        self.planning_component.set_goal_state(
-            pose_stamped_msg=pose_goal, pose_link="eoat_camera_link")
+        if goal_joints is not None:
+            # Plan directly to the chosen IK configuration (config-aware clustered solve).
+            goal_state = RobotState(self.robot.get_robot_model())
+            goal_state.set_joint_group_positions(self.planning_group, goal_joints)
+            goal_state.update()
+            self.planning_component.set_goal_state(robot_state=goal_state)
+        else:
+            pose_goal = PoseStamped()
+            pose_goal.header.frame_id = "object_frame"
+            pos = viewpoint['position']
+            orient = viewpoint['orientation']  # [x, y, z, w]
+            pose_goal.pose.position.x = pos[0]
+            pose_goal.pose.position.y = pos[1]
+            pose_goal.pose.position.z = pos[2]
+            pose_goal.pose.orientation.x = orient[0]
+            pose_goal.pose.orientation.y = orient[1]
+            pose_goal.pose.orientation.z = orient[2]
+            pose_goal.pose.orientation.w = orient[3]
+            self.planning_component.set_goal_state(
+                pose_stamped_msg=pose_goal, pose_link="eoat_camera_link")
 
         plan_result = self.planning_component.plan()
         if not plan_result:
@@ -662,20 +793,20 @@ class ViewpointTraversalNode(Node):
         next_off = self._region_offsets[r + 1] if r + 1 < len(self._region_offsets) else n_total
         region_q = self._ik_result.q_all[off:next_off]
         fallback = self._ik_result.cartesian_fallback[off:next_off]
-        w = self.vrp_solver._w
 
         best_idx, best_dist = 0, float('inf')
         for local_i, (q, is_fallback) in enumerate(zip(region_q, fallback)):
             if is_fallback:
                 continue
-            d = float(np.linalg.norm((q - current_q) * w))
+            d = float(self.vrp_solver._config_cost(q - current_q))
             if d < best_dist:
                 best_dist, best_idx = d, local_i
 
         response.nearest_viewpoint_idx = best_idx
         return response
 
-    def _compute_joint_trajectory(self, path, clusters, region_key, initial_joint_state=None):
+    def _compute_joint_trajectory(self, path, clusters, region_key, initial_joint_state=None,
+                                  goal_qs=None):
         result = {
             'total_time_s': 0.0,
             'total_joint_distance': 0.0,
@@ -684,12 +815,23 @@ class ViewpointTraversalNode(Node):
         }
         prev_joint_state = initial_joint_state
 
-        # If chaining from a previous region, plan approach to entry viewpoint first
-        if initial_joint_state is not None and path:
-            entry_vp = clusters[path[0]].get('viewpoint') if path[0] < len(clusters) else None
-            if entry_vp:
-                waypoints, duration = self._plan_segment(entry_vp, prev_joint_state)
-                if waypoints is not None:
+        # Plan the approach to the entry viewpoint path[0]. For the first region
+        # prev_joint_state is None and _plan_segment starts from the current state;
+        # for later regions it chains from the previous region's exit.
+        if path:
+            entry_idx = path[0]
+            entry_vp = clusters[entry_idx].get('viewpoint') if entry_idx < len(clusters) else None
+            if entry_vp is None:
+                result['unreachable'].append(entry_idx)
+            else:
+                waypoints, duration = self._plan_segment(
+                    entry_vp, prev_joint_state,
+                    goal_joints=(goal_qs[0] if goal_qs else None))
+                if waypoints is None:
+                    result['unreachable'].append(entry_idx)
+                    self.get_logger().warning(
+                        f'  region {region_key}: entry viewpoint {entry_idx} unreachable')
+                else:
                     joint_dist = float(sum(
                         np.linalg.norm(np.array(waypoints[i + 1]) - np.array(waypoints[i]))
                         for i in range(len(waypoints) - 1)
@@ -711,7 +853,9 @@ class ViewpointTraversalNode(Node):
                     f'  region {region_key}: viewpoint {to_idx} has no viewpoint data, skipping')
                 continue
 
-            waypoints, duration = self._plan_segment(to_vp, prev_joint_state)
+            waypoints, duration = self._plan_segment(
+                to_vp, prev_joint_state,
+                goal_joints=(goal_qs[i + 1] if goal_qs else None))
             if waypoints is None:
                 result['unreachable'].append(to_idx)
                 self.get_logger().warning(
@@ -758,6 +902,21 @@ class ViewpointTraversalNode(Node):
             elif param.name == 'vrp_joint_weights':
                 self.vrp_solver.joint_weights = np.array(list(param.value), dtype=float)
                 self.vrp_solver._w = np.sqrt(self.vrp_solver.joint_weights)
+            elif param.name == 'vrp_cost_mode':
+                self.vrp_cost_mode = param.value
+                self.vrp_solver.cost_mode = param.value
+            elif param.name == 'vrp_max_velocity':
+                self.vrp_max_velocity = param.value
+                self.vrp_solver._vmax = np.broadcast_to(float(param.value), (7,)).astype(float)
+                self.vrp_solver._d_crit = self.vrp_solver._vmax ** 2 / self.vrp_solver._amax
+            elif param.name == 'vrp_max_acceleration':
+                self.vrp_max_acceleration = param.value
+                self.vrp_solver._amax = np.broadcast_to(float(param.value), (7,)).astype(float)
+                self.vrp_solver._d_crit = self.vrp_solver._vmax ** 2 / self.vrp_solver._amax
+            elif param.name == 'vrp_validate_topk':
+                self.vrp_validate_topk = param.value
+            elif param.name == 'vrp_aco_n_jobs':
+                self.vrp_aco_n_jobs = param.value
             elif param.name == 'vrp_aco_n_ants':
                 self.vrp_aco_n_ants = param.value
             elif param.name == 'vrp_aco_n_iter':
@@ -768,6 +927,17 @@ class ViewpointTraversalNode(Node):
                 self.vrp_aco_beta = param.value
             elif param.name == 'vrp_aco_rho':
                 self.vrp_aco_rho = param.value
+            elif param.name == 'vrp_clustered_k':
+                self.vrp_clustered_k = param.value
+            elif param.name == 'vrp_n_turntable_samples':
+                self.vrp_n_turntable_samples = param.value
+                self.vrp_solver.n_turntable_samples = param.value
+            elif param.name == 'vrp_max_configs_per_vp':
+                self.vrp_max_configs_per_vp = param.value
+                self.vrp_solver.max_configs_per_vp = param.value
+            elif param.name == 'vrp_config_dedup_tol':
+                self.vrp_config_dedup_tol = param.value
+                self.vrp_solver.config_dedup_tol = param.value
 
         return SetParametersResult(successful=True)
 

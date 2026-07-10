@@ -22,6 +22,7 @@ isMacOS = sys.platform == 'darwin'
 _TRAVERSAL_CUSTOM_PARAMS = frozenset({
     'tsp_algorithm', 'vrp_algorithm', 'vrp_joint_weights',
     'vrp_aco_n_ants', 'vrp_aco_n_iter', 'vrp_aco_alpha', 'vrp_aco_beta', 'vrp_aco_rho',
+    'vrp_clustered_k',
 })
 
 
@@ -762,7 +763,8 @@ class GUIClient():
             return v if v is not None else default
 
         tsp_algos = ['greedy', '2opt', '3opt', 'ILS', 'LKH']
-        vrp_algos = ['vrp_greedy', 'vrp_2opt', 'vrp_3opt', 'vrp_ils', 'vrp_lkh', 'vrp_aco', 'vrp_hierarchical']
+        vrp_algos = ['vrp_greedy', 'vrp_2opt', 'vrp_3opt', 'vrp_ils', 'vrp_lkh', 'vrp_aco',
+                     'vrp_hierarchical', 'vrp_clustered']
         init_tsp = _val('tsp_algorithm', 'greedy')
         init_vrp = _val('vrp_algorithm', '')
         init_weights = list(_val('vrp_joint_weights', [0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]))
@@ -864,6 +866,23 @@ class GUIClient():
             aco_row.add_child(ne)
             vrp_params.add_child(aco_row)
             self.parameter_widgets[node_name][pkey] = ne
+
+        ck_lbl = gui.Label("Clustered Parameters:")
+        ck_lbl.text_color = Materials.text_color
+        vrp_params.add_child(ck_lbl)
+        ck_row = gui.Horiz(0.5 * em, gui.Margins(0.25 * em, 0.0 * em, 0.0 * em, 0.0 * em))
+        lbl = gui.Label("Ports (K):")
+        lbl.text_color = Materials.text_color
+        ck_row.add_child(lbl)
+        ck_row.add_stretch()
+        ck_ne = gui.NumberEdit(gui.NumberEdit.INT)
+        ck_ne.int_value = int(_val('vrp_clustered_k', 6))
+        ck_ne.set_preferred_width(4 * em)
+        ck_ne.set_on_value_changed(
+            lambda v: self.on_parameter_changed(node_name, 'vrp_clustered_k', v))
+        ck_row.add_child(ck_ne)
+        vrp_params.add_child(ck_row)
+        self.parameter_widgets[node_name]['vrp_clustered_k'] = ck_ne
 
         section.add_child(vrp_params)
 

@@ -108,10 +108,7 @@ class TSPSolver:
             improved = False
             for i in range(n - 2):
                 for j in range(i + 2, n):
-                    # Reversing t[i+1..j] removes edges (t[i],t[i+1]) and (t[j],t[j+1])
-                    # and adds (t[i],t[j]) and (t[i+1],t[j+1]).
-                    # When j == n-1 there is no edge after t[j], so cost change is only:
-                    # remove d(t[i],t[i+1]), add d(t[i],t[j])
+                    # Reverse t[i+1..j]; open path, so the j==n-1 case adds no closing edge.
                     remove = dm[t[i], t[i + 1]]
                     add = dm[t[i], t[j]]
                     if j + 1 < n:
