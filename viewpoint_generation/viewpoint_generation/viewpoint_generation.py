@@ -50,7 +50,7 @@ class ViewpointGeneration():
 
     # Segmentation algorithm used to partition the surface into regions.
     # One of: 'region_growth' (curvature-based) or 'partfield' (PartField parts).
-    segmentation_algorithm = 'region_growth'
+    segmentation_algorithm = 'partfield'
 
     region_growing_config = RegionGrowingConfig(
         seed_threshold=0.1,
@@ -192,7 +192,7 @@ class ViewpointGeneration():
         existing_mesh_units = existing_mesh.get('units', '')
         if mesh_file != existing_mesh_file or units != existing_mesh_units:
             self.results = {'meshes': [
-                    {
+                {
                     'file': mesh_file,
                     'units': units,
                     'material': 'unknown',
@@ -202,8 +202,8 @@ class ViewpointGeneration():
                     'regions': [],
                     'order': [],
                     'noise_points': []
-                    }
-                ]
+                }
+            ]
             }
             self.results_file = None
         # else: same mesh file and units as the already-loaded results —
@@ -278,7 +278,8 @@ class ViewpointGeneration():
 
         # Only update the results entry (and clear results_file) when this is
         # a different point cloud than what is already recorded in the results.
-        existing_pcd_file = self.results.get('meshes', [{}])[0].get('point_cloud', {}).get('file', '')
+        existing_pcd_file = self.results.get('meshes', [{}])[0].get(
+            'point_cloud', {}).get('file', '')
         if point_cloud_file != existing_pcd_file:
             self.results['meshes'][0]['point_cloud'] = {
                 'file': point_cloud_file,
@@ -478,7 +479,7 @@ class ViewpointGeneration():
 
     def set_segmentation_algorithm(self, algorithm):
         """
-        Select the algorithm used by region_growth() to partition the surface.
+        Select the algorithm used by segment_regions() to partition the surface.
         Args:
             algorithm (str): 'region_growth' or 'partfield'.
         Returns:
@@ -663,7 +664,7 @@ class ViewpointGeneration():
                 max_z = max(max_z, abs(viewpoint_position[2]))
 
         return max_x, max_y, max_z
-    
+
     def _segment_surface(self):
         """
         Partition the surface into regions using the selected algorithm.
@@ -674,11 +675,12 @@ class ViewpointGeneration():
         """
         if self.segmentation_algorithm == 'partfield':
             if self.mesh is None:
-                raise ValueError('PartField segmentation requires a loaded mesh.')
+                raise ValueError(
+                    'PartField segmentation requires a loaded mesh.')
             return self.pf.segment(self.point_cloud, self.mesh)
         return self.rg.segment(self.point_cloud)
 
-    def region_growth(self):
+    def segment_regions(self):
 
         # Curvature is only needed by the curvature-based region-growth algorithm.
         if self.segmentation_algorithm != 'partfield' and self.curvatures_file is None:
@@ -696,11 +698,12 @@ class ViewpointGeneration():
 
             for j, region in enumerate(regions):
                 self.results['meshes'][i]['regions'].append({'points': region,
-                                                           'clusters': [],
-                                                           'order': []})
+                                                             'clusters': [],
+                                                             'order': []})
                 self.results['meshes'][i]['noise_points'] = noise_points
 
-            self.results['meshes'][i]['order'] = list(range(len(self.results['meshes'][i]['regions'])))
+            self.results['meshes'][i]['order'] = list(
+                range(len(self.results['meshes'][i]['regions'])))
 
         self.results_file = self.save_results(self.results)
 
@@ -714,7 +717,8 @@ class ViewpointGeneration():
                 color = colors[region_id % len(colors)][:3]
                 point_colors[region['points']] = color
             if 'noise_points' in self.results['meshes'][0]:
-                point_colors[self.results['meshes'][0]['noise_points']] = (0.5, 0.5, 0.5)
+                point_colors[self.results['meshes'][0]
+                             ['noise_points']] = (0.5, 0.5, 0.5)
             self.point_cloud.colors = o3d.utility.Vector3dVector(point_colors)
             self.viewer.add_geometry(self.point_cloud)
             opt = self.viewer.get_render_option()
@@ -781,18 +785,20 @@ class ViewpointGeneration():
             bool: True if FOV clustering was successful, False otherwise.
         """
         if self.results_file is None:
-            success, msg = self.region_growth()
+            success, msg = self.segment_regions()
             if not success:
                 return False, msg
 
         # Iterate through regions in the region dictionary
         for region_id, region in enumerate(self.results['meshes'][0]['regions']):
-            print(f"Performing FOV clustering on region {region_id} with {len(region['points'])} points.")
+            print(
+                f"Performing FOV clustering on region {region_id} with {len(region['points'])} points.")
             region_point_cloud = self.point_cloud.select_by_index(
                 region['points'])
             # Perform FOV clustering
             fov_clusters = self.fc.fov_clustering(region_point_cloud)
-            print(f"Region {region_id} clustered into {len(fov_clusters)} FOV clusters.")
+            print(
+                f"Region {region_id} clustered into {len(fov_clusters)} FOV clusters.")
             self.results['meshes'][0]['regions'][region_id]['clusters'] = []
             for fov_cluster in fov_clusters:
                 if len(fov_cluster) <= 3:
@@ -930,7 +936,8 @@ class ViewpointGeneration():
         if cluster_index < 0 or cluster_index >= len(self.results['meshes'][0]['regions'][region_index]['clusters']):
             return None, f'Invalid cluster index: {cluster_index}.'
 
-        viewpoint = self.results['meshes'][0]['regions'][region_index]['clusters'][cluster_index].get('viewpoint', None)
+        viewpoint = self.results['meshes'][0]['regions'][region_index]['clusters'][cluster_index].get(
+            'viewpoint', None)
 
         if viewpoint is None:
             return None, 'No viewpoint found for the specified region and cluster.'

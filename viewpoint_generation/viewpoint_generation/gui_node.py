@@ -168,10 +168,10 @@ class ROSThread(Node):
                                                   f'{self.viewpoint_generation_node_name}/sample_point_cloud',
                                                   callback_group=services_cb_group
                                                   )
-        self.region_growth_client = self.create_client(Trigger,
-                                                       f'{self.viewpoint_generation_node_name}/region_growth',
-                                                       callback_group=services_cb_group
-                                                       )
+        self.segment_regions_client = self.create_client(Trigger,
+                                                         f'{self.viewpoint_generation_node_name}/segment_regions',
+                                                         callback_group=services_cb_group
+                                                         )
         self.fov_clustering_client = self.create_client(Trigger,
                                                         f'{self.viewpoint_generation_node_name}/fov_clustering',
                                                         callback_group=services_cb_group
@@ -196,7 +196,6 @@ class ROSThread(Node):
 
         # ----------- Create clients for task planning services -----------
 
-
         # ----------- Create clients for TSDF services -----------
 
         self.reset_tsdf_client = self.create_client(Trigger,
@@ -213,9 +212,9 @@ class ROSThread(Node):
         while not self.sampling_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
                 f'Waiting for {self.viewpoint_generation_node_name}/sample_point_cloud service...')
-        while not self.region_growth_client.wait_for_service(timeout_sec=5.0):
+        while not self.segment_regions_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
-                f'Waiting for {self.viewpoint_generation_node_name}/region_growth service...')
+                f'Waiting for {self.viewpoint_generation_node_name}/segment_regions service...')
         while not self.fov_clustering_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().info(
                 f'Waiting for {self.viewpoint_generation_node_name}/fov_clustering service...')
@@ -259,7 +258,8 @@ class ROSThread(Node):
     def save_parameters_to_file(self, file_path):
         """Save all current and connected inspection node parameters to a file"""
         if os.path.basename(file_path) == 'new.yaml':
-            self.get_logger().warn("Cannot save over 'new.yaml'. Use Save As to save with a different name.")
+            self.get_logger().warn(
+                "Cannot save over 'new.yaml'. Use Save As to save with a different name.")
             return
 
         self.file_name = os.path.basename(file_path).replace('.yaml', '')
@@ -306,24 +306,24 @@ class ROSThread(Node):
             self.get_logger().error('Failed to trigger point cloud sampling')
             return False
 
-    def region_growth(self):
-        """Trigger the region growth service"""
-        if not self.region_growth_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error('Region growth service not available')
+    def segment_regions(self):
+        """Trigger the region segmentation service"""
+        if not self.segment_regions_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error('Region segmentation service not available')
             return False
 
         request = Trigger.Request()
-        future = self.region_growth_client.call_async(request)
-        future.add_done_callback(self.region_growth_future_callback)
+        future = self.segment_regions_client.call_async(request)
+        future.add_done_callback(self.segment_regions_future_callback)
 
-    def region_growth_future_callback(self, future):
-        """Callback for the region growth service future"""
+    def segment_regions_future_callback(self, future):
+        """Callback for the region segmentation service future"""
         if future.result() is not None:
-            self.get_logger().info('Region growth triggered successfully')
+            self.get_logger().info('Region segmentation triggered successfully')
             self.get_all_parameters()
             return True
         else:
-            self.get_logger().error('Failed to trigger region growth')
+            self.get_logger().error('Failed to trigger region segmentation')
             return False
 
     def fov_clustering(self):
@@ -649,10 +649,12 @@ class ROSThread(Node):
 
                 if name in self.parameters_dict[node_name]:
                     value_changed = self.parameters_dict[node_name][name]['value'] != param_value
-                    range_changed = self.parameters_dict[node_name][name].get('range') != range
+                    range_changed = self.parameters_dict[node_name][name].get(
+                        'range') != range
                     # Preserve an existing True flag — concurrent polls from load_config
                     # can clobber it back to False before the GUI tick has a chance to act.
-                    update_flag = self.parameters_dict[node_name][name]['update_flag'] or value_changed or range_changed
+                    update_flag = self.parameters_dict[node_name][name][
+                        'update_flag'] or value_changed or range_changed
                 else:
                     update_flag = True
                 param_info = {

@@ -48,13 +48,13 @@ class GUIClient():
     MENU_SHOW_PATH = 25
     MENU_ABOUT = 26
     # Region surface mode (exclusive)
-    MENU_SURFACE_SOLID   = 27
+    MENU_SURFACE_SOLID = 27
     MENU_SURFACE_CLUSTER = 28
     # Viewpoint overlays (inclusive)
-    MENU_OVERLAY_MARKER        = 34
-    MENU_OVERLAY_FOV_CYLINDER  = 35
-    MENU_OVERLAY_ORIGIN_LINE   = 36
-    MENU_OVERLAY_FRUSTUM       = 37
+    MENU_OVERLAY_MARKER = 34
+    MENU_OVERLAY_FOV_CYLINDER = 35
+    MENU_OVERLAY_ORIGIN_LINE = 36
+    MENU_OVERLAY_FRUSTUM = 37
     MENU_OVERLAY_ORIGIN_SPHERE = 38
 
     # (menu id, overlay kind) pairs for the Viewpoint Overlays submenu.
@@ -137,7 +137,7 @@ class GUIClient():
                     continue
                 frame = layout.frame
                 if (frame.get_left() <= event.x <= frame.get_right() and
-                        frame.get_top()  <= event.y <= frame.get_bottom()):
+                        frame.get_top() <= event.y <= frame.get_bottom()):
                     return gui.Widget.EventCallbackResult.CONSUMED
             return self.viz.on_mouse(event)
 
@@ -154,7 +154,6 @@ class GUIClient():
         self.viz.setup_default_scene()
 
         self.last_draw_time = time.time()
-
 
     def init_menu_bar(self):
         # ---- Menu ----
@@ -253,10 +252,14 @@ class GUIClient():
             # Viewpoint overlays — inclusive (any combination on).
             overlay_menu = gui.Menu()
             overlay_menu.add_item("Viewpoint Marker", self.MENU_OVERLAY_MARKER)
-            overlay_menu.add_item("FOV Cylinder",     self.MENU_OVERLAY_FOV_CYLINDER)
-            overlay_menu.add_item("Origin Line",      self.MENU_OVERLAY_ORIGIN_LINE)
-            overlay_menu.add_item("Frustum",          self.MENU_OVERLAY_FRUSTUM)
-            overlay_menu.add_item("Origin Sphere",    self.MENU_OVERLAY_ORIGIN_SPHERE)
+            overlay_menu.add_item(
+                "FOV Cylinder",     self.MENU_OVERLAY_FOV_CYLINDER)
+            overlay_menu.add_item(
+                "Origin Line",      self.MENU_OVERLAY_ORIGIN_LINE)
+            overlay_menu.add_item(
+                "Frustum",          self.MENU_OVERLAY_FRUSTUM)
+            overlay_menu.add_item(
+                "Origin Sphere",    self.MENU_OVERLAY_ORIGIN_SPHERE)
             overlay_menu.set_checked(self.MENU_OVERLAY_MARKER, True)
             view_menu.add_menu("Viewpoint Overlays", overlay_menu)
             view_menu.add_separator()
@@ -358,11 +361,14 @@ class GUIClient():
 
     def _refresh_file_list(self):
         """Refresh the main list of YAML files in the data path"""
-        yaml_files = [f for f in os.listdir(self.ros_thread.data_path) if f.endswith('.yaml')]
-        yaml_files = [f[:-5] for f in yaml_files] # Subtract .yaml extension for display
+        yaml_files = [f for f in os.listdir(
+            self.ros_thread.data_path) if f.endswith('.yaml')]
+        # Subtract .yaml extension for display
+        yaml_files = [f[:-5] for f in yaml_files]
         self.file_list.set_items(yaml_files)
-        self.file_list.selected_index = yaml_files.index(self.ros_thread.file_name) if self.ros_thread.file_name in yaml_files else 0
-    
+        self.file_list.selected_index = yaml_files.index(
+            self.ros_thread.file_name) if self.ros_thread.file_name in yaml_files else 0
+
     def _refresh_file_tree(self):
         """Rebuild the file-tree widget from viz's render-agnostic contents.
 
@@ -461,7 +467,8 @@ class GUIClient():
 
     def _update_save_menu(self):
         is_new = self.ros_thread.file_name == 'new'
-        gui.Application.instance.menubar.set_enabled(self.MENU_SAVE, not is_new)
+        gui.Application.instance.menubar.set_enabled(
+            self.MENU_SAVE, not is_new)
 
     def _on_menu_save(self):
         self.ros_thread.save_parameters_to_file(os.path.join(
@@ -511,14 +518,22 @@ class GUIClient():
         self.window.close_dialog()
 
     def _refresh_view_menu(self):
-        gui.Application.instance.menubar.set_checked(self.MENU_SHOW_MESH, self.viz.show_mesh_flag)
-        gui.Application.instance.menubar.set_checked(self.MENU_SHOW_POINT_CLOUD, self.viz.show_point_cloud_flag)
-        gui.Application.instance.menubar.set_checked(self.MENU_SHOW_CURVATURES, self.viz.show_curvatures_flag)
-        gui.Application.instance.menubar.set_checked(self.MENU_SHOW_NOISE_POINTS, self.viz.show_noise_points_flag)
-        gui.Application.instance.menubar.set_checked(self.MENU_SHOW_CLUSTERS, self.viz.show_clusters_flag)
-        gui.Application.instance.menubar.set_checked(self.MENU_SHOW_VIEWPOINTS, self.viz.show_viewpoints_flag)
-        gui.Application.instance.menubar.set_checked(self.MENU_SHOW_REGION_VIEW_MANIFOLDS, self.viz.show_region_view_manifolds_flag)
-        gui.Application.instance.menubar.set_checked(self.MENU_SHOW_PATH, self.viz.show_path_flag)
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_MESH, self.viz.show_mesh_flag)
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_POINT_CLOUD, self.viz.show_point_cloud_flag)
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_CURVATURES, self.viz.show_curvatures_flag)
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_NOISE_POINTS, self.viz.show_noise_points_flag)
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_CLUSTERS, self.viz.show_clusters_flag)
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_VIEWPOINTS, self.viz.show_viewpoints_flag)
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_REGION_VIEW_MANIFOLDS, self.viz.show_region_view_manifolds_flag)
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_PATH, self.viz.show_path_flag)
 
     def _on_menu_show_axes(self):
         show = not gui.Application.instance.menubar.is_checked(
@@ -567,6 +582,7 @@ class GUIClient():
             self.MENU_SHOW_CLUSTERS)
         self.viz.show_fov_clusters(show)
         self._refresh_view_menu()
+
     def _on_menu_show_viewpoints(self):
         show = not gui.Application.instance.menubar.is_checked(
             self.MENU_SHOW_VIEWPOINTS)
@@ -629,8 +645,10 @@ class GUIClient():
         """Update Region Surface / Viewpoint Overlay menu checkmarks."""
         current = self.viz._surface_mode
         menubar = gui.Application.instance.menubar
-        menubar.set_checked(self.MENU_SURFACE_SOLID,   current == RegionSurfaceMode.SOLID)
-        menubar.set_checked(self.MENU_SURFACE_CLUSTER, current == RegionSurfaceMode.CLUSTER)
+        menubar.set_checked(self.MENU_SURFACE_SOLID,
+                            current == RegionSurfaceMode.SOLID)
+        menubar.set_checked(self.MENU_SURFACE_CLUSTER,
+                            current == RegionSurfaceMode.CLUSTER)
         for menu_id, kind in self._OVERLAY_MENU_ITEMS:
             menubar.set_checked(menu_id, kind in self.viz._enabled_overlays)
 
@@ -656,8 +674,10 @@ class GUIClient():
         self.file_list = gui.ListView()
         self.file_list.background_color = Materials.panel_color
         self._refresh_file_list()
+
         def _on_list_item_activated(yaml_file, _):
-            self.ros_thread.load_config(os.path.join(self.ros_thread.data_path, yaml_file + ".yaml"))
+            self.ros_thread.load_config(os.path.join(
+                self.ros_thread.data_path, yaml_file + ".yaml"))
             self._update_save_menu()
         self.file_list.set_on_selection_changed(_on_list_item_activated)
         # Hidden until _on_layout sets its frame — same reason as file_tree.
@@ -701,7 +721,8 @@ class GUIClient():
             self.parameter_widgets[node_name] = {}
             if node_name == 'gui' or node_name == tp_name:
                 continue
-            main_tab_panel = self.create_main_tab_panel(node_name, tab_data, em)
+            main_tab_panel = self.create_main_tab_panel(
+                node_name, tab_data, em)
             self.main_layout.add_tab(
                 node_name.title().replace('_', ' '), main_tab_panel)
 
@@ -763,10 +784,10 @@ class GUIClient():
             button.background_color = Materials.button_background_color
             button.set_on_clicked(lambda: self.ros_thread.sample_point_cloud())
             content.add_child(button)
-        elif section_name == 'region_growth':
-            button = gui.Button("Run Region Growth")
+        elif section_name == 'regions':
+            button = gui.Button("Segment Regions")
             button.background_color = Materials.button_background_color
-            button.set_on_clicked(lambda: self.ros_thread.region_growth())
+            button.set_on_clicked(lambda: self.ros_thread.segment_regions())
             content.add_child(button)
         elif section_name == 'fov_clustering':
             button = gui.Button("Run FOV Clustering")
@@ -1019,7 +1040,8 @@ class GUIClient():
 
             elif 'tsp_algorithm' in param_name.lower():
                 widget = gui.Combobox()
-                algorithms = ['greedy', '2opt', '3opt', 'LKH', 'ILS'] # TSP algorithms
+                algorithms = ['greedy', '2opt', '3opt',
+                              'LKH', 'ILS']  # TSP algorithms
                 for algorithm in algorithms:
                     widget.add_item(algorithm)
                 widget.selected_index = algorithms.index(param_value)
@@ -1038,7 +1060,7 @@ class GUIClient():
                     lambda selected_text, selected_index: self.on_parameter_changed(
                         node_name, param_name, selected_text))
                 row.add_child(widget)  # ADD HERE
-            
+
             elif 'normal_estimation_algorithm' in param_name.lower():
                 widget = gui.Combobox()
                 algorithms = ['PCA', 'RANSAC']
@@ -1050,7 +1072,7 @@ class GUIClient():
                         node_name, param_name, selected_text))
                 row.add_child(widget)  # ADD HERE
 
-            elif 'segmentation_algorithm' in param_name.lower():
+            elif 'regions.algorithm' in param_name.lower():
                 widget = gui.Combobox()
                 algorithms = ['region_growth', 'partfield']
                 for algorithm in algorithms:
@@ -1061,6 +1083,16 @@ class GUIClient():
                         node_name, param_name, selected_text))
                 row.add_child(widget)  # ADD HERE
 
+            elif 'fov_clustering.algorithm' in param_name.lower():
+                widget = gui.Combobox()
+                algorithms = ['kmeans', 'greedy_cover']
+                for algorithm in algorithms:
+                    widget.add_item(algorithm)
+                widget.selected_index = algorithms.index(param_value)
+                widget.set_on_selection_changed(
+                    lambda selected_text, selected_index: self.on_parameter_changed(
+                        node_name, param_name, selected_text))
+                row.add_child(widget)  # ADD HERE
             else:
                 widget = gui.TextEdit()
                 widget.background_color = Materials.text_edit_background_color
@@ -1068,8 +1100,6 @@ class GUIClient():
                 widget.set_on_text_changed(
                     lambda text, name=param_name: self.on_parameter_changed(node_name, name, text))
                 row.add_child(widget)  # ADD HERE
-
-
 
         else:
             # Default to text edit for unknown types
@@ -1178,7 +1208,8 @@ class GUIClient():
         # callable taking the target cell width (in px).
         fillers = []
 
-        label = gui.Label(param_name.split('.')[-1].replace('_', ' ').title() + ":")
+        label = gui.Label(param_name.split(
+            '.')[-1].replace('_', ' ').title() + ":")
         label.text_color = Materials.text_color
         cell.add_child(label)
 
@@ -1250,7 +1281,8 @@ class GUIClient():
                 lambda value, name=param_name: self.on_parameter_changed(node_name, name, value))
             cell.add_child(widget)
             cell.preferred_width = 8 * em
-            fillers.append(lambda cw, w=widget: w.set_preferred_width(int(max(1, cw))))
+            fillers.append(
+                lambda cw, w=widget: w.set_preferred_width(int(max(1, cw))))
 
         else:
             # string / string_array / fallback — a text field, with a browse
@@ -1447,7 +1479,6 @@ class GUIClient():
 
     def update_scene(self):
 
-
         self.update_all_widgets_from_dict()
 
         self._refresh_file_tree()
@@ -1554,7 +1585,8 @@ class GUIClient():
         ``CHROME`` reserves the row margins plus the TabControl's own padding;
         it is approximate, so a small right-hand gap is preferred over clipping.
         """
-        spacing = 0.5 * em       # gui.Horiz inter-cell spacing (see the row's ctor)
+        spacing = 0.5 * \
+            em       # gui.Horiz inter-cell spacing (see the row's ctor)
         CHROME = 3.0 * em        # row margins + TabControl content inset
         for resizers in getattr(self, '_tp_row_resizers', []):
             n = len(resizers)
@@ -1609,8 +1641,10 @@ class GUIClient():
                         # Update the widget value from the parameters dictionary
                         if 'value' in parameters_dict[node_name][param_name]:
                             param_value = parameters_dict[node_name][param_name]['value']
-                            param_range = parameters_dict[node_name][param_name].get('range')
-                            self.set_widget_value(widget, param_value, limits=param_range)
+                            param_range = parameters_dict[node_name][param_name].get(
+                                'range')
+                            self.set_widget_value(
+                                widget, param_value, limits=param_range)
                             companion_key = f"{node_name}/{param_name}"
                             if companion_key in self._companion_widgets:
                                 self.set_widget_value(

@@ -97,11 +97,11 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('regions.segmentation_algorithm', 'region_growth'),
+                ('regions.algorithm', 'partfield'),
             ]
         )
         success, message = self.viewpoint_generation.set_segmentation_algorithm(
-            self.get_parameter('regions.segmentation_algorithm').value)
+            self.get_parameter('regions.algorithm').value)
         if not success:
             self.get_logger().error(message)
 
@@ -116,7 +116,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             excluded=set(),
         )
         _auto_declare_parameters(
-            prefix='regions.fov_clustering.',
+            prefix='fov_clustering.',
             config_dict=self.viewpoint_generation.fc_config.to_dict(),
             excluded=set(),
         )
@@ -160,9 +160,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Sample PCD Service
         self.create_service(Trigger, node_name + '/sample_point_cloud',
                             self.sample_point_cloud_callback, callback_group=services_cb_group)
-        # Region Growth Service
-        self.create_service(Trigger, node_name + '/region_growth',
-                            self.region_growth_callback, callback_group=services_cb_group)
+        # Region Segmentation Service
+        self.create_service(Trigger, node_name + '/segment_regions',
+                            self.segment_regions_callback, callback_group=services_cb_group)
         # FOV Clustering Service
         self.create_service(Trigger, node_name + '/fov_clustering',
                             self.fov_clustering_callback, callback_group=services_cb_group)
@@ -692,20 +692,20 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.get_logger().info(message)
             return True
 
-    def region_growth_callback(self, request, response):
+    def segment_regions_callback(self, request, response):
         """
-        Callback for the region growth service.
+        Callback for the region segmentation service.
         :param request: The request object.
         :param response: The response object.
         :return: The response object.
         """
-        self.get_logger().info('Performing region growth...')
+        self.get_logger().info('Performing region segmentation...')
 
-        success, message = self.viewpoint_generation.region_growth()
+        success, message = self.viewpoint_generation.segment_regions()
 
         if success:
             self.get_logger().info(
-                f"Region growth completed successfully. results.file: {message}")
+                f"Region segmentation completed successfully. results.file: {message}")
             results_file_param = rclpy.parameter.Parameter(
                 'results.file',
                 rclpy.Parameter.Type.STRING,
@@ -713,7 +713,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             self.set_parameters([results_file_param])
         else:
-            self.get_logger().error(f"Region growth failed: {message}")
+            self.get_logger().error(f"Region segmentation failed: {message}")
 
         response.success = success
         response.message = message
@@ -868,7 +868,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     success = self.set_point_cloud_file(pcd_file, param.value)
             elif param.name == 'model.point_cloud.sampling.number_of_points':
                 success = self.set_sampling_number_of_points(param.value)
-            elif param.name == 'regions.segmentation_algorithm':
+            elif param.name == 'regions.algorithm':
                 success, message = self.viewpoint_generation.set_segmentation_algorithm(
                     param.value)
                 if success:

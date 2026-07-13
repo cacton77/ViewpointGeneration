@@ -40,11 +40,13 @@ class FOVClusteringConfig:
     maximum_iterations: int = 100  # Maximum iterations for KMeans
 
     # Algorithm selector
-    algorithm: str = 'kmeans'  # 'kmeans' or 'greedy_cover'
+    algorithm: str = 'greedy_cover'  # 'kmeans' or 'greedy_cover'
 
     # Greedy set-cover parameters
-    fov_normal_threshold: float = math.pi / 4  # Max incidence angle (rad) for coverage
-    candidate_spacing: float = 0.0  # Anchor spacing (m); 0.0 = auto = fov_diameter/2
+    # Max incidence angle (rad) for coverage
+    fov_normal_threshold: float = math.pi / 4
+    # Anchor spacing (m); 0.0 = auto = fov_diameter/2
+    candidate_spacing: float = 0.0
     prune_redundant: bool = True  # Drop redundant viewpoints after greedy cover
     rng_seed: int = 0  # Seed for reproducible candidate sampling
 
@@ -238,7 +240,8 @@ class FOVClustering:
         normals = np.asarray(point_cloud.normals)
 
         # Convert to square millimeters
-        max_points_in = (np.pi * camera_radius**2) * (self.config.point_density * 1e6)
+        max_points_in = (np.pi * camera_radius**2) * \
+            (self.config.point_density * 1e6)
 
         # Get height and radial coordinates
         height_coords = points[:, 2]
@@ -481,7 +484,7 @@ class FOVClustering:
         LOCAL point indices into the sub-cloud (matching the K-means output).
         """
         pts = np.asarray(point_cloud.points)     # (m, 3)
-        normals = np.asarray(point_cloud.normals) # (m, 3)
+        normals = np.asarray(point_cloud.normals)  # (m, 3)
         m = len(pts)
 
         if m == 0:
@@ -513,14 +516,16 @@ class FOVClustering:
             axial = d @ axis                                   # (k,)
             lateral = np.linalg.norm(d - np.outer(axial, axis), axis=1)  # (k,)
             incidence = normals[idx] @ axis                    # (k,)
-            mask = (np.abs(axial) <= half_dof) & (lateral <= fov_radius) & (incidence >= cos_thr)
+            mask = (np.abs(axial) <= half_dof) & (
+                lateral <= fov_radius) & (incidence >= cos_thr)
             return set(idx[mask].tolist())
 
         # --- 5.1  Candidate anchors via farthest-point sampling ---
         anchor_ids = _farthest_point_sample(pts, spacing, rng)
         cand_centers = [pts[i] for i in anchor_ids]
-        cand_axes   = [normals[i] for i in anchor_ids]
-        coverages   = [_coverage_set(c, a) for c, a in zip(cand_centers, cand_axes)]
+        cand_axes = [normals[i] for i in anchor_ids]
+        coverages = [_coverage_set(c, a)
+                     for c, a in zip(cand_centers, cand_axes)]
 
         # --- 5.3  Coverability guarantee: self-anchor any uncovered point ---
         covered_union = set().union(*coverages) if coverages else set()
@@ -537,7 +542,8 @@ class FOVClustering:
         chosen = []
         n_cands = len(coverages)
         while uncovered:
-            best = max(range(n_cands), key=lambda c: len(coverages[c] & uncovered))
+            best = max(range(n_cands), key=lambda c: len(
+                coverages[c] & uncovered))
             gain = coverages[best] & uncovered
             if not gain:
                 break   # remaining points intrinsically uncoverable
@@ -552,7 +558,8 @@ class FOVClustering:
             for c in list(reversed(chosen)):
                 if len(chosen) == 1:
                     break
-                others_union = set().union(*(coverages[o] for o in chosen if o != c))
+                others_union = set().union(
+                    *(coverages[o] for o in chosen if o != c))
                 if coverages[c] <= others_union:
                     chosen.remove(c)
 
@@ -562,13 +569,15 @@ class FOVClustering:
             owners = [c for c in chosen if p in coverages[c]]
             if not owners:
                 # Assign uncovered point to the nearest chosen candidate
-                owner = min(chosen, key=lambda c: float(np.linalg.norm(pts[p] - cand_centers[c])))
+                owner = min(chosen, key=lambda c: float(
+                    np.linalg.norm(pts[p] - cand_centers[c])))
             else:
                 def _sort_key(c):
                     dot = float(np.dot(normals[p], cand_axes[c]))
                     dot = max(-1.0, min(1.0, dot))
                     angle = math.acos(dot)
-                    axial = abs(float(np.dot(pts[p] - cand_centers[c], cand_axes[c])))
+                    axial = abs(
+                        float(np.dot(pts[p] - cand_centers[c], cand_axes[c])))
                     return (angle, axial)
                 owner = min(owners, key=_sort_key)
             assignment[owner].append(p)
