@@ -33,6 +33,9 @@ class ViewpointTraversalNode(Node):
                 ('planning_group', 'disc_to_ur5e'),
                 ('planner', 'ompl'),
                 ('multiplanning', False),
+                # When multiplanning is True, race these named plan-request configs
+                # (from motion_planning.yaml) in parallel and keep the shortest result.
+                ('multiplanning_pipelines', ['ompl_rrtc', 'chomp_planner', 'ompl_rrt_star']),
                 ('workspace.min_x', -1.0),
                 ('workspace.max_x', 1.0),
                 ('workspace.min_y', -1.0),
@@ -59,6 +62,7 @@ class ViewpointTraversalNode(Node):
                 ('vrp_n_turntable_samples', 0),  # >0 enables the multi-config turntable sweep
                 ('vrp_max_configs_per_vp', 8),   # cap on IK configs kept per viewpoint
                 ('vrp_config_dedup_tol', 0.1),   # rad, configs within this L∞ are merged
+                ('vrp_chain_max_passes', 1),     # >1 iterates IK-chain <-> re-solve (Spec L); 1 = current behavior
             ]
         )
 
@@ -68,6 +72,8 @@ class ViewpointTraversalNode(Node):
             'planner').get_parameter_value().string_value
         self.multiplanning = self.get_parameter(
             'multiplanning').get_parameter_value().bool_value
+        self.multiplanning_pipelines = list(self.get_parameter(
+            'multiplanning_pipelines').get_parameter_value().string_array_value)
         self.clear_paths = self.get_parameter(
             'clear_paths').get_parameter_value().bool_value
         self.tsp_algorithm = self.get_parameter(
@@ -102,6 +108,8 @@ class ViewpointTraversalNode(Node):
             'vrp_max_configs_per_vp').get_parameter_value().integer_value
         self.vrp_config_dedup_tol = self.get_parameter(
             'vrp_config_dedup_tol').get_parameter_value().double_value
+        self.vrp_chain_max_passes = self.get_parameter(
+            'vrp_chain_max_passes').get_parameter_value().integer_value
         vrp_weights = list(self.get_parameter('vrp_joint_weights').get_parameter_value().double_array_value)
         self.vrp_solver = VRPSolver(
             joint_weights=vrp_weights or None,
@@ -117,6 +125,7 @@ class ViewpointTraversalNode(Node):
 
         self.robot = MoveItPy(node_name='moveit_py')
         self.planning_scene_monitor = self.robot.get_planning_scene_monitor()
+        self._multi_plan_params = None
 
         try:
             self.get_logger().info("Initializing MoveItPy")
@@ -127,6 +136,8 @@ class ViewpointTraversalNode(Node):
             self.get_logger().error(f"Failed to get planning component: {e}")
             self.planning_component = None
             return
+
+        self._multi_plan_params = self._build_multi_plan_params()
 
         services_cb_group = MutuallyExclusiveCallbackGroup()
         self.create_service(
@@ -512,20 +523,38 @@ class ViewpointTraversalNode(Node):
                 # that freedom. Keep the swept configs and the pass-1 solution.
                 self._ik_result = ik_result
             else:
-                # Pass 2: re-seed IK along the initial VRP path so joint configs form a
+                # Pass 2+: re-seed IK along the VRP path so joint configs form a
                 # continuous chain from depot through all regions rather than clustering
-                # near home. Re-running the optimizer on the chained IK gives accurate dm
-                # values and removes the artificial depot-proximity bias.
-                self.get_logger().info(f'VRP {algo}: reseeding IK along initial path...')
-                ik_result = self.vrp_solver.recompute_ik_chained(
-                    ik_result, region_offsets,
-                    solution.region_order, solution.region_paths,
-                    mesh_entry, robot_model, self.planning_group)
-                self._ik_result = ik_result
-
-                solution = self._run_vrp_algorithm(ik_result, region_offsets)
-                if solution is None:
+                # near home, then re-optimize on the chained IK for accurate dm values.
+                #
+                # With vrp_chain_max_passes > 1 this iterates chain <-> re-solve toward a
+                # fixed point (Spec L): each pass re-chains along the *current* best path,
+                # tightening order/config consistency. Keep-best guarantees the result is
+                # never worse than a single pass; it stops early once the order stabilizes.
+                # vrp_chain_max_passes == 1 reproduces the original single-pass behavior.
+                base_ik = ik_result
+                order, paths = solution.region_order, solution.region_paths
+                best_ik = best_sol = None
+                best_cost = float('inf')
+                for _pass in range(max(1, self.vrp_chain_max_passes)):
+                    self.get_logger().info(
+                        f'VRP {algo}: reseeding IK along path (pass {_pass + 1})...')
+                    chained = self.vrp_solver.recompute_ik_chained(
+                        base_ik, region_offsets, order, paths,
+                        mesh_entry, robot_model, self.planning_group)
+                    cand = self._run_vrp_algorithm(chained, region_offsets)
+                    if cand is None:
+                        break
+                    if cand.cost < best_cost - 1e-9:
+                        best_ik, best_sol, best_cost = chained, cand, cand.cost
+                    converged = (cand.region_order == order)
+                    order, paths = cand.region_order, cand.region_paths
+                    if converged:
+                        break
+                if best_sol is None:
                     continue
+                ik_result, solution = best_ik, best_sol
+                self._ik_result = ik_result
 
             dm = self.vrp_solver.build_cost_matrix(ik_result)
             dd = self.vrp_solver.depot_dists(ik_result)
@@ -665,17 +694,8 @@ class ViewpointTraversalNode(Node):
         self.planning_component.set_goal_state(
             pose_stamped_msg=request.pose_goal, pose_link="eoat_camera_link")
         self.get_logger().info(f"Received request: {request}")
-        # Plan and execute
-        multi_pipeline_plan_request_params = MultiPipelinePlanRequestParameters(
-            self.robot, ["ompl_rrtc"]
-        )
-
-        # self.single_plan_parameters.planner_id = self.planner
-
+        # Plan and execute (uses multiplanning when enabled; see plan_and_execute).
         success = self.plan_and_execute()
-
-        # success = self.plan_and_execute(
-        #     multi_plan_parameters=multi_pipeline_plan_request_params)
         self.get_logger().info(f"Plan and execute called, success: {success}")
 
         # Prepare the response
@@ -683,6 +703,21 @@ class ViewpointTraversalNode(Node):
         response.message = "Motion completed successfully" if success else "Motion failed"
 
         return response
+
+    def _build_multi_plan_params(self):
+        """Multi-pipeline plan params when multiplanning is on, else None. MoveItPy
+        races the listed named configs and keeps the shortest solution."""
+        if not (self.multiplanning and self.multiplanning_pipelines):
+            return None
+        return MultiPipelinePlanRequestParameters(
+            self.robot, list(self.multiplanning_pipelines))
+
+    def _plan(self):
+        """Plan from the set start/goal, racing pipelines when multiplanning is on."""
+        if self._multi_plan_params is not None:
+            return self.planning_component.plan(
+                multi_plan_parameters=self._multi_plan_params)
+        return self.planning_component.plan()
 
     # Function for planning and executing a trajectories
     def plan_and_execute(self, single_plan_parameters=None, multi_plan_parameters=None):
@@ -704,9 +739,7 @@ class ViewpointTraversalNode(Node):
                 single_plan_parameters=single_plan_parameters
             )
         else:
-            # plan_result = self.planning_component.plan(
-            # single_plan_parameters=self.single_plan_parameters)
-            plan_result = self.planning_component.plan()
+            plan_result = self._plan()
 
         print("------------------------------------")
         print(plan_result)
@@ -753,7 +786,7 @@ class ViewpointTraversalNode(Node):
             self.planning_component.set_goal_state(
                 pose_stamped_msg=pose_goal, pose_link="eoat_camera_link")
 
-        plan_result = self.planning_component.plan()
+        plan_result = self._plan()
         if not plan_result:
             return None, 0.0
 
@@ -938,6 +971,14 @@ class ViewpointTraversalNode(Node):
             elif param.name == 'vrp_config_dedup_tol':
                 self.vrp_config_dedup_tol = param.value
                 self.vrp_solver.config_dedup_tol = param.value
+            elif param.name == 'vrp_chain_max_passes':
+                self.vrp_chain_max_passes = param.value
+            elif param.name == 'multiplanning':
+                self.multiplanning = param.value
+                self._multi_plan_params = self._build_multi_plan_params()
+            elif param.name == 'multiplanning_pipelines':
+                self.multiplanning_pipelines = list(param.value)
+                self._multi_plan_params = self._build_multi_plan_params()
 
         return SetParametersResult(successful=True)
 

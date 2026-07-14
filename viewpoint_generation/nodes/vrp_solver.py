@@ -186,6 +186,7 @@ class VRPSolver:
         n_turntable_samples=0,       # >0 enables the multi-config turntable sweep
         max_configs_per_vp=8,        # cap on candidate IK configs kept per viewpoint
         config_dedup_tol=0.1,        # rad, L∞ tolerance for treating configs as identical
+        seed=None,                   # RNG seed for stochastic algorithms (ACO); None → nondeterministic
         logger=None,
     ):
         if joint_weights is None or len(joint_weights) == 0:
@@ -202,7 +203,9 @@ class VRPSolver:
         self.n_turntable_samples = n_turntable_samples
         self.max_configs_per_vp = max_configs_per_vp
         self.config_dedup_tol = config_dedup_tol
+        self.seed = seed
         self.logger = logger
+        self._cand_cache = {}   # (off, n) → per-region LK candidate sets (per solve)
 
     @property
     def cost_units(self) -> str:
@@ -442,6 +445,7 @@ class VRPSolver:
         dm = self.build_cost_matrix(ik_result)
         dd = self.depot_dists(ik_result)
         sizes = self._region_sizes(region_offsets, N)
+        self._cand_cache = {}   # dm is rebuilt here; candidate sets are per solve
         return dm, dd, sizes, len(region_offsets)
 
     def _finalize(self, order: list, paths: dict, dm, dd, region_offsets: list,
@@ -610,13 +614,106 @@ class VRPSolver:
                     break
         return path
 
-    def _intra_local_search(self, path: list, off: int, dm: np.ndarray) -> list:
-        """Alternate 2-opt and Or-opt(1,2,3) until none improves."""
+    def _region_candidates(self, off: int, n: int, dm: np.ndarray, k: int = 8) -> dict:
+        """Cached k-nearest candidate sets (local indices) for region [off, off+n),
+        used to restrict Lin-Kernighan's search to promising neighbours."""
+        key = (off, n)
+        cached = self._cand_cache.get(key)
+        if cached is not None:
+            return cached
+        k = min(k, n - 1)
+        cand = {}
+        for i in range(n):
+            nbrs = sorted((j for j in range(n) if j != i),
+                          key=lambda j: dm[off + i, off + j])
+            cand[i] = set(nbrs[:k])
+        self._cand_cache[key] = cand
+        return cand
+
+    def _intra_lk(self, path: list, off: int, dm: np.ndarray, candidates: dict,
+                  lock_end: bool = False) -> list:
+        """Candidate-restricted Lin-Kernighan (depth-2 sequential moves) on an open
+        intra path, ported from tsp_solver._lk_local_search with an offset and an
+        optional fixed end.
+
+        The first node is inherently fixed — every sequential move keeps the prefix
+        t[:i+1] — so this is naturally a fixed-start path optimiser; lock_end also
+        holds the last node (for P_r(e,x)) by keeping j,k off the final index. The
+        depth-2 move S1+S2_rev+S3_rev+S4 is the sequential 3-opt that no single 2-opt
+        or Or-opt can produce, and each applied move has strictly positive gain, so LK
+        never worsens the input path."""
+        t = list(path)
+        n = len(t)
+        end = n - 1 if lock_end else n
+        improved = True
+        while improved:
+            improved = False
+            for i in range(n - 2):
+                if improved:
+                    break
+                t_i, t_i1 = t[i], t[i + 1]
+                d1 = dm[off + t_i, off + t_i1]
+                for j in range(i + 2, end):
+                    if improved:
+                        break
+                    t_j = t[j]
+                    if t_j not in candidates[t_i]:
+                        continue
+                    g1 = d1 - dm[off + t_i, off + t_j]        # sequential gain, depth 1
+                    if g1 <= 0:
+                        continue
+                    t_j1 = t[j + 1] if j + 1 < n else None
+                    d2_rem = dm[off + t_j, off + t_j1] if t_j1 is not None else 0.0
+                    d2_add = dm[off + t_i1, off + t_j1] if t_j1 is not None else 0.0
+                    if g1 + d2_rem - d2_add > 1e-10:          # depth-1 close (2-opt)
+                        t[i + 1:j + 1] = t[i + 1:j + 1][::-1]
+                        improved = True
+                        break
+                    if t_j1 is None:
+                        continue
+                    G2 = g1 + dm[off + t_j, off + t_j1]
+                    for k in range(j + 2, end):
+                        t_k = t[k]
+                        if t_k not in candidates[t_i1]:
+                            continue
+                        g2 = G2 - dm[off + t_i1, off + t_k]   # sequential gain, depth 2
+                        if g2 <= 0:
+                            continue
+                        t_k1 = t[k + 1] if k + 1 < n else None
+                        d3_rem = dm[off + t_k, off + t_k1] if t_k1 is not None else 0.0
+                        d3_add = dm[off + t_j1, off + t_k1] if t_k1 is not None else 0.0
+                        if g2 + d3_rem - d3_add > 1e-10:      # depth-2 close
+                            t = (t[:i + 1] + t[i + 1:j + 1][::-1]
+                                 + t[j + 1:k + 1][::-1] + t[k + 1:])
+                            n = len(t)
+                            improved = True
+                            break
+        return t
+
+    def _intra_local_search(self, path: list, off: int, dm: np.ndarray,
+                            strong: bool = False) -> list:
+        """2-opt + Or-opt(1,2,3) to a joint fixpoint.
+
+        When strong=True, candidate-restricted Lin-Kernighan (depth-2 sequential
+        moves) is layered on top — this is what makes run_lkh a genuine Lin-Kernighan
+        solver, distinct from the 2-opt/Or-opt-based ILS/ACO/hierarchical. The inner
+        loop reaches the 2-opt+Or-opt optimum first, so the descent always passes
+        through it before LK, and LK only adds strictly-improving moves; the strong
+        result is therefore never worse than 2-opt+Or-opt alone."""
+        n = len(path)
+        cand = self._region_candidates(off, n, dm) if (strong and n >= 4) else None
         while True:
             prev = path[:]
-            path = self._intra_two_opt(path, off, dm)
-            for seg_len in (1, 2, 3):
-                path = self._intra_or_opt(path, off, dm, seg_len)
+            while True:                       # 2-opt + Or-opt to joint fixpoint
+                base = path[:]
+                path = self._intra_two_opt(path, off, dm)
+                for seg_len in (1, 2, 3):
+                    path = self._intra_or_opt(path, off, dm, seg_len)
+                if path == base:
+                    break
+            if cand is None:
+                break
+            path = self._intra_lk(path, off, dm, cand)
             if path == prev:
                 break
         return path
@@ -673,26 +770,55 @@ class VRPSolver:
         return path, cost
 
     def _inter_region_improve(self, region_order, region_paths, dm, dd, region_offsets) -> tuple:
-        """Region-level Or-opt: relocate each region to its best position, optionally reversed."""
+        """Region-level Or-opt: relocate each region to its best position, optionally reversed.
+
+        Delta-evaluated. Total tour cost = Σ_r (intra edges of r) + L, where L is the
+        connection cost of the depot→entry, exit→entry and exit→depot links. The intra
+        sum is invariant under relocation and path reversal (dm is symmetric, so a
+        reversed path has the same undirected edge sum), so a candidate move's cost
+        change equals the change in L over only the ≤6 links it touches — O(R²) per
+        pass instead of O(R³·n̄) full recomputes. The scan order and first-improvement
+        acceptance are identical to a full-recompute scan, so the result is unchanged."""
         R = len(region_order)
-        best = self._compute_tour_cost(region_order, region_paths, dm, dd, region_offsets)
+        if R < 2:
+            return region_order, region_paths
+
+        def entry_exit(r):
+            off, p = region_offsets[r], region_paths[r]
+            return off + p[0], off + p[-1]
+
+        def link(a_exit, b_entry):
+            # exit of predecessor → entry of successor; None denotes the depot.
+            if a_exit is None:
+                return 0.0 if b_entry is None else dd[b_entry]
+            if b_entry is None:
+                return dd[a_exit]
+            return dm[a_exit, b_entry]
+
         improved = True
         while improved:
             improved = False
             for i in range(R):
                 r = region_order[i]
+                e_r, x_r = entry_exit(r)
+                pred_x = None if i == 0 else entry_exit(region_order[i - 1])[1]
+                succ_e = None if i == R - 1 else entry_exit(region_order[i + 1])[0]
+                remove_gain = link(pred_x, e_r) + link(x_r, succ_e) - link(pred_x, succ_e)
+
                 remaining = region_order[:i] + region_order[i + 1:]
-                fwd = region_paths[r]
-                rev = list(reversed(fwd))
-                for j in range(R):
-                    for p in (fwd, rev):
-                        test_order = remaining[:j] + [r] + remaining[j:]
-                        test_paths = dict(region_paths)
-                        test_paths[r] = p
-                        c = self._compute_tour_cost(test_order, test_paths, dm, dd, region_offsets)
-                        if c < best - 1e-10:
-                            best = c
-                            region_order, region_paths = test_order, test_paths
+                nr = len(remaining)
+                for j in range(nr + 1):
+                    a_x = None if j == 0 else entry_exit(remaining[j - 1])[1]
+                    b_e = None if j == nr else entry_exit(remaining[j])[0]
+                    base = link(a_x, b_e)
+                    # forward (entry e_r, exit x_r) then reversed (entry x_r, exit e_r)
+                    for reverse, ins in ((False, link(a_x, e_r) + link(x_r, b_e) - base),
+                                         (True, link(a_x, x_r) + link(e_r, b_e) - base)):
+                        if ins - remove_gain < -1e-10:
+                            region_order = remaining[:j] + [r] + remaining[j:]
+                            region_paths = dict(region_paths)
+                            if reverse:
+                                region_paths[r] = list(reversed(region_paths[r]))
                             improved = True
                             break
                     if improved:
@@ -701,11 +827,13 @@ class VRPSolver:
                     break
         return region_order, region_paths
 
-    def _vrp_local_search(self, region_order, region_paths, dm, dd, region_offsets) -> tuple:
-        """Intra-region local search on every region, then inter-region relocation."""
+    def _vrp_local_search(self, region_order, region_paths, dm, dd, region_offsets,
+                          strong: bool = False) -> tuple:
+        """Intra-region local search on every region, then inter-region relocation.
+        strong=True uses Lin-Kernighan intra (run_lkh); the rest use 2-opt+Or-opt."""
         for r_idx in region_order:
             region_paths[r_idx] = self._intra_local_search(
-                region_paths[r_idx], region_offsets[r_idx], dm)
+                region_paths[r_idx], region_offsets[r_idx], dm, strong)
         return self._inter_region_improve(region_order, region_paths, dm, dd, region_offsets)
 
     def _polish(self, order, paths, dm, dd, region_offsets) -> tuple:
@@ -730,13 +858,17 @@ class VRPSolver:
     # ── ACO ───────────────────────────────────────────────────────────────────
 
     def _aco_construct_ant(self, dm, dd, region_offsets, sizes, tau_inter, tau_intra,
-                           alpha, beta, k_entries=3) -> tuple:
+                           alpha, beta, k_entries=3, rng=None) -> tuple:
         """Build one ant's VRP solution from pheromone + heuristic probabilities.
 
         The region entry is chosen among the K nearest candidates using pheromone
         (mean outgoing τ_intra) and a distance heuristic, so ACO learns which entry
         yields good downstream paths rather than always taking the nearest.
+
+        rng is an np.random.Generator (or the np.random module) so ant streams are
+        explicit and reproducible; workers get independent, seeded generators.
         """
+        rng = rng if rng is not None else np.random
         R = len(region_offsets)
         visited = [False] * R
         region_order, region_paths = [], {}
@@ -755,7 +887,7 @@ class VRPSolver:
             attract = (tau_row ** alpha) * (eta ** beta) * mask
             total = attract.sum()
             probs = attract / total if total > 1e-10 else mask / mask.sum()
-            next_r = int(np.random.choice(R, p=probs / probs.sum()))
+            next_r = int(rng.choice(R, p=probs / probs.sum()))
 
             off, n_r = region_offsets[next_r], sizes[next_r]
             tau_r = tau_intra[next_r]
@@ -768,7 +900,7 @@ class VRPSolver:
             attract_e = (tau_e ** alpha) * (eta_e ** beta)
             s_e = attract_e.sum()
             probs_e = attract_e / s_e if s_e > 1e-10 else np.ones(k) / k
-            entry = int(k_cand[np.random.choice(k, p=probs_e / probs_e.sum())])
+            entry = int(k_cand[rng.choice(k, p=probs_e / probs_e.sum())])
 
             vp_vis = [False] * n_r
             vp_vis[entry] = True
@@ -785,7 +917,7 @@ class VRPSolver:
                 else:
                     mask_vp = np.array([0.0 if vp_vis[j] else 1.0 for j in range(n_r)])
                     probs_vp = mask_vp / mask_vp.sum()
-                nxt = int(np.random.choice(n_r, p=probs_vp / probs_vp.sum()))
+                nxt = int(rng.choice(n_r, p=probs_vp / probs_vp.sum()))
                 vp_vis[nxt] = True
                 path.append(nxt)
 
@@ -850,7 +982,10 @@ class VRPSolver:
 
     def run_lkh(self, ik_result: IKResult, region_offsets: list,
                 n_restarts: int = 100, n_candidates: int = 1) -> VRPSolution:
-        """Multi-start ILS: each restart seeds from a fresh random-order greedy init."""
+        """Multi-start Lin-Kernighan: each restart seeds from a fresh random-order
+        greedy init, then optimises with candidate-restricted LK intra (depth-2
+        sequential moves) — the strong intra local search that distinguishes this from
+        the 2-opt/Or-opt-based run_ils, so LKH vs ILS/ACO/clustered is a fair contrast."""
         dm, dd, sizes, R = self._setup(ik_result, region_offsets)
         best_order = best_paths = None
         best_cost = float('inf')
@@ -869,7 +1004,8 @@ class VRPSolver:
                 paths[r_idx] = cands[best_s][0]
                 prev_g = region_offsets[r_idx] + paths[r_idx][-1]
 
-            order, paths = self._vrp_local_search(rand_order, paths, dm, dd, region_offsets)
+            order, paths = self._vrp_local_search(
+                rand_order, paths, dm, dd, region_offsets, strong=True)
             local_best_order, local_best_paths = order[:], dict(paths)
             local_best_cost = self._compute_tour_cost(
                 local_best_order, local_best_paths, dm, dd, region_offsets)
@@ -877,7 +1013,7 @@ class VRPSolver:
                 p_order = self._double_bridge_regions(local_best_order)
                 p_paths = {r: p[:] for r, p in local_best_paths.items()}
                 p_order, p_paths = self._vrp_local_search(
-                    p_order, p_paths, dm, dd, region_offsets)
+                    p_order, p_paths, dm, dd, region_offsets, strong=True)
                 c = self._compute_tour_cost(p_order, p_paths, dm, dd, region_offsets)
                 if c < local_best_cost - 1e-10:
                     local_best_cost, local_best_order, local_best_paths = c, p_order, p_paths
@@ -892,7 +1028,7 @@ class VRPSolver:
                               'vrp_lkh', pool.items())
 
     def _aco_ant(self, dm, dd, region_offsets, sizes, tau_inter, tau_intra,
-                 alpha, beta, k_entries) -> tuple:
+                 alpha, beta, k_entries, rng=None) -> tuple:
         """One ant: pheromone-guided construction + intra-region local search.
 
         Intra-only (no inter-region relocation) so the per-ant cost stays low enough
@@ -900,7 +1036,7 @@ class VRPSolver:
         iteration to the iteration best.
         """
         order, paths = self._aco_construct_ant(
-            dm, dd, region_offsets, sizes, tau_inter, tau_intra, alpha, beta, k_entries)
+            dm, dd, region_offsets, sizes, tau_inter, tau_intra, alpha, beta, k_entries, rng)
         for r_idx in order:
             paths[r_idx] = self._intra_local_search(paths[r_idx], region_offsets[r_idx], dm)
         return order, paths, self._compute_tour_cost(order, paths, dm, dd, region_offsets)
@@ -914,8 +1050,9 @@ class VRPSolver:
         Each ant selects entries from the K nearest candidates using pheromone +
         distance heuristic, then runs intra-region local search. Once per iteration
         the iteration best gets a full inter-region relocation before pheromone is
-        deposited, and the global best is polished at the end. Ants within an
-        iteration are independent and run in parallel when n_jobs > 1.
+        deposited, and the global best is polished at the end. Ant RNG streams are
+        explicit and seeded via VRPSolver(seed=…): reproducible and independent across
+        parallel workers (E). Ants within an iteration run in parallel when n_jobs > 1.
         """
         dm, dd, sizes, R = self._setup(ik_result, region_offsets)
 
@@ -927,15 +1064,19 @@ class VRPSolver:
         pool = _TopK(n_candidates)
         pool.add(best_order, best_paths, best_cost)
 
+        ss = np.random.SeedSequence(self.seed)
         pooler = _AntPool(self, dm, dd, region_offsets, sizes, n_jobs) if n_jobs > 1 else None
         try:
             for _ in range(n_iter):
+                iter_seeds = ss.spawn(n_ants)   # independent, reproducible per ant
                 if pooler is not None:
-                    ants = pooler.run(n_ants, tau_inter, tau_intra, alpha, beta, k_entries)
+                    ants = pooler.run(n_ants, tau_inter, tau_intra,
+                                      alpha, beta, k_entries, iter_seeds)
                 else:
                     ants = [self._aco_ant(dm, dd, region_offsets, sizes,
-                                          tau_inter, tau_intra, alpha, beta, k_entries)
-                            for _ in range(n_ants)]
+                                          tau_inter, tau_intra, alpha, beta, k_entries,
+                                          np.random.default_rng(s))
+                            for s in iter_seeds]
 
                 iter_order, iter_paths, iter_cost = min(ants, key=lambda a: a[2])
                 # Inter-region relocation on the iteration best only (expensive step)
@@ -964,7 +1105,7 @@ class VRPSolver:
                         a, b = path[k], path[k + 1]
                         # Symmetric deposit: intra paths are reversible (dm is
                         # symmetric and _inter_region_improve may flip them), so
-                        # edge {a,b} earns reinforcement in both directions.
+                        # edge {a,b} earns reinforcement in both directions (C).
                         tau_intra[r_idx][a, b] += delta
                         tau_intra[r_idx][b, a] += delta
 
@@ -1025,20 +1166,11 @@ class VRPSolver:
 
     def _select_ports(self, r, region_offsets, sizes, dm, dd, K) -> list:
         """K candidate entry/exit ports for region r via farthest-point sampling
-        (2-approx k-center) in the dm metric, seeded at the depot-nearest node."""
+        (2-approx k-center) in the dm metric, seeded at the depot-nearest node.
+        Thin wrapper over _fps_ports on region r's submatrix (shared with the
+        config-aware path, which supplies the optimistic-cost metric instead)."""
         off, n = region_offsets[r], sizes[r]
-        if n <= K:
-            return list(range(n))
-        seed = int(np.argmin([dd[off + j] for j in range(n)]))
-        ports = [seed]
-        mind = np.array([dm[off + j, off + seed] for j in range(n)], dtype=float)
-        while len(ports) < K:
-            nxt = int(np.argmax(mind))
-            if mind[nxt] <= 0:
-                break
-            ports.append(nxt)
-            mind = np.minimum(mind, [dm[off + j, off + nxt] for j in range(n)])
-        return sorted(set(ports))
+        return self._fps_ports(dm[off:off + n, off:off + n], dd[off:off + n], n, K)
 
     def _hk_from(self, off, n, dm, start) -> tuple:
         """Held-Karp shortest Hamiltonian path from `start`; returns per-end
@@ -1281,31 +1413,27 @@ class VRPSolver:
         if n == 1:
             return 0.0, [e if e is not None else (x if x is not None else 0)]
         m0 = len(ordered_cfgs[0])
-        dp = [0.0 if (e is None or c == e) else INF for c in range(m0)]
+        dp = np.array([0.0 if (e is None or c == e) else INF for c in range(m0)])
         par = []
         for i in range(1, n):
-            prev, cur = ordered_cfgs[i - 1], ordered_cfgs[i]
-            mc = len(cur)
-            ndp, pp = [INF] * mc, [-1] * mc
-            for c in range(mc):
-                qc = cur[c]
-                best, bpc = INF, -1
-                for pc in range(len(prev)):
-                    if dp[pc] == INF:
-                        continue
-                    cost = dp[pc] + float(self._config_cost(prev[pc] - qc))
-                    if cost < best:
-                        best, bpc = cost, pc
-                ndp[c], pp[c] = best, bpc
+            # Vectorised transition: cost of every (prev cfg, cur cfg) pair at once,
+            # so one _config_cost call on an (m_prev, m_cur, 7) array replaces
+            # m_prev·m_cur scalar calls. argmin keeps the first minimiser, matching the
+            # original strict-'<' scan; INF-dp predecessors propagate to INF and lose.
+            prev = np.asarray(ordered_cfgs[i - 1], dtype=float)
+            cur = np.asarray(ordered_cfgs[i], dtype=float)
+            total = dp[:, None] + self._config_cost(prev[:, None, :] - cur[None, :, :])
+            pp = np.argmin(total, axis=0)
+            ndp = total[pp, np.arange(total.shape[1])]
+            par.append(np.where(np.isfinite(ndp), pp, -1))
             dp = ndp
-            par.append(pp)
         endc = x if x is not None else int(np.argmin(dp))
         choice = [0] * n
         choice[n - 1], c = endc, endc
         for i in range(n - 1, 0, -1):
-            c = par[i - 1][c]
+            c = int(par[i - 1][c])
             choice[i - 1] = c
-        return dp[endc], choice
+        return float(dp[endc]), choice
 
     def _opt_vp_cost(self, cfg_region: list) -> np.ndarray:
         """Optimistic viewpoint-to-viewpoint cost = min over config pairs (for ordering)."""
@@ -1356,23 +1484,40 @@ class VRPSolver:
         layers, prev = [], None
         for idx, r in enumerate(order):
             cfgs, tbl = cfg_regions[r], tables[r]
-            exits = {(k[2], k[3]) for k in tbl}
+            # Best incoming cost per current-region entry (vp, cfg). This depends on
+            # the previous exit and the entry config, NOT on which exit we head to, so
+            # it is computed once per entry (batched over prev states) rather than
+            # redundantly inside the per-exit loop. The result is cost-optimal and
+            # identical to the scalar scan on real (float) configs; on exactly-tied
+            # inputs it may pick a different equally-optimal config among the ties.
+            entries = list({(k[0], k[1]) for k in tbl})
+            best_in = {}
+            if entries:
+                Qe = np.array([cfgs[ev][ce] for (ev, ce) in entries])
+                if idx == 0:
+                    incost = self._config_cost(Qe - DEPOT_Q)
+                    best_in = {ent: (float(incost[j]), None)
+                               for j, ent in enumerate(entries)}
+                elif prev:
+                    prev_items = list(prev.items())
+                    Qprev = np.array([cfg_regions[order[idx - 1]][pxv][pcx]
+                                      for (pxv, pcx), _ in prev_items])
+                    pcosts = np.array([v[0] for _, v in prev_items])
+                    tot = pcosts[:, None] + self._config_cost(
+                        Qprev[:, None, :] - Qe[None, :, :])
+                    amin = np.argmin(tot, axis=0)
+                    best_in = {ent: (float(tot[amin[j], j]), prev_items[amin[j]][0])
+                               for j, ent in enumerate(entries)}
             cur, bk = {}, {}
-            for (x_vp, cx) in exits:
+            for (x_vp, cx) in {(k[2], k[3]) for k in tbl}:
                 best, barg = INF, None
                 for (e_vp, ce) in {(k[0], k[1]) for k in tbl if (k[2], k[3]) == (x_vp, cx)}:
-                    pcost = tbl[(e_vp, ce, x_vp, cx)][0]
-                    q_e = cfgs[e_vp][ce]
-                    if idx == 0:
-                        val = float(self._config_cost(q_e - DEPOT_Q)) + pcost
-                        if val < best:
-                            best, barg = val, (e_vp, ce, None)
-                    else:
-                        for (pxv, pcx), (pc_cost, _) in prev.items():
-                            q_prev = cfg_regions[order[idx - 1]][pxv][pcx]
-                            val = pc_cost + float(self._config_cost(q_prev - q_e)) + pcost
-                            if val < best:
-                                best, barg = val, (e_vp, ce, (pxv, pcx))
+                    if (e_vp, ce) not in best_in:
+                        continue
+                    bi, pstate = best_in[(e_vp, ce)]
+                    val = bi + tbl[(e_vp, ce, x_vp, cx)][0]
+                    if val < best:
+                        best, barg = val, (e_vp, ce, pstate)
                 if barg is not None:
                     cur[(x_vp, cx)], bk[(x_vp, cx)] = (best, barg), barg
             prev = cur
@@ -1425,17 +1570,21 @@ class VRPSolver:
         return sol
 
     @staticmethod
-    def _fps_ports(copt, ddv, n, K):
+    def _fps_ports(metric, seed_key, n, K):
+        """Farthest-point sampling (Gonzalez 1985, 2-approx k-center): pick K ports
+        spread apart under the n×n `metric`, seeded at argmin(`seed_key`) — the
+        depot-nearest node. Shared by both the plain (metric=dm submatrix, seed=dd)
+        and config-aware (metric=optimistic cost, seed=depot config cost) solvers."""
         if n <= K:
             return list(range(n))
-        seed = int(np.argmin(ddv))
-        ports, mind = [seed], copt[:, seed].astype(float).copy()
+        seed = int(np.argmin(seed_key))
+        ports, mind = [seed], metric[:, seed].astype(float).copy()
         while len(ports) < K:
             nxt = int(np.argmax(mind))
             if mind[nxt] <= 0:
                 break
             ports.append(nxt)
-            mind = np.minimum(mind, copt[:, nxt])
+            mind = np.minimum(mind, metric[:, nxt])
         return sorted(set(ports))
 
     def _cfg_breakdown(self, order, paths, cfg_choice, cfg_regions) -> tuple:
@@ -1565,10 +1714,11 @@ def _ant_pool_init(cost_mode, jw, vmax, amax, dm, dd, offs, sizes):
 
 
 def _ant_pool_run(args):
-    tau_inter, tau_intra, alpha, beta, k_entries = args
+    tau_inter, tau_intra, alpha, beta, k_entries, seed = args
     c = _ANT_CTX
     return c['solver']._aco_ant(c['dm'], c['dd'], c['offs'], c['sizes'],
-                                tau_inter, tau_intra, alpha, beta, k_entries)
+                                tau_inter, tau_intra, alpha, beta, k_entries,
+                                np.random.default_rng(seed))
 
 
 class _AntPool:
@@ -1587,8 +1737,9 @@ class _AntPool:
             initargs=(solver.cost_mode, list(solver.joint_weights),
                       solver._vmax, solver._amax, dm, dd, offs, sizes))
 
-    def run(self, n_ants, tau_inter, tau_intra, alpha, beta, k_entries):
-        args = [(tau_inter, tau_intra, alpha, beta, k_entries)] * n_ants
+    def run(self, n_ants, tau_inter, tau_intra, alpha, beta, k_entries, seeds):
+        args = [(tau_inter, tau_intra, alpha, beta, k_entries, seeds[i])
+                for i in range(n_ants)]
         chunk = max(1, -(-n_ants // self._n_jobs))
         return self._pool.map(_ant_pool_run, args, chunksize=chunk)
 

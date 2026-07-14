@@ -827,7 +827,7 @@ class GUIClient():
             jw_row.add_stretch()
             ne = gui.NumberEdit(gui.NumberEdit.DOUBLE)
             ne.double_value = float(w0)
-            ne.set_preferred_width(4 * em)
+            ne.set_preferred_width(5 * em)
             jw_row.add_child(ne)
             vrp_params.add_child(jw_row)
             weight_edits.append(ne)
@@ -861,7 +861,7 @@ class GUIClient():
                 ne.int_value = int(pval)
             else:
                 ne.double_value = float(pval)
-            ne.set_preferred_width(4 * em)
+            ne.set_preferred_width(5 * em)
             ne.set_on_value_changed(lambda v, k=pkey: self.on_parameter_changed(node_name, k, v))
             aco_row.add_child(ne)
             vrp_params.add_child(aco_row)
@@ -877,7 +877,7 @@ class GUIClient():
         ck_row.add_stretch()
         ck_ne = gui.NumberEdit(gui.NumberEdit.INT)
         ck_ne.int_value = int(_val('vrp_clustered_k', 6))
-        ck_ne.set_preferred_width(4 * em)
+        ck_ne.set_preferred_width(5 * em)
         ck_ne.set_on_value_changed(
             lambda v: self.on_parameter_changed(node_name, 'vrp_clustered_k', v))
         ck_row.add_child(ck_ne)
@@ -1028,9 +1028,9 @@ class GUIClient():
         row.add_child(label_container)
         row.add_stretch()
 
-        # Set preferred_width based on length of text with 6 * em as max:
+        # Set preferred_width based on length of text with 10 * em as max:
         if len(label.text) > 12:
-            label_container.preferred_width = 6 * em
+            label_container.preferred_width = 10 * em
 
         # Create appropriate widget based on type
         widget = None
@@ -1051,7 +1051,7 @@ class GUIClient():
                 number_edit = gui.NumberEdit(gui.NumberEdit.INT)
                 number_edit.int_value = int(param_value)
                 number_edit.set_limits(param_range[0], param_range[1])
-                number_edit.set_preferred_width(4 * em)
+                number_edit.set_preferred_width(5 * em)
 
                 syncing = [False]
 
@@ -1075,7 +1075,7 @@ class GUIClient():
                 number_edit.set_on_value_changed(_numedit_changed_int)
 
                 slider_container = gui.Vert()
-                slider_container.preferred_width = 10 * em
+                slider_container.preferred_width = 8 * em
                 slider_container.add_child(widget)
                 row.add_child(slider_container)
                 row.add_fixed(0.25 * em)
@@ -1098,7 +1098,7 @@ class GUIClient():
                 number_edit = gui.NumberEdit(gui.NumberEdit.DOUBLE)
                 number_edit.double_value = float(param_value)
                 number_edit.set_limits(param_range[0], param_range[1])
-                number_edit.set_preferred_width(4 * em)
+                number_edit.set_preferred_width(5 * em)
 
                 syncing = [False]
 
@@ -1122,7 +1122,7 @@ class GUIClient():
                 number_edit.set_on_value_changed(_numedit_changed_dbl)
 
                 slider_container = gui.Vert()
-                slider_container.preferred_width = 10 * em
+                slider_container.preferred_width = 8 * em
                 slider_container.add_child(widget)
                 row.add_child(slider_container)
                 row.add_fixed(0.25 * em)
