@@ -110,16 +110,16 @@ class Materials:
     tabletop_diameter = 100.0  # Diameter in mm
     tabletop_thickness = 2.0  # Thickness in mm
 
-    path_material = MaterialRecord()
-    path_material.shader = 'unlitLine'
-    path_material.line_width = 2.0
-    path_material.base_color = [92/255, 140/255, 207/255, 1.0]
-    path_material.base_color = [0.5, 0.5, 0.5, 1.0]
+    # Origin Line / Frustum viewpoint overlays.
+    overlay_line_material = MaterialRecord()
+    overlay_line_material.shader = 'unlitLine'
+    overlay_line_material.line_width = 2.0
+    overlay_line_material.base_color = [0.5, 0.5, 0.5, 1.0]
 
-    selected_path_material = MaterialRecord()
-    selected_path_material.shader = 'unlitLine'
-    selected_path_material.line_width = 3.0
-    selected_path_material.base_color = [0.0, 1.0, 1.0, 1.0]
+    selected_overlay_line_material = MaterialRecord()
+    selected_overlay_line_material.shader = 'unlitLine'
+    selected_overlay_line_material.line_width = 3.0
+    selected_overlay_line_material.base_color = [0.0, 1.0, 1.0, 1.0]
 
     # Cartesian robot path — orange (an "active route" color) rather than red,
     # which reads as an error/"bad" state.

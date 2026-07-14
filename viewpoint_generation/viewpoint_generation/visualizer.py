@@ -7,7 +7,7 @@ import colorsys
 import copy
 import enum
 import json
-import math
+import os
 
 import numpy as np
 import open3d as o3d
@@ -15,6 +15,7 @@ import open3d.visualization.gui as gui
 from matplotlib import colormaps
 
 from viewpoint_generation.assets.materials import Materials
+from viewpoint_generation.mesh_utils import submesh_from_faces
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -238,13 +239,13 @@ _OVERLAY_REGISTRY: dict = {
     ),
     OverlayKind.ORIGIN_LINE: (
         _build_origin_line,
-        Materials.path_material,
-        Materials.selected_path_material,
+        Materials.overlay_line_material,
+        Materials.selected_overlay_line_material,
     ),
     OverlayKind.FRUSTUM: (
         _build_frustum,
-        Materials.path_material,
-        Materials.selected_path_material,
+        Materials.overlay_line_material,
+        Materials.selected_overlay_line_material,
     ),
     OverlayKind.ORIGIN_SPHERE: (
         _build_origin_sphere,
@@ -434,8 +435,11 @@ class Visualizer:
         # Overlays shown for non-selected viewpoints vs. the selected viewpoint.
         # Independent sets so the selected viewpoint can show a different subset
         # (e.g. only the selected viewpoint shows its FOV cylinder).
-        self._enabled_overlays: set[OverlayKind] = {OverlayKind.MARKER}
-        self._selected_overlays: set[OverlayKind] = {OverlayKind.MARKER}
+        self._enabled_overlays: set[OverlayKind] = {
+            OverlayKind.MARKER, OverlayKind.ORIGIN_SPHERE}
+        self._selected_overlays: set[OverlayKind] = {
+            OverlayKind.MARKER, OverlayKind.FOV_CYLINDER,
+            OverlayKind.ORIGIN_LINE, OverlayKind.ORIGIN_SPHERE}
         self._built_overlays: set[OverlayKind] = set()
 
         # Model state
@@ -467,7 +471,8 @@ class Visualizer:
         # Mesh vertex coloring state
         self.meshes             : dict = {}
         self.mesh_vertex_to_pcd : dict = {}
-        self.noise_indices      : list = []
+        self.noise_faces        : list = []
+        self.noise_surface_names: list[str] = []
 
         # Selection state
         self.selected_mesh_idx    : int = -1
@@ -482,7 +487,6 @@ class Visualizer:
         self.show_noise_points_flag          = False
         self.show_clusters_flag              = False
         self.show_viewpoints_flag            = False
-        self.show_path_flag                  = False
         self.mesh_has_vertex_colors          = False
         self.show_joint_path_flag            = True
         self.show_unreachable_flag           = True
@@ -902,26 +906,22 @@ class Visualizer:
         # stays stable when the path algorithm is later changed.
         self._cluster_order_algorithm = selected_algorithm
 
-        # ── Load mesh and point cloud from the results dict ───────────────────
+        # ── Load meshes and per-region point clouds from the results dict ──────
         bbox = None
         scale_map = {'mm': 1.0, 'cm': 10.0, 'm': 1000.0, 'in': 25.4, 'ft': 304.8}
 
         # Loading a new results file invalidates everything from the previous
-        # one, so remove all downstream geometry before rebuilding: meshes, the
-        # point cloud, curvatures, and every region/cluster/viewpoint/path/view
-        # manifold. Without this a stale point cloud (and viewpoints, paths,
-        # etc.) from the last file lingers when the new file has none of its own
-        # — e.g. when a bare mesh is loaded and its results file has no point
-        # cloud or regions yet. _clear_result_geometry must run while the name
-        # lists still hold the previous file's names so its removals take effect.
+        # one, so remove all downstream geometry before rebuilding: meshes,
+        # curvatures, and every region/cluster/viewpoint/path/view manifold.
+        # _clear_result_geometry must run while the name lists still hold the
+        # previous file's names so its removals take effect.
         self.scene.remove_geometry("mesh")
         for name in self.mesh_names:
             self.scene.remove_geometry(name)
         self.scene.remove_geometry("point_cloud")
         self.scene.remove_geometry("curvatures")
         self._clear_result_geometry()
-        self.point_cloud            = None
-        self.noise_indices          = []
+        self.noise_faces            = []
         self.meshes                 = {}
         self.mesh_vertex_to_pcd     = {}
         self.mesh_has_vertex_colors = False
@@ -932,9 +932,8 @@ class Visualizer:
         new_geometries_dict: dict = {}
         show_clusters   = False
         show_viewpoints = False
-        show_path       = False
         traversal_order: list[list[int]] = []
-        all_noise_points: list = []
+        noise_faces_by_mesh: dict = {}   # mesh_idx (str) -> list of face indices
         # Viewpoint positions (model-space, mm) accumulated across all regions.
         # Used to frame the grid/camera without relying on scene.bounding_box,
         # which also counts hidden geometry (e.g. a stale, mis-scaled point
@@ -949,10 +948,13 @@ class Visualizer:
             mesh_units = mesh_entry.get('units', 'mm')
             mesh_name  = f"mesh_{mesh_idx}"
 
+            mesh = None
             if mesh_file:
                 try:
                     mesh = o3d.io.read_triangle_mesh(mesh_file)
-                    if not mesh.is_empty():
+                    if mesh.is_empty():
+                        mesh = None
+                    else:
                         mesh.scale(scale_map.get(mesh_units, 1.0), center=(0, 0, 0))
                         if mesh_idx == 0:
                             bbox = mesh.get_axis_aligned_bounding_box()
@@ -968,17 +970,10 @@ class Visualizer:
                         new_meshes[mesh_name] = mesh
                 except Exception as e:
                     print(f"Error loading mesh {mesh_file}: {e}")
+                    mesh = None
 
-            pcd_entry = mesh_entry.get('point_cloud', {})
-            pcd_file  = pcd_entry.get('file', '')
-            pcd_units = pcd_entry.get('units', 'mm')
-            if pcd_file:
-                self.import_point_cloud(pcd_file, pcd_units)
-
-            if self.point_cloud is None:
+            if mesh is None:
                 continue
-
-            self.point_cloud.paint_uniform_color((1, 1, 1))
 
             region_order = mesh_entry.get('order', [])
 
@@ -987,49 +982,34 @@ class Visualizer:
             # then skipped per-cluster).
             camera_config = mesh_entry.get('camera_config', {})
 
-            # Guard against a stale results file: the region/noise indices may
-            # reference a point cloud with a different number of points than the
-            # one currently loaded (e.g. the results were generated before the
-            # cloud was resampled to a smaller size). Indexing out of bounds
-            # would otherwise crash the GUI process.
-            n_points = len(self.point_cloud.points)
-            max_index = -1
-            for region_id in region_order:
-                region_points = mesh_entry['regions'][region_id].get('points', [])
-                if len(region_points) > 0:
-                    max_index = max(max_index, int(np.max(region_points)))
-            mesh_noise_points = mesh_entry.get('noise_points', [])
-            if len(mesh_noise_points) > 0:
-                max_index = max(max_index, int(np.max(mesh_noise_points)))
-            if max_index >= n_points:
-                print(
-                    f"Results file '{file_path}' references point index "
-                    f"{max_index} but the loaded point cloud '{pcd_file}' has "
-                    f"only {n_points} points. The results were likely generated "
-                    "from a different point cloud (e.g. before resampling). "
-                    "Skipping visualization.")
-                return
-
-            all_noise_points.extend(mesh_noise_points)
+            mesh_noise_faces = mesh_entry.get('noise_faces', [])
+            noise_faces_by_mesh[str(mesh_idx)] = mesh_noise_faces
+            self.noise_faces.extend(mesh_noise_faces)
 
             for region_id in region_order:
                 region_name = f"mesh_{mesh_idx}_region_{region_id}"
                 region_dict = mesh_entry['regions'][region_id]
 
-                region_indices     = region_dict['points']
-                region_color       = np.array(list(cmap(np.random.rand())))[0:3]
+                region_color = np.array(list(cmap(np.random.rand())))[0:3]
 
-                # Paint these indices on the single point cloud
-                pcd_colors = np.asarray(self.point_cloud.colors)
-                pcd_colors[region_indices] = region_color
+                # Each region owns its own sampled point cloud (produced by
+                # segment_regions()); load it directly rather than slicing a
+                # shared cloud by index.
+                region_pcd = None
+                pcd_file = region_dict.get('point_cloud', {}).get('file', '')
+                if pcd_file and os.path.exists(pcd_file):
+                    try:
+                        region_pcd = o3d.io.read_point_cloud(pcd_file)
+                    except Exception as e:
+                        print(f"Error loading region point cloud {pcd_file}: {e}")
 
                 new_geometries_dict[region_name] = {
-                    'indices': region_indices,
+                    'faces': region_dict.get('faces', []),
+                    'point_cloud': region_pcd,
                     'color': region_color,
                 }
 
-                path_points        : list = []
-                path_line = o3d.geometry.LineSet()
+                region_has_viewpoints = False
 
                 if region_dict.get('clusters'):
                     show_clusters = True
@@ -1058,19 +1038,21 @@ class Visualizer:
                             colorsys.hsv_to_rgb(h_var, s_var, v_var))
                         cluster_color = np.clip(cluster_color, 0, 1)
 
-                        # Convert cluster sub-indices (relative to region) to global indices.
-                        # select_by_index returns points sorted by original index,
-                        # so the cluster indices reference the sorted region indices.
-                        region_indices_sorted = np.sort(np.array(region_indices))
-                        global_cluster_indices = region_indices_sorted[cluster_dict['points']]
-                        cluster_pcd = self.point_cloud.select_by_index(global_cluster_indices)
+                        # Cluster indices are already local to the region's own
+                        # point cloud — no local→global remapping needed.
+                        cluster_indices = cluster_dict['points']
+                        cluster_pcd = (region_pcd.select_by_index(cluster_indices)
+                                       if region_pcd is not None else None)
 
                         vp_data = None
                         if 'viewpoint' in cluster_dict:
                             show_viewpoints = True
+                            region_has_viewpoints = True
                             vp_raw = cluster_dict['viewpoint']
                             # Store centroid for LinesRenderer
-                            centroid = np.mean(np.asarray(cluster_pcd.points), axis=0)
+                            centroid = (np.mean(np.asarray(cluster_pcd.points), axis=0)
+                                        if cluster_pcd is not None
+                                        else np.array(vp_raw['origin']))
                             vp_data = {
                                 'origin':           vp_raw['origin'],
                                 'position':         vp_raw['position'],
@@ -1083,15 +1065,11 @@ class Visualizer:
                             }
 
                             position  = 1000.0 * np.array(vp_raw['position'])
-                            path_points.append(position)
                             all_view_positions.append(position)
-
-                            if i != cluster_id:
-                                show_path = True
 
                         new_geometries_dict[region_name]['clusters'][cluster_name] = {
                             'pcd':            cluster_pcd,
-                            'indices':        global_cluster_indices,
+                            'indices':        cluster_indices,
                             'color':          cluster_color,
                             'viewpoint_data': vp_data,
                             # Cluster index in the results JSON. The geometry name
@@ -1101,16 +1079,7 @@ class Visualizer:
                             'cluster_id':     cluster_id,
                         }
 
-                if show_viewpoints and path_points:
-                    if len(path_points) > 1:
-                        path_line.points = o3d.utility.Vector3dVector(
-                            np.array(path_points))
-                        path_line.lines = o3d.utility.Vector2iVector(
-                            [[i, i + 1] for i in range(len(path_points) - 1)])
-                        new_geometries_dict[region_name]['path'] = path_line
-                    else:
-                        new_geometries_dict[region_name]['path'] = None
-
+                if region_has_viewpoints:
                     joint_path, joint_markers = self._build_joint_path(
                         region_dict, selected_algorithm)
                     new_geometries_dict[region_name]['joint_path'] = joint_path
@@ -1119,8 +1088,8 @@ class Visualizer:
                     new_geometries_dict[region_name]['unreachable_markers'] = (
                         self._build_unreachable_markers(region_dict, selected_algorithm))
 
-        if self.point_cloud is None:
-            print("No point cloud loaded; cannot import regions.")
+        if not new_geometries_dict:
+            print("No regions loaded; showing plain mesh(es).")
             for mesh_name, mesh in new_meshes.items():
                 self.add_geometry(mesh_name, mesh, Materials.mesh_material)
             self.mesh_names = new_mesh_names
@@ -1130,13 +1099,7 @@ class Visualizer:
             self.show_mesh(True)
             return
 
-        # ── Paint noise points red on the single point cloud ────────────────
-        self.noise_indices = all_noise_points
-        if all_noise_points:
-            pcd_colors = np.asarray(self.point_cloud.colors)
-            pcd_colors[all_noise_points] = [1.0, 0.0, 0.0]
-
-        self.mesh_names      = new_mesh_names
+        self.mesh_names      = []
         self.region_names    = []
         self.cluster_names   = []
         self.traversal_order = traversal_order
@@ -1147,16 +1110,10 @@ class Visualizer:
         self.selected_region_name  = ''
         self.selected_cluster_name = ''
 
-        # ── Build per-region surfaces (one submesh per region, or a sub-cloud
-        #    when a region has no mesh triangles) ──────────────────────────────
-        self.mesh_names = []
-        if new_geometries_dict and len(self.point_cloud.points) > 0:
-            self._build_region_surfaces(new_meshes, all_noise_points)
-        else:
-            # No regions: show the plain mesh(es) as before.
-            for mesh_name, mesh in new_meshes.items():
-                self.add_geometry(mesh_name, mesh, Materials.mesh_material)
-            self.mesh_names = new_mesh_names
+        # ── Build per-region surfaces (exact submesh per region) and per-mesh
+        #    noise-face surfaces ────────────────────────────────────────────────
+        self._build_region_surfaces(new_meshes)
+        self._build_noise_surfaces(new_meshes, noise_faces_by_mesh)
 
         for region_name, region_data in self.geometries_dict.items():
             self.region_names.append(region_name)
@@ -1167,10 +1124,6 @@ class Visualizer:
         # path geometry.
         self._render_surfaces()
         for region_name, region_data in self.geometries_dict.items():
-            path = region_data.get('path')
-            if path is not None:
-                self.add_geometry(f"{region_name}_path", path,
-                                  Materials.path_material)
             joint_path = region_data.get('joint_path')
             if joint_path is not None:
                 self.add_geometry(f"{region_name}_joint_path", joint_path,
@@ -1192,9 +1145,6 @@ class Visualizer:
             for kind in self._enabled_overlays | self._selected_overlays:
                 self._build_overlay_kind(kind)
 
-        # ── Update single point cloud with region colors ──────────────────
-        self._update_point_cloud_scene()
-
         print(f"Loaded regions from {file_path}")
 
         # ── Camera + XY plane setup ───────────────────────────────────────────
@@ -1208,10 +1158,12 @@ class Visualizer:
         self.show_noise_points(False)
 
         if show_clusters:
-            self.set_region_surface_mode(RegionSurfaceMode.CLUSTER)
+            # Always default to the solid region coloring once viewpoints
+            # exist; cluster coloring remains available via the Region
+            # Surface menu but is no longer the load-time default.
+            self.set_region_surface_mode(RegionSurfaceMode.SOLID)
             self.show_viewpoints(show_viewpoints)
             if show_viewpoints:
-                self.show_path(show_path)
                 # Cartesian path / unreachable markers only exist after traversal
                 # optimization; re-assert their current toggle state so any
                 # already-built geometry is scoped correctly on load.
@@ -1237,129 +1189,83 @@ class Visualizer:
 
     # ── Per-region surface construction ──────────────────────────────────────
 
-    @staticmethod
-    def _submesh(mesh, tris):
-        """Build a standalone submesh from a subset of a mesh's triangles,
-        remapping vertex indices. Returns (submesh, used_vertex_indices)."""
-        verts = np.asarray(mesh.vertices)
-        used = np.unique(tris)
-        remap = np.full(len(verts), -1, dtype=int)
-        remap[used] = np.arange(len(used))
-        sub = o3d.geometry.TriangleMesh()
-        sub.vertices = o3d.utility.Vector3dVector(verts[used])
-        sub.triangles = o3d.utility.Vector3iVector(remap[tris])
-        sub.compute_vertex_normals()
-        return sub, used
-
-    def _build_region_surfaces(self, new_meshes, all_noise_points):
-        """Split each loaded mesh into per-region submeshes (falling back to a
-        per-region sub-cloud where a region has no mesh triangles), precomputing
-        solid and cluster vertex/point color arrays. Populates
-        ``geometries_dict[region]['surface']``."""
-        n_pcd = len(self.point_cloud.points)
-        region_list = list(self.geometries_dict.keys())
-        region_index = {name: i for i, name in enumerate(region_list)}
-
-        # Per-pcd-point lookups built from the populated geometries_dict.
-        pcd_region_color  = np.full((n_pcd, 3), 0.8)   # base gray
-        pcd_cluster_color = np.full((n_pcd, 3), 0.8)
-        pcd_region_id     = np.full(n_pcd, -1, dtype=int)
+    def _build_region_surfaces(self, new_meshes):
+        """Build each region's exact submesh directly from its face list (no
+        subdivision or nearest-vertex projection needed — a region's faces
+        *are* the region), precomputing solid and cluster vertex color
+        arrays. Populates ``geometries_dict[region]['surface']``."""
         for region_name, rdata in self.geometries_dict.items():
-            idx = np.asarray(rdata['indices'])
-            pcd_region_color[idx]  = rdata['color']
-            pcd_cluster_color[idx] = rdata['color']   # default to region color
-            pcd_region_id[idx]     = region_index[region_name]
-            for cdata in rdata.get('clusters', {}).values():
-                pcd_cluster_color[cdata['indices']] = cdata['color']
-        if all_noise_points:
-            nidx = np.asarray(all_noise_points)
-            pcd_region_color[nidx]  = [1.0, 0.0, 0.0]
-            pcd_cluster_color[nidx] = [1.0, 0.0, 0.0]
-
-        pcd_tree = o3d.geometry.KDTreeFlann(self.point_cloud)
-        avg_pcd_spacing = np.mean(
-            self.point_cloud.compute_nearest_neighbor_distance())
-        handled = set()
-
-        for mesh_name, mesh in new_meshes.items():
-            mesh_idx = mesh_name.rsplit('_', 1)[-1]
-
-            # Subdivide until mesh edge length ≈ point cloud spacing so vertex
-            # coloring resolves region/cluster boundaries.
-            triangles = np.asarray(mesh.triangles)
-            vertices = np.asarray(mesh.vertices)
-            if len(triangles) > 0:
-                edges = np.array([[tri[j], tri[(j + 1) % 3]]
-                                  for tri in triangles for j in range(3)])
-                avg_edge_length = np.mean(np.linalg.norm(
-                    vertices[edges[:, 0]] - vertices[edges[:, 1]], axis=1))
-                iterations = max(
-                    0, math.ceil(math.log2(avg_edge_length / avg_pcd_spacing)))
-                if iterations > 0:
-                    mesh = mesh.subdivide_midpoint(iterations)
-                    mesh.compute_vertex_normals()
-
-            vertices = np.asarray(mesh.vertices)
-            triangles = np.asarray(mesh.triangles)
-            v2p = np.zeros(len(vertices), dtype=int)
-            for i, vertex in enumerate(vertices):
-                [_, idx, _] = pcd_tree.search_knn_vector_3d(vertex, 1)
-                v2p[i] = idx[0]
-            v_region  = pcd_region_id[v2p]
-            v_solid   = pcd_region_color[v2p]
-            v_cluster = pcd_cluster_color[v2p]
-
-            # Triangle → region by majority vote of its 3 vertices' regions.
-            a = v_region[triangles[:, 0]]
-            b = v_region[triangles[:, 1]]
-            c = v_region[triangles[:, 2]]
-            tri_region = np.where((a == b) | (a == c), a, np.where(b == c, b, a))
-
-            for region_name, rdata in self.geometries_dict.items():
-                if not region_name.startswith(f"mesh_{mesh_idx}_"):
-                    continue
-                mask = tri_region == region_index[region_name]
-                if not np.any(mask):
-                    continue
-                sub, used = self._submesh(mesh, triangles[mask])
-                rdata['surface'] = {
-                    'kind':           'mesh',
-                    'geometry':       sub,
-                    'name':           f"{region_name}_surface",
-                    'colors_solid':   v_solid[used].copy(),
-                    'colors_cluster': v_cluster[used].copy(),
-                }
-                handled.add(region_name)
-                self.mesh_has_vertex_colors = True
-
-        # Regions with no mesh triangles → per-region sub-cloud.
-        for region_name, rdata in self.geometries_dict.items():
-            if region_name in handled:
+            mesh_name = region_name.split('_region_')[0]
+            mesh = new_meshes.get(mesh_name)
+            if mesh is None or not rdata['faces']:
                 continue
-            idx_sorted = np.sort(np.asarray(rdata['indices']))
-            sub = self.point_cloud.select_by_index(idx_sorted)
+
+            mesh_triangles = np.asarray(mesh.triangles)
+            faces = np.asarray(rdata['faces'])
+            sub, _used = submesh_from_faces(mesh, mesh_triangles[faces])
+
+            n_verts = len(sub.vertices)
+            colors_solid = np.tile(rdata['color'], (n_verts, 1))
+            colors_cluster = colors_solid.copy()
+
+            region_pcd = rdata.get('point_cloud')
+            if region_pcd is not None and len(region_pcd.points) > 0:
+                # Color each submesh vertex by whichever FOV cluster owns the
+                # nearest sampled point, scoped to this region's own (small)
+                # point cloud and submesh — the same nearest-point technique
+                # as before, but local instead of global.
+                pcd_cluster_color = np.tile(
+                    rdata['color'], (len(region_pcd.points), 1))
+                for cdata in rdata.get('clusters', {}).values():
+                    pcd_cluster_color[cdata['indices']] = cdata['color']
+
+                pcd_tree = o3d.geometry.KDTreeFlann(region_pcd)
+                verts = np.asarray(sub.vertices)
+                v2p = np.zeros(len(verts), dtype=int)
+                for i, vertex in enumerate(verts):
+                    [_, idx, _] = pcd_tree.search_knn_vector_3d(vertex, 1)
+                    v2p[i] = idx[0]
+                colors_cluster = pcd_cluster_color[v2p]
+
             rdata['surface'] = {
-                'kind':           'cloud',
+                'kind':           'mesh',
                 'geometry':       sub,
                 'name':           f"{region_name}_surface",
-                'colors_solid':   pcd_region_color[idx_sorted].copy(),
-                'colors_cluster': pcd_cluster_color[idx_sorted].copy(),
+                'colors_solid':   colors_solid,
+                'colors_cluster': colors_cluster,
             }
+            self.mesh_has_vertex_colors = True
+
+    def _build_noise_surfaces(self, new_meshes, noise_faces_by_mesh):
+        """Build a flat red submesh per mesh for faces no region claimed."""
+        for mesh_name, mesh in new_meshes.items():
+            mesh_idx = mesh_name.rsplit('_', 1)[-1]
+            faces = noise_faces_by_mesh.get(mesh_idx, [])
+            if not faces:
+                continue
+
+            mesh_triangles = np.asarray(mesh.triangles)
+            sub, _used = submesh_from_faces(mesh, mesh_triangles[np.asarray(faces)])
+            sub.paint_uniform_color([1.0, 0.0, 0.0])
+
+            name = f"{mesh_name}_noise_surface"
+            self.add_geometry(name, sub, Materials.mesh_material)
+            self.scene.show_geometry(name, self.show_noise_points_flag)
+            self.noise_surface_names.append(name)
 
 
     # ── Clear helpers ─────────────────────────────────────────────────────────
 
     def _clear_result_geometry(self):
-        """Remove all region/cluster/viewpoint/path geometry and reset the
-        tracking lists.
+        """Remove all region/cluster/viewpoint/joint-path geometry and reset
+        the tracking lists.
 
-        The geometry-removing clears (viewpoints, paths) iterate the
+        The geometry-removing clears (viewpoints, joint paths) iterate the
         cluster/region name lists, so they must run *before* clear_clusters
         and clear_regions empty those lists — otherwise nothing is removed and
         stale geometry from the previous file lingers in the scene.
         """
         self.clear_viewpoints()
-        self.clear_paths()
         self.clear_joint_paths()
         self.clear_surfaces()
         self.clear_clusters()
@@ -1371,6 +1277,9 @@ class Visualizer:
     def clear_surfaces(self):
         for name in self.region_names:
             self.scene.remove_geometry(f"{name}_surface")
+        for name in self.noise_surface_names:
+            self.scene.remove_geometry(name)
+        self.noise_surface_names = []
 
     def clear_clusters(self):
         self.cluster_names = []
@@ -1380,10 +1289,6 @@ class Visualizer:
             self.scene.remove_geometry(f"{name}_viewpoint")  # legacy name
             for kind in OverlayKind:
                 self.scene.remove_geometry(self._overlay_geo_name(name, kind))
-
-    def clear_paths(self):
-        for name in self.region_names:
-            self.scene.remove_geometry(f"{name}_path")
 
     def clear_joint_paths(self):
         for name in self.region_names:
@@ -1420,6 +1325,8 @@ class Visualizer:
 
     def show_noise_points(self, show: bool):
         self.show_noise_points_flag = show
+        for name in self.noise_surface_names:
+            self.scene.show_geometry(name, show)
 
     def _update_point_cloud_scene(self):
         """Remove and re-add the point cloud geometry to reflect color changes."""
@@ -1475,11 +1382,6 @@ class Visualizer:
             for suffix in suffixes:
                 self._safe_show(f"{name}_{suffix}", visible)
 
-    def show_path(self, show: bool):
-        """Toggle the straight-line viewpoint traversal path (TSP order)."""
-        self.show_path_flag = show
-        self._show_region_scoped(["path"], show)
-
     def show_joint_path(self, show: bool):
         """Toggle the cartesian path the robot's end-effector follows (from the
         pre-computed joint trajectory), plus its waypoint markers."""
@@ -1490,27 +1392,6 @@ class Visualizer:
         """Toggle markers on viewpoints the arm could not plan a motion to."""
         self.show_unreachable_flag = show
         self._show_region_scoped(["unreachable_markers"], show)
-
-    def _build_region_path(self, region: dict, algorithm) -> o3d.geometry.LineSet | None:
-        """Build a region's traversal path LineSet (viewpoint positions joined
-        in the chosen algorithm's cluster order), or None if too short."""
-        cluster_order = _resolve_order_indices(region.get('order', []), algorithm)
-        clusters = region.get('clusters', [])
-        pts = []
-        for cluster_id in cluster_order:
-            if not isinstance(cluster_id, int) or cluster_id < 0 or cluster_id >= len(clusters):
-                continue
-            viewpoint = clusters[cluster_id].get('viewpoint')
-            if not viewpoint:
-                continue
-            pts.append(1000.0 * np.array(viewpoint['position']))
-        if len(pts) < 2:
-            return None
-        path = o3d.geometry.LineSet()
-        path.points = o3d.utility.Vector3dVector(np.array(pts))
-        path.lines = o3d.utility.Vector2iVector(
-            [[i, i + 1] for i in range(len(pts) - 1)])
-        return path
 
     def _build_joint_path(self, region: dict, algorithm) -> tuple:
         order = region.get('order', {})
@@ -1574,8 +1455,8 @@ class Visualizer:
 
     def set_traversal_algorithm(self, algorithm):
         """Switch the displayed traversal algorithm and rebuild each region's
-        path LineSet in place (no full reload). The GUI calls this when the
-        task_planning ``selected_traversal_algorithm`` parameter changes."""
+        joint-path geometry in place (no full reload). The GUI calls this when
+        the task_planning ``selected_traversal_algorithm`` parameter changes."""
         self.selected_traversal_algorithm = algorithm or None
         if not self.results_dict:
             return
@@ -1589,14 +1470,6 @@ class Visualizer:
                 region_name = f"mesh_{mesh_idx}_region_{region_id}"
                 if region_name not in self.geometries_dict:
                     continue
-
-                path = self._build_region_path(
-                    regions[region_id], self.selected_traversal_algorithm)
-                self.scene.remove_geometry(f"{region_name}_path")
-                self.geometries_dict[region_name]['path'] = path
-                if path is not None:
-                    self.add_geometry(f"{region_name}_path", path,
-                                      Materials.path_material)
 
                 joint_path, joint_markers = self._build_joint_path(
                     regions[region_id], self.selected_traversal_algorithm)
@@ -1620,7 +1493,6 @@ class Visualizer:
                                       Materials.unreachable_marker_material)
 
         # Re-apply each traversal-overlay toggle to the rebuilt geometry.
-        self.show_path(self.show_path_flag)
         self.show_joint_path(self.show_joint_path_flag)
         self.show_unreachable(self.show_unreachable_flag)
 
@@ -1705,12 +1577,10 @@ class Visualizer:
         # Surfaces: selected opaque/full-bright, all others dimmed/transparent.
         self._render_surfaces()
 
-        # Viewpoint path, cartesian path, and unreachable markers: only the
-        # selected region's, each gated by its own toggle.
+        # Cartesian path and unreachable markers: only the selected region's,
+        # each gated by its own toggle.
         for region_name in self.region_names:
             is_selected = (region_name == selected_region_name)
-            self._safe_show(f"{region_name}_path",
-                            is_selected and self.show_path_flag)
             self._safe_show(f"{region_name}_joint_path",
                             is_selected and self.show_joint_path_flag)
             self._safe_show(f"{region_name}_joint_markers",
@@ -1863,22 +1733,12 @@ class Visualizer:
         # ── Meshes ────────────────────────────────────────────────────────
         mesh_children = []
         for mesh_idx, mesh_entry in enumerate(self.results_dict.get('meshes', [])):
-            pcd = mesh_entry.get('point_cloud', {})
-            n_points = pcd.get('num_points', pcd.get('points', 0))
-
-            pcd_node = self._tree_node("Point Cloud", [
-                self._tree_node(f"File: {pcd.get('file', '')}"),
-                self._tree_node(f"Units: {pcd.get('units', '')}"),
-                self._tree_node(f"Points: {n_points}"),
-            ])
-
             mesh_children.append(self._tree_node(str(mesh_idx), [
                 self._tree_node(f"File: {mesh_entry.get('file', '')}"),
                 self._tree_node(f"Units: {mesh_entry.get('units', '')}"),
                 self._tree_node(f"Material: {mesh_entry.get('material', '')}"),
                 self._tree_node(f"Dimensions: {mesh_entry.get('dimensions', '')}"),
                 self._tree_node(f"Surface Area: {mesh_entry.get('surface_area', '')}"),
-                pcd_node,
                 self._build_regions_node(mesh_idx, mesh_entry, cluster_order_algorithm),
             ]))
 
@@ -1909,6 +1769,13 @@ class Visualizer:
                                 if region_name in self.region_names else None)
             region_select = ({'type': 'region', 'region': region_sel_index}
                              if region_sel_index is not None else None)
+
+            pcd = region.get('point_cloud', {})
+            pcd_node = self._tree_node("Point Cloud", [
+                self._tree_node(f"File: {pcd.get('file', '')}"),
+                self._tree_node(f"Units: {pcd.get('units', '')}"),
+                self._tree_node(f"Points: {pcd.get('points', 0)}"),
+            ])
 
             # Clusters (in traversal order) — numbered, selectable, with viewpoint
             cluster_order = _resolve_order_indices(
@@ -1965,7 +1832,7 @@ class Visualizer:
             paths_node = self._tree_node("Paths", path_children)
 
             region_nodes.append(self._tree_node(
-                f"Region {region_id}", [clusters_node, paths_node],
+                f"Region {region_id}", [pcd_node, clusters_node, paths_node],
                 select=region_select))
 
         return self._tree_node("Regions", region_nodes)

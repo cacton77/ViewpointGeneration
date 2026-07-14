@@ -11,14 +11,13 @@ ViewpointGeneration is structured as a standalone Python library (`viewpoint_gen
 The pipeline follows these stages:
 
 1. **Load CAD Model** -- Import an STL/OBJ mesh with unit conversion
-2. **Sample Point Cloud** -- Poisson disk sampling of the mesh surface
-3. **Estimate Curvature** -- Per-point curvature via KNN covariance eigenvalues (region-growth algorithm only)
-4. **Surface Segmentation** -- Segment the surface into regions. Two interchangeable algorithms (selected via `regions.segmentation_algorithm`):
-   - `region_growth` -- contiguous regions based on normal similarity and curvature
-   - `partfield` -- semantic parts from [PartField](https://github.com/nv-tlabs/PartField), mapped from per-face labels onto the sampled point cloud (requires GPU + PartField mounted at `/models/PartField`)
-5. **FOV Clustering** -- Subdivide each region into clusters that fit within the camera's field of view and depth of field, using K-means with Bayesian optimization for cluster count
-6. **Project Viewpoints** -- Compute a camera pose (position + orientation) for each cluster at the configured focal distance, with ray-cast occlusion checking
-7. **Optimize Traversal** -- Solve a TSP to order viewpoints for efficient robot motion
+2. **Surface Segmentation** -- Segment the mesh directly into regions (by triangle face, not a sampled point cloud). Two interchangeable algorithms (selected via `regions.segmentation_algorithm`):
+   - `region_growth` -- contiguous regions grown over triangle face-adjacency, using face-normal similarity and a per-face curvature analog (variance of neighboring face normals) as the merge criteria
+   - `partfield` -- semantic parts from [PartField](https://github.com/nv-tlabs/PartField), grouped directly from its per-face labels (requires GPU + PartField mounted at `/models/PartField`)
+3. **Sample Region Point Clouds** -- Poisson disk sample each region's own submesh (sized from `fov_clustering.point_density`); cached to disk and referenced from the results file
+4. **FOV Clustering** -- Subdivide each region's sampled point cloud into clusters that fit within the camera's field of view and depth of field, using K-means with Bayesian optimization for cluster count
+5. **Project Viewpoints** -- Compute a camera pose (position + orientation) for each cluster at the configured focal distance, with ray-cast occlusion checking
+6. **Optimize Traversal** -- Solve a TSP to order viewpoints for efficient robot motion
 
 Results are saved as a JSON file.
 
@@ -32,6 +31,7 @@ viewpoint_generation/
 │   ├── partfield_segmentation.py   # PartField part segmentation (GPU, subprocess)
 │   ├── fov_clustering.py           # Field-of-view clustering
 │   ├── viewpoint_projection.py     # Viewpoint pose computation
+│   ├── mesh_utils.py               # Shared triangle-mesh helpers (submesh extraction)
 │   ├── visualizer.py               # Open3D visualization
 │   ├── gui_node.py                 # GUI node implementation
 │   └── assets/
@@ -93,32 +93,29 @@ vg = ViewpointGeneration()
 vg.set_mesh_file("part.stl", units="mm")
 
 # Configure and run pipeline
-vg.set_sampling_number_of_points(10000)
-vg.sample_point_cloud()
-vg.estimate_curvature()        # skipped automatically when using PartField
 # vg.set_segmentation_algorithm("partfield")   # optional: use PartField instead
-vg.region_growth()             # runs the selected segmentation algorithm
+vg.segment_regions()           # segments the mesh, then samples a point cloud per region
 vg.fov_clustering()
 vg.project_viewpoints()
-
-# Save results
-vg.save_results("/path/to/results.json")
 ```
 
 ### Configuration
 
 All algorithm parameters are exposed as dataclass configs with sensible defaults:
 
-**RegionGrowingConfig**
+**RegionGrowingConfig** -- grows regions over the mesh's triangle face-adjacency
+graph (two faces are neighbors only if they share an edge), so growth can
+never bridge across a fold, thin wall, or gap the way a spatial-radius search
+over a sampled point cloud could. "Curvature" here is a per-face analog: how
+much a face's normal deviates from its adjacent faces' normals.
 
 | Parameter | Default | Description |
 |---|---|---|
-| `seed_threshold` | 0.1 | Curvature threshold for seed point selection |
-| `region_threshold` | 0.2 | Curvature threshold for region membership |
-| `min_cluster_size` | 10 | Minimum points per region |
+| `seed_threshold` | 0.1 | Curvature threshold for seed face selection |
+| `min_cluster_size` | 10 | Minimum faces per region |
+| `max_cluster_size` | 100000 | Maximum faces per region |
 | `normal_angle_threshold` | pi/3 | Maximum normal deviation (radians) for region membership |
 | `curvature_threshold` | 0.1 | Maximum curvature difference for region membership |
-| `knn_neighbors` | 30 | K for nearest-neighbor queries |
 
 **PartFieldSegmentationConfig** (used when `segmentation_algorithm == 'partfield'`)
 
@@ -130,10 +127,11 @@ All algorithm parameters are exposed as dataclass configs with sensible defaults
 | `with_knn` | False | Augment the face-adjacency graph with kNN connections (agglomerative only) |
 
 PartField runs as a subprocess (`partfield_inference.py` then
-`run_part_clustering.py`) against an exported copy of the loaded mesh. Per-face
-part labels are mapped to the sampled point cloud by nearest triangle. Mesh
-preprocessing/remeshing is left disabled so face ordering is preserved. Note:
-PartField produces no noise points (every face is assigned a part).
+`run_part_clustering.py`) against an exported copy of the loaded mesh. Its
+per-face part labels are grouped directly into regions (a list of triangle
+indices per part) with no further projection step. Mesh preprocessing/remeshing
+is left disabled so face ordering is preserved. Note: PartField produces no
+noise faces (every face is assigned a part).
 
 **FOVClusteringConfig**
 
@@ -141,7 +139,7 @@ PartField produces no noise points (every face is assigned a part).
 |---|---|---|
 | `fov_diameter` | 0.03 m | Camera field of view diameter at focal distance |
 | `dof` | 0.02 m | Depth of field |
-| `point_density` | 10.0 | Target points per square millimeter (K-means only) |
+| `point_density` | 0.5 | Target points per square millimeter, both for sampling each region's point cloud and for K-means cluster evaluation. Only needs to resolve FOV coverage/packing decisions, not final inspection imagery, so this can stay low |
 | `lambda_weight` | 1.0 | Weight for out-of-FOV penalty in cost function (K-means only) |
 | `beta_weight` | 1.0 | Weight for packing efficiency in cost function (K-means only) |
 | `point_weight` | 1.0 | Weight for point positions in K-means |
@@ -169,9 +167,7 @@ Wraps the core library, exposing each pipeline stage as a ROS service and all co
 
 | Service | Description |
 |---|---|
-| `/viewpoint_generation/sample_point_cloud` | Sample point cloud from loaded mesh |
-| `/viewpoint_generation/estimate_curvature` | Compute surface curvature |
-| `/viewpoint_generation/region_growth` | Run region growing segmentation |
+| `/viewpoint_generation/segment_regions` | Segment the mesh into regions (region growth or PartField) and sample each region's point cloud |
 | `/viewpoint_generation/fov_clustering` | Cluster regions by camera FOV |
 | `/viewpoint_generation/viewpoint_projection` | Generate camera viewpoints |
 | `/viewpoint_generation/optimize_traversal` | Optimize viewpoint visit order (TSP) |
@@ -184,9 +180,8 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
 - `regions.fov_clustering.algorithm` -- FOV clustering algorithm: `kmeans` (default) or `greedy_cover`
 - `model.mesh.file` -- Path to the mesh file
 - `model.mesh.units` -- Mesh units (`m`, `cm`, `mm`, `in`)
-- `model.point_cloud.file` -- Path to a pre-sampled point cloud
+- `model.point_cloud.file` -- Path to a manually-loaded point cloud (optional; independent of the per-region point clouds sampled during segmentation)
 - `model.point_cloud.units` -- Point cloud units
-- `model.point_cloud.sampling.number_of_points` -- Sampling density
 - `results.file` -- Path to results JSON
 - `settings.data_path` -- Base data directory
 
@@ -211,7 +206,7 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
 - **viewpoint_traversal_node** -- MoveIt-based motion planning to viewpoints with TSP optimization and workspace constraints
 - **gui_node** -- Open3D visualization GUI with interactive mesh, region, cluster, and viewpoint rendering. Visualization is split into two orthogonal axes:
 
-  - **Region surface (exclusive)** — *View → Region Surface* selects one coloring for the region surfaces: `Solid` (uniform region color) or `Cluster` (colored by owning cluster). Each region is its own triangle submesh (or a sub-cloud when no mesh is available), so selecting a region makes the **others semi-transparent** to focus on it. Selecting a region also shows only its path, shows the enabled overlays for its viewpoints, and auto-selects its first viewpoint.
+  - **Region surface (exclusive)** — *View → Region Surface* selects one coloring for the region surfaces: `Solid` (uniform region color) or `Cluster` (colored by owning cluster). Each region is its own exact triangle submesh (segmentation is mesh-native, so no subdivision or nearest-point projection is needed to render it), so selecting a region makes the **others semi-transparent** to focus on it. Selecting a region also shows only its path, shows the enabled overlays for its viewpoints, and auto-selects its first viewpoint.
   - **Viewpoint overlays (inclusive)** — *View → Viewpoint Overlays* independently toggles any combination of per-viewpoint geometries: `Viewpoint Marker`, `FOV Cylinder`, `Origin Line` (surface origin → camera), `Frustum`, and `Origin Sphere`. **FOV Cylinder** is a white wireframe cylinder (radius `fov_diameter/2`, height `dof`) centered on each cluster's surface target and aligned to its averaged view direction — the literal coverage volume; overlapping FOVs visibly intersect, honestly depicting the *covering* solution. This set applies to the non-selected viewpoints.
   - **Selected viewpoint overlays** — *View → Selected Viewpoint Overlays* is a parallel, independent set of the same toggles that applies only to the currently-selected viewpoint (drawn with highlight colors). Because the two sets are independent, you can, e.g., show the FOV cylinder for the selected viewpoint only by enabling it here while leaving it off in *Viewpoint Overlays*.
 
@@ -283,14 +278,14 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
       "material": "unknown",
       "dimensions": "(LxWxH): 0.14 x 0.09 x 0.10 m",
       "surface_area": "Surface Area: 0.03 m^2",
-      "point_cloud": {
-        "file": "/path/to/points.ply",
-        "units": "m",
-        "num_points": 10000
-      },
       "regions": [
         {
-          "points": [8994, 199, 2379],
+          "faces": [8994, 199, 2379],
+          "point_cloud": {
+            "file": "/path/to/region_0_1500points.ply",
+            "units": "m",
+            "points": 1500
+          },
           "clusters": [
             {
               "points": [1234, 5678],
@@ -318,7 +313,7 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
         }
       ],
       "order": [0, 1, 2],
-      "noise_points": [100, 200],
+      "noise_faces": [100, 200],
       "camera_config": {
         "fov_diameter": 0.03,
         "dof": 0.02,
@@ -328,6 +323,14 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
   ]
 }
 ```
+
+`region.faces` is a list of triangle indices into the mesh (`meshes[i].file`) —
+the exact set of faces region growth or PartField assigned to that region.
+`region.point_cloud` is that region's own submesh, Poisson-disk-sampled and
+cached to disk during `segment_regions()`; cluster `points` are point indices
+local to *that region's own point cloud*, not a shared/global one. `noise_faces`
+is a list of triangle indices no region claimed (always empty for PartField,
+since every face gets a part).
 
 **Viewpoint fields:**
 - `origin` -- Cluster centroid on the surface
@@ -360,8 +363,7 @@ existed simply skip that overlay.
     planned* segments in the region.
   - `cartesian_waypoints` -- Flattened list of `eoat_camera_link` positions
     (metres) along every successfully planned segment, used to draw the arm's
-    actual path in the GUI (as opposed to the straight-line viewpoint-to-viewpoint
-    path).
+    actual path in the GUI (the "Cartesian Path" toggle).
   - `unreachable` -- Cluster indices (within this region) that a segment could
     not be planned to. The GUI highlights these viewpoints in the 3D view, and
     `optimize_traversal` logs them (`region X:Y: viewpoint N unreachable ...`)

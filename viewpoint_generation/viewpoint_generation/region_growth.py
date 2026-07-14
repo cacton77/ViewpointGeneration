@@ -1,60 +1,47 @@
 """
-Optimized Point Cloud Region Growing Library using Open3D
+Mesh Region Growing Library using Open3D
 
-This library provides efficient region growing algorithms for point cloud segmentation
-with various optimizations for runtime performance.
+Grows contiguous regions directly over a triangle mesh's face-adjacency
+graph, using face-normal similarity as the merge criterion. This replaces a
+point-cloud/KNN spatial-search approach with exact surface topology: two
+faces are only ever considered neighbors if they share a mesh edge, so
+growth can never bridge across a fold, thin wall, or gap the way a spatial
+radius/KNN search over a sampled point cloud can.
 """
+
+import time
+from collections import deque
+from dataclasses import dataclass
+from typing import List, Tuple
 
 import numpy as np
 import open3d as o3d
-from typing import List, Tuple, Optional, Union, Callable
-from dataclasses import dataclass
-from collections import deque
-import time
 
 
 @dataclass
 class RegionGrowingConfig:
-    """Configuration parameters for region growing algorithms."""
+    """Configuration parameters for mesh-based region growing."""
 
     # Core parameters
     seed_threshold: float = 0.1
-    region_threshold: float = 0.2
-    min_cluster_size: int = 10
-    max_cluster_size: int = 100000
-
-    # Spatial search parameters
-    knn_neighbors: int = 30
-    radius_search: Optional[float] = None
+    curvature_threshold: float = 0.1
+    min_cluster_size: int = 10       # faces
+    max_cluster_size: int = 100000   # faces
 
     # Normal-based parameters
     normal_angle_threshold: float = np.pi / 6  # 30 degrees
-    curvature_threshold: float = 0.1
-
-    # Optimization parameters
-    use_spatial_hashing: bool = True
-    spatial_hash_resolution: float = 0.05
-    batch_size: int = 1000
-
-    # Filtering parameters
-    remove_statistical_outliers: bool = False
-    outlier_nb_neighbors: int = 20
-    outlier_std_ratio: float = 2.0
-
-    # New algo
-    radius: float = 0.1
 
     def to_dict(self):
         return {
             "seed_threshold": {
                 "value": self.seed_threshold,
                 "type": "float",
-                "description": "Curvature threshold for seed point selection",
+                "description": "Curvature threshold for seed face selection",
                 "control": "slider",
                 "range": [0.0, 1.0],
             },
-            "region_threshold": {
-                "value": self.region_threshold,
+            "curvature_threshold": {
+                "value": self.curvature_threshold,
                 "type": "float",
                 "description": "Curvature threshold for region growing",
                 "control": "slider",
@@ -63,23 +50,16 @@ class RegionGrowingConfig:
             "min_cluster_size": {
                 "value": self.min_cluster_size,
                 "type": "integer",
-                "description": "Minimum cluster size in points",
+                "description": "Minimum faces per region",
                 "control": "slider",
                 "range": [1, self.max_cluster_size],
             },
             "max_cluster_size": {
                 "value": self.max_cluster_size,
                 "type": "integer",
-                "description": "Maximum cluster size in points",
+                "description": "Maximum faces per region",
                 "control": "slider",
                 "range": [self.min_cluster_size, 1000000],
-            },
-            "knn_neighbors": {
-                "value": self.knn_neighbors,
-                "type": "integer",
-                "description": "Number of nearest neighbors to consider for normal estimation",
-                "control": "slider",
-                "range": [1, 1000],
             },
             "normal_angle_threshold": {
                 "value": self.normal_angle_threshold,
@@ -88,318 +68,162 @@ class RegionGrowingConfig:
                 "control": "slider",
                 "range": [0, np.pi],
             },
-            "curvature_threshold": {
-                "value": self.curvature_threshold,
-                "type": "float",
-                "description": "Curvature threshold for region growing",
-                "control": "slider",
-                "range": [0.0, 2*np.pi],
-            },
-            "use_spatial_hashing": {
-                "value": self.use_spatial_hashing,
-                "type": "boolean",
-                "description": "Whether to use spatial hashing for neighbor queries",
-                "control": "toggle",
-            },
-            "spatial_hash_resolution": {
-                "value": self.spatial_hash_resolution,
-                "type": "float",
-                "description": "Resolution of spatial hash grid in meters",
-                "control": "slider",
-                "range": [0.001, 1.0],
-            },
-            "batch_size": {
-                "value": self.batch_size,
-                "type": "integer",
-                "description": "Batch size for processing points in batches",
-                "control": "slider",
-                "range": [1, 10000],
-            },
-            "remove_statistical_outliers": {
-                "value": self.remove_statistical_outliers,
-                "type": "boolean",
-                "description": "Whether to remove statistical outliers before processing",
-                "control": "toggle",
-            },
-            "outlier_nb_neighbors": {
-                "value": self.outlier_nb_neighbors,
-                "type": "integer",
-                "description": "Number of neighbors to consider for statistical outlier removal",
-                "control": "slider",
-                "range": [1, 1000],
-            },
-            "outlier_std_ratio": {
-                "value": self.outlier_std_ratio,
-                "type": "float",
-                "description": "Standard deviation ratio for statistical outlier removal",
-                "control": "slider",
-                "range": [0.1, 10.0],
-            },
-            "radius": {
-                "value": self.radius,
-                "type": "float",
-                "description": "Radius for region growing",
-                "control": "slider",
-                "range": [0.01, 1.0],}
         }
-
-
-class SpatialHashGrid:
-    """Spatial hash grid for efficient nearest neighbor queries."""
-
-    def __init__(self, points: np.ndarray, resolution: float):
-        self.resolution = resolution
-        self.grid = {}
-        self._build_grid(points)
-
-    def _build_grid(self, points: np.ndarray):
-        """Build the spatial hash grid."""
-        grid_coords = np.floor(points / self.resolution).astype(int)
-
-        for i, coord in enumerate(grid_coords):
-            key = tuple(coord)
-            if key not in self.grid:
-                self.grid[key] = []
-            self.grid[key].append(i)
-
-    def get_neighbors_in_radius(self, point: np.ndarray, radius: float) -> List[int]:
-        """Get all point indices within radius of given point."""
-        neighbors = []
-        grid_radius = int(np.ceil(radius / self.resolution))
-        center_coord = np.floor(point / self.resolution).astype(int)
-
-        for dx in range(-grid_radius, grid_radius + 1):
-            for dy in range(-grid_radius, grid_radius + 1):
-                for dz in range(-grid_radius, grid_radius + 1):
-                    key = tuple(center_coord + np.array([dx, dy, dz]))
-                    if key in self.grid:
-                        neighbors.extend(self.grid[key])
-
-        return neighbors
 
 
 class RegionGrowing:
     """
-    Optimized region growing implementation for point cloud segmentation.
+    Mesh-native region growing over triangle face-adjacency.
 
     Features:
-    - Normal-based and curvature-based region growing
-    - Spatial indexing for fast neighbor queries
-    - Vectorized operations for performance
+    - Normal-based and curvature-based region growing directly on mesh faces
+    - Exact face-adjacency neighbor queries (no spatial search, no sampling-
+      density dependence)
     - Configurable parameters
-    - Statistical outlier removal
     """
 
     def __init__(self, config: RegionGrowingConfig = None):
         self.config = config or RegionGrowingConfig()
-        self.point_cloud = None
-        self.points = None
-        self.normals = None
-        self.curvatures = None
-        self.spatial_index = None
-        self.spatial_hash = None
+        self.mesh = None
+        self.face_normals = None
+        self.face_curvatures = None
+        self.adjacency = None  # list of np.ndarray, per-face neighbor face indices
 
-    def preprocess_point_cloud(self, point_cloud: o3d.geometry.PointCloud) -> o3d.geometry.PointCloud:
-        """Preprocess point cloud with filtering and normal estimation."""
-        pc = point_cloud
+    def build_face_adjacency(self, triangles: np.ndarray) -> List[np.ndarray]:
+        """Build per-face neighbor lists from shared mesh edges."""
+        edge_faces = {}
+        for face_idx, tri in enumerate(triangles):
+            for j in range(3):
+                a, b = int(tri[j]), int(tri[(j + 1) % 3])
+                key = (a, b) if a < b else (b, a)
+                edge_faces.setdefault(key, []).append(face_idx)
 
-        # Remove statistical outliers
-        if self.config.remove_statistical_outliers:
-            pc, _ = pc.remove_statistical_outlier(
-                nb_neighbors=self.config.outlier_nb_neighbors,
-                std_ratio=self.config.outlier_std_ratio
-            )
+        neighbors = [set() for _ in range(len(triangles))]
+        for face_list in edge_faces.values():
+            if len(face_list) < 2:
+                continue
+            for i in face_list:
+                neighbors[i].update(f for f in face_list if f != i)
 
-        # Estimate normals if not present
-        if not pc.has_normals():
-            pc.estimate_normals(
-                search_param=o3d.geometry.KDTreeSearchParamHybrid(
-                    radius=0.1, max_nn=30
-                )
-            )
-            pc.orient_normals_consistent_tangent_plane(100)
+        return [np.fromiter(n, dtype=int) for n in neighbors]
 
-        self.points = np.asarray(pc.points)
-        self.normals = np.asarray(pc.normals)
+    def compute_face_curvatures(self, face_normals: np.ndarray,
+                                 adjacency: List[np.ndarray]) -> np.ndarray:
+        """Curvature analog: how much a face's normal deviates from its
+        adjacent faces' normals (0 = perfectly flat neighborhood)."""
+        curvatures = np.zeros(len(face_normals))
 
-        return pc
-
-    def compute_curvatures(self, points: np.ndarray, normals: np.ndarray,
-                           neighbors_list: List[List[int]]) -> np.ndarray:
-        """Compute curvature values for each point using local neighborhood."""
-        curvatures = np.zeros(len(points))
-
-        for i, neighbors in enumerate(neighbors_list):
-            if len(neighbors) < 3:
-                curvatures[i] = 1.0  # High curvature for isolated points
+        for i, neighbors in enumerate(adjacency):
+            if len(neighbors) == 0:
+                curvatures[i] = 1.0  # High curvature for isolated faces
                 continue
 
-            # Get neighbor points and normals
-            neighbor_points = points[neighbors]
-            neighbor_normals = normals[neighbors]
-
-            # Compute covariance matrix of neighbor points
-            centered_points = neighbor_points - \
-                np.mean(neighbor_points, axis=0)
-            cov_matrix = np.cov(centered_points.T)
-
-            # Eigenvalues represent principal curvatures
-            eigenvals = np.linalg.eigvals(cov_matrix)
-            eigenvals = np.sort(eigenvals)
-
-            # Curvature as ratio of smallest to largest eigenvalue
-            if eigenvals[-1] > 1e-10:
-                curvatures[i] = eigenvals[0] / eigenvals[-1]
-            else:
-                curvatures[i] = 1.0
+            dots = np.clip(face_normals[neighbors] @ face_normals[i], -1.0, 1.0)
+            curvatures[i] = 1.0 - np.mean(dots)
 
         return curvatures
 
-    def build_spatial_structures(self, points: np.ndarray):
-        """Build spatial indexing structures for efficient neighbor queries."""
-        # Build KDTree for standard queries
-        temp_pc = o3d.geometry.PointCloud()
-        temp_pc.points = o3d.utility.Vector3dVector(points)
-        self.spatial_index = o3d.geometry.KDTreeFlann(temp_pc)
+    def preprocess_mesh(self, mesh: o3d.geometry.TriangleMesh) -> o3d.geometry.TriangleMesh:
+        """Ensure triangle normals are present and build face adjacency."""
+        if not mesh.has_triangle_normals():
+            mesh.compute_triangle_normals()
 
-        # Build spatial hash grid if enabled
-        if self.config.use_spatial_hashing:
-            self.spatial_hash = SpatialHashGrid(
-                points, self.config.spatial_hash_resolution)
+        self.mesh = mesh
+        self.face_normals = np.asarray(mesh.triangle_normals)
+        self.adjacency = self.build_face_adjacency(np.asarray(mesh.triangles))
 
-    def get_neighbors(self, point_idx: int) -> List[int]:
-        """Get neighbors for a point using the most appropriate method."""
-        if self.config.radius_search is not None:
-            # Radius search
-            [_, neighbors, _] = self.spatial_index.search_radius_vector_3d(
-                self.points[point_idx], self.config.radius_search
-            )
-            return neighbors
-        else:
-            # KNN search
-            [_, neighbors, _] = self.spatial_index.search_knn_vector_3d(
-                self.points[point_idx], self.config.knn_neighbors
-            )
-            return neighbors[1:]  # Exclude the point itself
+        return mesh
 
-    def compute_similarity_metrics(self, point_idx: int, neighbor_idx: int) -> Tuple[float, float]:
-        """Compute similarity metrics between two points."""
-        # Normal angle difference
-        normal_diff = np.arccos(np.clip(
-            np.dot(self.normals[point_idx],
-                   self.normals[neighbor_idx]), -1.0, 1.0
-        ))
+    def is_valid_seed(self, face_idx: int) -> bool:
+        """Check if a face can be used as a seed for region growing."""
+        return self.face_curvatures[face_idx] < self.config.seed_threshold
 
-        # Curvature difference
-        curvature_diff = abs(
-            self.curvatures[point_idx] - self.curvatures[neighbor_idx])
-
-        return normal_diff, curvature_diff
-
-    def is_valid_seed(self, point_idx: int) -> bool:
-        """Check if a point can be used as a seed for region growing."""
-        return self.curvatures[point_idx] < self.config.seed_threshold
-
-    def can_merge_to_region(self, point_idx: int, region_normal: np.ndarray,
-                            region_curvature: float) -> bool:
-        """Check if a point can be merged to an existing region."""
-        # Check normal similarity
+    def can_merge_to_region(self, face_idx: int, region_normal: np.ndarray,
+                             region_curvature: float) -> bool:
+        """Check if a face can be merged into an existing region."""
         normal_angle = np.arccos(np.clip(
-            np.dot(self.normals[point_idx], region_normal), -1.0, 1.0
+            np.dot(self.face_normals[face_idx], region_normal), -1.0, 1.0
         ))
-
         if normal_angle > self.config.normal_angle_threshold:
             return False
 
-        # Check curvature similarity
-        curvature_diff = abs(self.curvatures[point_idx] - region_curvature)
+        curvature_diff = abs(self.face_curvatures[face_idx] - region_curvature)
         if curvature_diff > self.config.curvature_threshold:
             return False
 
         return True
 
     def grow_region_from_seed(self, seed_idx: int, processed: np.ndarray) -> List[int]:
-        """Grow a region starting from a seed point using BFS."""
+        """Grow a region starting from a seed face using BFS over face
+        adjacency. Faces visited while growing a region that ends up below
+        ``min_cluster_size`` are left unmarked in ``processed`` so a
+        different, larger region can still claim them."""
         region = []
+        local_visited = {seed_idx}
         queue = deque([seed_idx])
-        processed[seed_idx] = True
 
-        # Initialize region properties with seed
-        region_normal = self.normals[seed_idx].copy()
-        region_curvature = self.curvatures[seed_idx]
+        region_normal = self.face_normals[seed_idx].copy()
+        region_curvature = self.face_curvatures[seed_idx]
 
         while queue and len(region) < self.config.max_cluster_size:
             current_idx = queue.popleft()
             region.append(current_idx)
 
-            # Get neighbors of current point
-            neighbors = self.get_neighbors(current_idx)
-
-            for neighbor_idx in neighbors:
-                if processed[neighbor_idx]:
+            for neighbor_idx in self.adjacency[current_idx]:
+                neighbor_idx = int(neighbor_idx)
+                if processed[neighbor_idx] or neighbor_idx in local_visited:
                     continue
 
-                # Check if neighbor can be merged to region
                 if self.can_merge_to_region(neighbor_idx, region_normal, region_curvature):
-                    processed[neighbor_idx] = True
+                    local_visited.add(neighbor_idx)
                     queue.append(neighbor_idx)
 
                     # Update region properties (weighted average)
                     weight = 1.0 / (len(region) + 1)
                     region_normal = (1 - weight) * region_normal + \
-                        weight * self.normals[neighbor_idx]
-                    region_normal /= np.linalg.norm(region_normal)  # Normalize
+                        weight * self.face_normals[neighbor_idx]
+                    norm = np.linalg.norm(region_normal)
+                    if norm > 1e-10:
+                        region_normal /= norm
                     region_curvature = (
-                        1 - weight) * region_curvature + weight * self.curvatures[neighbor_idx]
+                        1 - weight) * region_curvature + weight * self.face_curvatures[neighbor_idx]
 
-        return region if len(region) >= self.config.min_cluster_size else []
+        if len(region) < self.config.min_cluster_size:
+            return []
 
-    def segment(self, point_cloud: o3d.geometry.PointCloud) -> Tuple[List[List[int]], List[int]]:
+        for face_idx in region:
+            processed[face_idx] = True
+        return region
+
+    def segment(self, mesh: o3d.geometry.TriangleMesh) -> Tuple[List[List[int]], List[int]]:
         """
-        Perform region growing segmentation on point cloud.
+        Perform region growing segmentation directly on a triangle mesh.
 
         Args:
-            point_cloud: Input point cloud
+            mesh: Input triangle mesh.
 
         Returns:
-            Tuple of (list of clusters, list of noise points)
+            Tuple of (list of regions, list of noise face indices). Each
+            region is a list of triangle indices into ``mesh.triangles``.
         """
         start_time = time.time()
 
-        # Preprocess point cloud
-        self.point_cloud = self.preprocess_point_cloud(point_cloud)
-        self.points = np.asarray(self.point_cloud.points)
-        self.normals = np.asarray(self.point_cloud.normals)
+        self.preprocess_mesh(mesh)
+        n_faces = len(self.face_normals)
 
-        print(f"Preprocessing completed in {time.time() - start_time:.2f}s")
+        curvature_start = time.time()
+        self.face_curvatures = self.compute_face_curvatures(
+            self.face_normals, self.adjacency)
+        print(f"Curvature computation completed in {time.time() - curvature_start:.2f}s")
 
-        # Build spatial structures
-        build_start = time.time()
-        self.build_spatial_structures(self.points)
-        print(
-            f"Spatial indexing completed in {time.time() - build_start:.2f}s")
+        # Find seed faces (faces with low curvature), flattest first
+        seed_candidates = [i for i in range(n_faces) if self.is_valid_seed(i)]
+        seed_candidates.sort(key=lambda x: self.face_curvatures[x])
 
-        if self.curvatures is None:
-            # Compute curvatures
-            curvature_start = time.time()
-            neighbors_list = [self.get_neighbors(i)
-                            for i in range(len(self.points))]
-            self.curvatures = self.compute_curvatures(
-                self.points, self.normals, neighbors_list)
-            print(
-                f"Curvature computation completed in {time.time() - curvature_start:.2f}s")
+        print(f"Found {len(seed_candidates)} seed candidates out of {n_faces} faces")
 
-        # Find seed points (points with low curvature)
-        seed_candidates = [i for i in range(
-            len(self.points)) if self.is_valid_seed(i)]
-        # Sort by curvature (lowest first)
-        seed_candidates.sort(key=lambda x: self.curvatures[x])
-
-        print(f"Found {len(seed_candidates)} seed candidates")
-
-        # Region growing
         regions = []
-        processed = np.zeros(len(self.points), dtype=bool)
+        processed = np.zeros(n_faces, dtype=bool)
 
         growing_start = time.time()
         for seed_idx in seed_candidates:
@@ -409,117 +233,81 @@ class RegionGrowing:
             region = self.grow_region_from_seed(seed_idx, processed)
             if region:
                 regions.append(region)
-                print(f"Cluster {len(regions)}: {len(region)} points")
+                print(f"Region {len(regions)}: {len(region)} faces")
 
-        print(
-            f"Region growing completed in {time.time() - growing_start:.2f}s")
+        print(f"Region growing completed in {time.time() - growing_start:.2f}s")
 
-        # Identify noise points
-        noise_points = [i for i in range(len(self.points)) if not processed[i]]
+        noise_faces = [i for i in range(n_faces) if not processed[i]]
 
         print(f"Total segmentation time: {time.time() - start_time:.2f}s")
-        print(
-            f"Found {len(regions)} regions and {len(noise_points)} noise points")
+        print(f"Found {len(regions)} regions and {len(noise_faces)} noise faces")
 
-        return regions, noise_points
-
-    def visualize_segmentation(self, clusters: List[List[int]], noise_points: List[int]):
-        """Visualize the segmentation results with different colors for each cluster."""
-        if self.point_cloud is None:
-            raise ValueError(
-                "No point cloud data available. Run segment() first.")
-
-        # Create colored point cloud
-        colored_pc = o3d.geometry.PointCloud()
-        colored_pc.points = self.point_cloud.points
-
-        # Generate colors
-        colors = np.zeros((len(self.points), 3))
-
-        # Assign random colors to clusters
-        np.random.seed(42)  # For reproducible colors
-        for i, cluster in enumerate(clusters):
-            color = np.random.rand(3)
-            for point_idx in cluster:
-                colors[point_idx] = color
-
-        # Assign gray color to noise points
-        for point_idx in noise_points:
-            colors[point_idx] = [0.5, 0.5, 0.5]
-
-        colored_pc.colors = o3d.utility.Vector3dVector(colors)
-
-        # Visualize
-        o3d.visualization.draw_geometries([colored_pc])
+        return regions, noise_faces
 
 
 # Utility functions
-def create_sample_point_cloud(n_points: int = 10000) -> o3d.geometry.PointCloud:
-    """Create a sample point cloud for testing."""
-    points = []
+def create_sample_mesh(k: int = 5) -> o3d.geometry.TriangleMesh:
+    """Create a sample triangle mesh (a few primitives) for testing."""
+    combined_mesh = o3d.geometry.TriangleMesh()
+    for i in range(k):
+        rand_n = np.random.randint(0, 3)
+        if rand_n == 0:
+            mesh = o3d.geometry.TriangleMesh.create_sphere(radius=2.0)
+        elif rand_n == 1:
+            mesh = o3d.geometry.TriangleMesh.create_box(
+                width=3.0, height=3.0, depth=3.0)
+        else:
+            mesh = o3d.geometry.TriangleMesh.create_cylinder(radius=1.5, height=4.0)
 
-    # Create a few geometric shapes
-    # Plane
-    x = np.random.uniform(-5, 5, n_points // 3)
-    y = np.random.uniform(-5, 5, n_points // 3)
-    z = np.random.normal(0, 0.1, n_points // 3)
-    plane_points = np.column_stack([x, y, z])
-    points.append(plane_points)
+        mesh.translate(np.random.uniform(-10, 10, 3))
+        combined_mesh += mesh
 
-    # Sphere
-    phi = np.random.uniform(0, 2 * np.pi, n_points // 3)
-    theta = np.random.uniform(0, np.pi, n_points // 3)
-    r = 2 + np.random.normal(0, 0.1, n_points // 3)
-    x = r * np.sin(theta) * np.cos(phi) + 8
-    y = r * np.sin(theta) * np.sin(phi)
-    z = r * np.cos(theta) + 3
-    sphere_points = np.column_stack([x, y, z])
-    points.append(sphere_points)
+    combined_mesh.compute_triangle_normals()
+    return combined_mesh
 
-    # Cylinder
-    theta = np.random.uniform(0, 2 * np.pi, n_points // 3)
-    r = 1.5 + np.random.normal(0, 0.05, n_points // 3)
-    z = np.random.uniform(-3, 3, n_points // 3)
-    x = r * np.cos(theta) - 8
-    y = r * np.sin(theta)
-    cylinder_points = np.column_stack([x, y, z])
-    points.append(cylinder_points)
 
-    all_points = np.vstack(points)
+def visualize_segmentation(mesh: o3d.geometry.TriangleMesh,
+                            regions: List[List[int]], noise_faces: List[int]):
+    """Visualize the segmentation by painting each region's submesh a
+    distinct color and merging noise faces in gray."""
+    from viewpoint_generation.mesh_utils import submesh_from_faces
 
-    pc = o3d.geometry.PointCloud()
-    pc.points = o3d.utility.Vector3dVector(all_points)
+    np.random.seed(42)
+    mesh_triangles = np.asarray(mesh.triangles)
+    pieces = []
+    for region in regions:
+        sub, _ = submesh_from_faces(mesh, mesh_triangles[np.asarray(region)])
+        sub.paint_uniform_color(np.random.rand(3))
+        pieces.append(sub)
 
-    return pc
+    if noise_faces:
+        sub, _ = submesh_from_faces(mesh, mesh_triangles[np.asarray(noise_faces)])
+        sub.paint_uniform_color([0.5, 0.5, 0.5])
+        pieces.append(sub)
+
+    o3d.visualization.draw_geometries(pieces, mesh_show_back_face=True)
 
 
 # Example usage
 if __name__ == "__main__":
-    # Create sample point cloud
-    print("Creating sample point cloud...")
-    pc = create_sample_point_cloud(5000)
+    print("Creating sample mesh...")
+    mesh = create_sample_mesh(5)
 
-    # Configure region growing
     config = RegionGrowingConfig(
         seed_threshold=0.05,
-        region_threshold=0.1,
-        min_cluster_size=50,
-        normal_angle_threshold=np.pi / 8,  # 22.5 degrees
         curvature_threshold=0.05,
-        knn_neighbors=20
+        min_cluster_size=20,
+        normal_angle_threshold=np.pi / 8,  # 22.5 degrees
     )
 
-    # Perform segmentation
     rg = RegionGrowing(config)
-    clusters, noise = rg.segment(pc)
+    regions, noise_faces = rg.segment(mesh)
 
-    # Visualize results
     print("\nVisualization (close window to continue):")
-    rg.visualize_segmentation(clusters, noise)
+    visualize_segmentation(mesh, regions, noise_faces)
 
-    # Print statistics
     print(f"\nSegmentation Results:")
-    print(f"Number of clusters: {len(clusters)}")
-    print(f"Number of noise points: {len(noise)}")
-    for i, cluster in enumerate(clusters):
-        print(f"Cluster {i+1}: {len(cluster)} points")
+    print(f"Number of regions: {len(regions)}")
+    print(f"Number of noise faces: {len(noise_faces)}")
+    for i, region in enumerate(regions):
+        print(f"Region {i + 1}: {len(region)} faces")

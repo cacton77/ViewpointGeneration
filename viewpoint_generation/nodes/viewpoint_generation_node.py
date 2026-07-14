@@ -42,7 +42,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 ('model.mesh.units', 'm'),
                 ('model.point_cloud.file', ''),
                 ('model.point_cloud.units', 'm'),
-                ('model.point_cloud.sampling.number_of_points', 100000),
             ]
         )
 
@@ -97,11 +96,11 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                ('regions.segmentation_algorithm', 'region_growth'),
+                ('regions.algorithm', 'partfield'),
             ]
         )
         success, message = self.viewpoint_generation.set_segmentation_algorithm(
-            self.get_parameter('regions.segmentation_algorithm').value)
+            self.get_parameter('regions.algorithm').value)
         if not success:
             self.get_logger().error(message)
 
@@ -116,7 +115,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             excluded=set(),
         )
         _auto_declare_parameters(
-            prefix='regions.fov_clustering.',
+            prefix='fov_clustering.',
             config_dict=self.viewpoint_generation.fc_config.to_dict(),
             excluded=set(),
         )
@@ -157,12 +156,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # --- ROS Services and Actions ---
 
         services_cb_group = MutuallyExclusiveCallbackGroup()
-        # Sample PCD Service
-        self.create_service(Trigger, node_name + '/sample_point_cloud',
-                            self.sample_point_cloud_callback, callback_group=services_cb_group)
-        # Region Growth Service
-        self.create_service(Trigger, node_name + '/region_growth',
-                            self.region_growth_callback, callback_group=services_cb_group)
+        # Region Segmentation Service
+        self.create_service(Trigger, node_name + '/segment_regions',
+                            self.segment_regions_callback, callback_group=services_cb_group)
         # FOV Clustering Service
         self.create_service(Trigger, node_name + '/fov_clustering',
                             self.fov_clustering_callback, callback_group=services_cb_group)
@@ -190,9 +186,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                            self.get_parameter('model.mesh.units').get_parameter_value().string_value)
         self.set_point_cloud_file(self.get_parameter('model.point_cloud.file').get_parameter_value().string_value,
                                   self.get_parameter('model.point_cloud.units').get_parameter_value().string_value)
-        self.set_sampling_number_of_points(
-            self.get_parameter(
-                'model.point_cloud.sampling.number_of_points').get_parameter_value().integer_value)
         self.pv_opacity = self.get_parameter(
             'settings.pv_opacity').get_parameter_value().double_value
 
@@ -526,87 +519,6 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 self.get_logger().info('CUDA disabled.')
             return True
 
-    def set_sampling_number_of_points(self, number_of_points):
-        """
-        Helper function to set the number of points to sample.
-        :param number_of_points: The number of points to sample.
-        :return: True if successful, False otherwise.
-        """
-
-        if number_of_points <= 0:
-            self.get_logger().error(
-                'Number of points must be greater than 0.'
-            )
-            return False
-
-        success, number_of_points = self.viewpoint_generation.set_sampling_number_of_points(
-            number_of_points)
-
-        if not success:
-            self.get_logger().error(
-                f'Failed to set number of points to {number_of_points}.'
-            )
-            return False
-        else:
-            self.get_logger().info(
-                f'Number of points set to {number_of_points}.')
-            number_of_points_param = rclpy.parameter.Parameter(
-                'model.point_cloud.sampling.number_of_points',
-                rclpy.Parameter.Type.INTEGER,
-                number_of_points
-            )
-            self.block_next_param_callback = True
-            self.set_parameters([number_of_points_param])
-
-        return True
-
-    def sample_point_cloud_callback(self, request, response):
-        """ Callback for the sample point cloud service.
-        :param request: The request object.
-        :param response: The response object.
-        :return: The response object.
-            success (bool): True if point cloud sampling was successful, False otherwise.
-            message (str): Returns the file path of the sampled point cloud if successful, or an error message if not.
-        """
-
-        self.get_logger().info('Sampling point cloud...')
-
-        success, message = self.viewpoint_generation.sample_point_cloud()
-
-        if success:
-            self.get_logger().info(
-                f"Point cloud sampled successfully. File: {message}")
-
-            # Set the point cloud of the partitioner
-            pcd_file = message
-
-            # Update the point cloud units to meters
-            point_cloud_units_param = rclpy.parameter.Parameter(
-                'model.point_cloud.units',
-                rclpy.Parameter.Type.STRING,
-                'm'
-            )
-            self.block_next_param_callback = True
-            self.set_parameters([point_cloud_units_param])
-
-            # Update the point cloud file parameter with the sampled file
-            point_cloud_file_param = rclpy.parameter.Parameter(
-                'model.point_cloud.file',
-                rclpy.Parameter.Type.STRING,
-                pcd_file
-            )
-
-            self.set_parameters(
-                [point_cloud_file_param])
-
-        else:
-            self.get_logger().error(f"Failed to sample point cloud: {message}")
-
-        response.success = success
-        response.message = message
-
-        return response
-
     def set_seed_threshold(self, seed_threshold):
         """
         Helper function to set the seed threshold for region growth.
@@ -692,20 +604,20 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.get_logger().info(message)
             return True
 
-    def region_growth_callback(self, request, response):
+    def segment_regions_callback(self, request, response):
         """
-        Callback for the region growth service.
+        Callback for the region segmentation service.
         :param request: The request object.
         :param response: The response object.
         :return: The response object.
         """
-        self.get_logger().info('Performing region growth...')
+        self.get_logger().info('Performing region segmentation...')
 
-        success, message = self.viewpoint_generation.region_growth()
+        success, message = self.viewpoint_generation.segment_regions()
 
         if success:
             self.get_logger().info(
-                f"Region growth completed successfully. results.file: {message}")
+                f"Region segmentation completed successfully. results.file: {message}")
             results_file_param = rclpy.parameter.Parameter(
                 'results.file',
                 rclpy.Parameter.Type.STRING,
@@ -713,7 +625,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             )
             self.set_parameters([results_file_param])
         else:
-            self.get_logger().error(f"Region growth failed: {message}")
+            self.get_logger().error(f"Region segmentation failed: {message}")
 
         response.success = success
         response.message = message
@@ -866,9 +778,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     success = True
                 else:
                     success = self.set_point_cloud_file(pcd_file, param.value)
-            elif param.name == 'model.point_cloud.sampling.number_of_points':
-                success = self.set_sampling_number_of_points(param.value)
-            elif param.name == 'regions.segmentation_algorithm':
+            elif param.name == 'regions.algorithm':
                 success, message = self.viewpoint_generation.set_segmentation_algorithm(
                     param.value)
                 if success:

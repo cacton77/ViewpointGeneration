@@ -2,9 +2,9 @@
 PartField-based mesh segmentation.
 
 A drop-in alternative to RegionGrowing that produces the same
-``segment() -> (regions, noise_points)`` contract, where each region is a list
-of point indices into the sampled point cloud and ``noise_points`` is a list of
-unassigned indices.
+``segment() -> (regions, noise_faces)`` contract, where each region is a list
+of triangle indices into the mesh and ``noise_faces`` is a list of unassigned
+face indices.
 
 Internally this shells out to nv-tlabs/PartField (mounted at /models/PartField):
 
@@ -13,9 +13,8 @@ Internally this shells out to nv-tlabs/PartField (mounted at /models/PartField):
 
 PartField labels are per-face. PartField preserves the input mesh's face count
 and ordering (only the vertex coordinates are normalised internally), so the
-returned labels align by index with the mesh handed in. Each sampled point is
-mapped to its nearest triangle to inherit that face's part label, and points are
-grouped by label into regions.
+returned labels align by index with the mesh handed in and are grouped
+directly into regions with no further projection step.
 
 Subprocess invocation keeps the PyTorch-Lightning / DDP machinery out of the ROS
 process and matches PartField's intended usage.
@@ -89,29 +88,23 @@ class PartFieldSegmentation:
     def __init__(self, config: PartFieldSegmentationConfig = None):
         self.config = config or PartFieldSegmentationConfig()
         self.mesh = None
-        self.points = None
-        self.point_labels = None  # per-point part label, set after segment()
+        self.face_labels = None  # per-face part label, set after segment()
 
-    def segment(self, point_cloud: o3d.geometry.PointCloud,
-                mesh: o3d.geometry.TriangleMesh):
+    def segment(self, mesh: o3d.geometry.TriangleMesh):
         """
-        Segment the mesh into parts and project the labels onto the point cloud.
+        Segment the mesh into parts.
 
         Args:
-            point_cloud: Sampled point cloud (same coordinate frame as ``mesh``).
-            mesh: Triangle mesh the points were sampled from. Its faces must be
-                  in the same order PartField sees them, which is guaranteed by
-                  handing PartField a freshly exported copy of this mesh.
+            mesh: Triangle mesh to segment.
 
         Returns:
-            Tuple of (regions, noise_points). ``regions`` is a list of clusters,
-            each a list of point indices; ``noise_points`` is always empty since
-            PartField assigns every face to a part.
+            Tuple of (regions, noise_faces). ``regions`` is a list of parts,
+            each a list of triangle indices; ``noise_faces`` is always empty
+            since PartField assigns every face to a part.
         """
         start_time = time.time()
 
         self.mesh = mesh
-        self.points = np.asarray(point_cloud.points)
 
         vertices = np.asarray(mesh.vertices)
         faces = np.asarray(mesh.triangles)
@@ -128,18 +121,15 @@ class PartFieldSegmentation:
                 f'has {len(faces)} faces. Mesh preprocessing/remeshing must stay '
                 f'disabled for the index mapping to hold.')
 
-        # Map each point to its nearest triangle, inherit that face's part label.
-        tri_ids = self._nearest_triangle(vertices, faces, self.points)
-        point_labels = face_labels[tri_ids].astype(int)
-        self.point_labels = point_labels
+        self.face_labels = face_labels
 
-        regions = [np.nonzero(point_labels == lab)[0].tolist()
-                   for lab in np.unique(point_labels)]
-        noise_points = []
+        regions = [np.nonzero(face_labels == lab)[0].tolist()
+                   for lab in np.unique(face_labels)]
+        noise_faces = []
 
         print(f'PartField segmentation: {len(regions)} parts from '
               f'{len(faces)} faces in {time.time() - start_time:.2f}s')
-        return regions, noise_points
+        return regions, noise_faces
 
     # ------------------------------------------------------------------ #
     # PartField subprocess pipeline
@@ -238,15 +228,3 @@ class PartFieldSegmentation:
             raise RuntimeError(
                 f'PartField step failed ({result.returncode}): '
                 f'{" ".join(cmd)}\n{tail}')
-
-    @staticmethod
-    def _nearest_triangle(vertices: np.ndarray, faces: np.ndarray,
-                          points: np.ndarray) -> np.ndarray:
-        """Return the index of the nearest mesh triangle for each query point."""
-        scene = o3d.t.geometry.RaycastingScene()
-        scene.add_triangles(
-            o3d.core.Tensor(vertices, dtype=o3d.core.Dtype.Float32),
-            o3d.core.Tensor(faces, dtype=o3d.core.Dtype.UInt32))
-        ans = scene.compute_closest_points(
-            o3d.core.Tensor(points, dtype=o3d.core.Dtype.Float32))
-        return ans['primitive_ids'].numpy().astype(np.int64)
