@@ -6,7 +6,7 @@ import numpy as np
 import open3d as o3d
 from rclpy.duration import Duration
 from rclpy.action import ActionServer
-from viewpoint_generation.viewpoint_generation import ViewpointGeneration
+from viewpoint_generation.viewpoint_generation import ViewpointGeneration, DEFAULT_MODEL_POSE
 from rcl_interfaces.msg import (
     SetParametersResult, ParameterDescriptor,
     FloatingPointRange, IntegerRange,
@@ -104,6 +104,35 @@ class ViewpointGenerationNode(rclpy.node.Node):
         if not success:
             self.get_logger().error(message)
 
+        # Model pose: position (m) + RPY orientation (rad) applied to the
+        # mesh within the scene, rotated about either the mesh's own origin
+        # or its centroid. Position fields get no range/control descriptor,
+        # so the GUI renders them as plain float number edits; orientation
+        # fields get slider control+range like this package's other angle
+        # parameters (radians, matching normal_angle_threshold/
+        # fov_normal_threshold).
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('model.pose.position.x', 0.0,
+                 _make_descriptor({'description': 'Model position X (m)', 'type': 'float'})),
+                ('model.pose.position.y', 0.0,
+                 _make_descriptor({'description': 'Model position Y (m)', 'type': 'float'})),
+                ('model.pose.position.z', 0.0,
+                 _make_descriptor({'description': 'Model position Z (m)', 'type': 'float'})),
+                ('model.pose.orientation.roll', 0.0,
+                 _make_descriptor({'description': 'Model roll (rad)', 'type': 'float',
+                                    'control': 'slider', 'range': [-np.pi, np.pi]})),
+                ('model.pose.orientation.pitch', 0.0,
+                 _make_descriptor({'description': 'Model pitch (rad)', 'type': 'float',
+                                    'control': 'slider', 'range': [-np.pi, np.pi]})),
+                ('model.pose.orientation.yaw', 0.0,
+                 _make_descriptor({'description': 'Model yaw (rad)', 'type': 'float',
+                                    'control': 'slider', 'range': [-np.pi, np.pi]})),
+                ('model.pose.rotation_center', 'origin'),
+            ]
+        )
+
         _auto_declare_parameters(
             prefix='regions.region_growth.',
             config_dict=self.viewpoint_generation.region_growing_config.to_dict(),
@@ -179,9 +208,17 @@ class ViewpointGenerationNode(rclpy.node.Node):
             'settings.data_path').get_parameter_value().string_value)
         # Load results FIRST so that set_mesh_file / set_point_cloud_file can
         # detect that those files are already recorded in self.results and skip
-        # resetting the regions/clusters.
+        # resetting the regions/clusters. set_model_pose runs next, before
+        # set_mesh_file: with no mesh loaded yet it just stores the saved
+        # pose (see ViewpointGeneration.set_model_pose), so that when
+        # set_mesh_file's first _rebuild_mesh() runs immediately after, it
+        # compares this already-correct pose against self.results instead
+        # of the identity default -- otherwise a saved config with a
+        # non-identity pose would spuriously look "changed" and lose its
+        # already-computed regions/clusters/viewpoints on every restart.
         self.set_results_file(self.get_parameter(
             'results.file').get_parameter_value().string_value)
+        self.set_model_pose(*self._get_model_pose_params())
         self.set_mesh_file(self.get_parameter('model.mesh.file').get_parameter_value().string_value,
                            self.get_parameter('model.mesh.units').get_parameter_value().string_value)
         self.set_point_cloud_file(self.get_parameter('model.point_cloud.file').get_parameter_value().string_value,
@@ -258,17 +295,12 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 rclpy.Parameter.Type.STRING,
                 mesh_units
             )
-            params = [mesh_file_param, mesh_units_param]
-            # results_file is None only when set_mesh_file reset self.results
-            # (i.e. a genuinely different mesh was loaded). Save the results
-            # immediately so the visualizer can read the mesh path, then update
-            # the results.file parameter with the real path.
-            if self.viewpoint_generation.results_file is None:
-                saved = self.viewpoint_generation.save_results(
-                    self.viewpoint_generation.results)
-                self.viewpoint_generation.results_file = saved
-                params.append(rclpy.parameter.Parameter(
-                    'results.file', rclpy.Parameter.Type.STRING, saved or ''))
+            # Sync model.pose.* (and so the GUI) to whatever the core class's
+            # model_pose now holds -- reset to identity for a genuinely new
+            # mesh/units, or left as the just-restored saved pose when
+            # resuming a matching config (see set_mesh_file's docstring).
+            params = self._save_results_if_reset(
+                [mesh_file_param, mesh_units_param] + self._model_pose_sync_params())
             self.set_parameters_blocked(params)
 
             if self.initialized:
@@ -302,26 +334,110 @@ class ViewpointGenerationNode(rclpy.node.Node):
             sy = max(1e-6, max_y - min_y)
             sz = max(1e-6, max_z - min_z)
 
-            # Create a mesh from the file
-            self.mesh = Mesh()
-            self.mesh.triangles = []
-            self.mesh.vertices = []
-            vertices, triangles = self.viewpoint_generation.get_mesh_vertices_and_triangles()
-
-            for vertex in vertices:
-                point = Point()
-                point.x = vertex[0]
-                point.y = vertex[1]
-                point.z = vertex[2]
-                self.mesh.vertices.append(point)
-
-            for triangle in triangles:
-                mesh_triangle = MeshTriangle()
-                mesh_triangle.vertex_indices = triangle.astype(
-                    np.uint32).tolist()
-                self.mesh.triangles.append(mesh_triangle)
+            self._rebuild_planning_scene_mesh()
 
             return True
+
+    def _save_results_if_reset(self, extra_params):
+        """If the core class just reset self.results (mesh file, units, or
+        pose changed), save the fresh skeleton immediately so the
+        visualizer can read the mesh path, and queue a 'results.file'
+        parameter update alongside extra_params. Returns the full params
+        list to hand to set_parameters_blocked."""
+        params = list(extra_params)
+        if self.viewpoint_generation.results_file is None:
+            saved = self.viewpoint_generation.save_results(
+                self.viewpoint_generation.results)
+            self.viewpoint_generation.results_file = saved
+            params.append(rclpy.parameter.Parameter(
+                'results.file', rclpy.Parameter.Type.STRING, saved or ''))
+        return params
+
+    def _rebuild_planning_scene_mesh(self):
+        """Rebuild the shape_msgs/Mesh used for the /planning_scene
+        collision object from the core class's current (already-posed)
+        mesh. Called after both a mesh file/units change and a model-pose
+        change, since either can move self.viewpoint_generation.mesh; the
+        next update_planning_scene() timer tick picks up self.mesh as-is."""
+        vertices, triangles = self.viewpoint_generation.get_mesh_vertices_and_triangles()
+        if vertices is None:
+            return
+
+        self.mesh = Mesh()
+        self.mesh.triangles = []
+        self.mesh.vertices = []
+
+        for vertex in vertices:
+            point = Point()
+            point.x = vertex[0]
+            point.y = vertex[1]
+            point.z = vertex[2]
+            self.mesh.vertices.append(point)
+
+        for triangle in triangles:
+            mesh_triangle = MeshTriangle()
+            mesh_triangle.vertex_indices = triangle.astype(
+                np.uint32).tolist()
+            self.mesh.triangles.append(mesh_triangle)
+
+    def _get_model_pose_params(self):
+        """Read the current model.pose.* parameter values as a
+        (x, y, z, roll, pitch, yaw, rotation_center) tuple, matching
+        set_model_pose's signature."""
+        gp = self.get_parameter
+        return (
+            gp('model.pose.position.x').get_parameter_value().double_value,
+            gp('model.pose.position.y').get_parameter_value().double_value,
+            gp('model.pose.position.z').get_parameter_value().double_value,
+            gp('model.pose.orientation.roll').get_parameter_value().double_value,
+            gp('model.pose.orientation.pitch').get_parameter_value().double_value,
+            gp('model.pose.orientation.yaw').get_parameter_value().double_value,
+            gp('model.pose.rotation_center').get_parameter_value().string_value,
+        )
+
+    def _model_pose_sync_params(self):
+        """rclpy.parameter.Parameter list reflecting the core class's
+        current model_pose, used to keep model.pose.* (and so the GUI's
+        sliders/fields) in sync after a mesh load resets or restores it."""
+        pose = self.viewpoint_generation.model_pose
+        x, y, z = pose['position']
+        roll, pitch, yaw = pose['orientation_rpy']
+        return [
+            rclpy.parameter.Parameter(
+                'model.pose.position.x', rclpy.Parameter.Type.DOUBLE, x),
+            rclpy.parameter.Parameter(
+                'model.pose.position.y', rclpy.Parameter.Type.DOUBLE, y),
+            rclpy.parameter.Parameter(
+                'model.pose.position.z', rclpy.Parameter.Type.DOUBLE, z),
+            rclpy.parameter.Parameter(
+                'model.pose.orientation.roll', rclpy.Parameter.Type.DOUBLE, roll),
+            rclpy.parameter.Parameter(
+                'model.pose.orientation.pitch', rclpy.Parameter.Type.DOUBLE, pitch),
+            rclpy.parameter.Parameter(
+                'model.pose.orientation.yaw', rclpy.Parameter.Type.DOUBLE, yaw),
+            rclpy.parameter.Parameter(
+                'model.pose.rotation_center', rclpy.Parameter.Type.STRING,
+                pose['rotation_center']),
+        ]
+
+    def set_model_pose(self, x, y, z, roll, pitch, yaw, rotation_center):
+        """
+        Helper function to set the model's pose within the scene.
+        :return: True if the pose was applied, False otherwise.
+        """
+        success, message = self.viewpoint_generation.set_model_pose(
+            x, y, z, roll, pitch, yaw, rotation_center)
+
+        if not success:
+            self.get_logger().warn(message)
+            return False
+
+        self.get_logger().info('Model pose updated.')
+        self._rebuild_planning_scene_mesh()
+        params = self._save_results_if_reset([])
+        if params:
+            self.set_parameters_blocked(params)
+        return True
 
     def create_planning_volume_mesh(self, radius=0.5, height=0.75):
         planning_volume_mesh_path = str(
@@ -778,6 +894,24 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     success = True
                 else:
                     success = self.set_point_cloud_file(pcd_file, param.value)
+            elif param.name.startswith('model.pose.'):
+                x, y, z, roll, pitch, yaw, rotation_center = self._get_model_pose_params()
+                if param.name == 'model.pose.position.x':
+                    x = param.value
+                elif param.name == 'model.pose.position.y':
+                    y = param.value
+                elif param.name == 'model.pose.position.z':
+                    z = param.value
+                elif param.name == 'model.pose.orientation.roll':
+                    roll = param.value
+                elif param.name == 'model.pose.orientation.pitch':
+                    pitch = param.value
+                elif param.name == 'model.pose.orientation.yaw':
+                    yaw = param.value
+                elif param.name == 'model.pose.rotation_center':
+                    rotation_center = param.value
+                success = self.set_model_pose(
+                    x, y, z, roll, pitch, yaw, rotation_center)
             elif param.name == 'regions.algorithm':
                 success, message = self.viewpoint_generation.set_segmentation_algorithm(
                     param.value)

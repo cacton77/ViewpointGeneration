@@ -16,6 +16,7 @@ from matplotlib import colormaps
 
 from viewpoint_generation.assets.materials import Materials
 from viewpoint_generation.mesh_utils import submesh_from_faces
+from viewpoint_generation.viewpoint_generation import DEFAULT_MODEL_POSE
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -924,6 +925,7 @@ class Visualizer:
 
         # ── Load meshes and per-region point clouds from the results dict ──────
         bbox = None
+        should_reset_camera = True
         scale_map = {'mm': 1.0, 'cm': 10.0, 'm': 1000.0, 'in': 25.4, 'ft': 304.8}
 
         # Loading a new results file invalidates everything from the previous
@@ -972,10 +974,42 @@ class Visualizer:
                         mesh = None
                     else:
                         mesh.scale(scale_map.get(mesh_units, 1.0), center=(0, 0, 0))
+
+                        # Apply the stored model pose (regions/point clouds/
+                        # viewpoints are already posed at generation time --
+                        # only this raw reload from the original mesh file
+                        # needs it). Position is stored in meters (the core
+                        # pipeline's working unit); convert to this
+                        # visualizer's internal mm working unit.
+                        pose = mesh_entry.get('pose', DEFAULT_MODEL_POSE)
+                        roll, pitch, yaw = pose['orientation_rpy']
+                        if roll or pitch or yaw:
+                            R = mesh.get_rotation_matrix_from_xyz((roll, pitch, yaw))
+                            center = (mesh.get_center()
+                                      if pose['rotation_center'] == 'centroid'
+                                      else (0.0, 0.0, 0.0))
+                            mesh.rotate(R, center=center)
+                        px, py, pz = pose['position']
+                        mesh.translate((px * 1000.0, py * 1000.0, pz * 1000.0))
+
                         if mesh_idx == 0:
                             bbox = mesh.get_axis_aligned_bounding_box()
                             self.mesh_name  = mesh_file.rsplit('/', 1)[-1].rsplit('.', 1)[0]
                             self.mesh_units = mesh_units
+
+                            # Only re-frame the camera/grid when the mesh's
+                            # identity (file + units) actually changes -- a
+                            # different part, or a units correction, both of
+                            # which can move the content far outside the old
+                            # framing. A pose nudge or a same-object results
+                            # recompute (regions/clusters/viewpoints) reloads
+                            # this same mesh file, so the camera stays put:
+                            # resetting it on every pose slider tick made
+                            # interactive pose authoring unusable.
+                            new_identity = (mesh_file, mesh_units)
+                            should_reset_camera = (
+                                new_identity != getattr(self, '_loaded_mesh_identity', None))
+                            self._loaded_mesh_identity = new_identity
                             self.ray_casting_scene = o3d.t.geometry.RaycastingScene()
                             self.ray_casting_scene.add_triangles(
                                 o3d.t.geometry.TriangleMesh.from_legacy(mesh))
@@ -1135,8 +1169,9 @@ class Visualizer:
                 self.add_geometry(mesh_name, mesh, Materials.mesh_material)
             self.mesh_names = new_mesh_names
             if bbox is not None:
-                self._reset_camera_to_bbox(bbox)
                 self.add_xy_plane(bbox)
+                if should_reset_camera:
+                    self._reset_camera_to_bbox(bbox)
             self.show_mesh(True)
             return
 
@@ -1195,8 +1230,9 @@ class Visualizer:
 
         # ── Camera + XY plane setup ───────────────────────────────────────────
         if bbox is not None:
-            self._reset_camera_to_bbox(bbox)
             self.add_xy_plane(bbox)
+            if should_reset_camera:
+                self._reset_camera_to_bbox(bbox)
 
         # ── Initial visibility ────────────────────────────────────────────────
         self.show_mesh(True)
@@ -1228,7 +1264,8 @@ class Visualizer:
             content_bbox = self._content_bbox(bbox, all_view_positions)
             if content_bbox is not None:
                 self.add_xy_plane(content_bbox)
-                self._reset_camera_to_bbox(content_bbox)
+                if should_reset_camera:
+                    self._reset_camera_to_bbox(content_bbox)
         elif self.region_names:
             self.set_region_surface_mode(RegionSurfaceMode.SOLID)
             self.show_viewpoints(False)

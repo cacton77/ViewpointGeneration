@@ -20,6 +20,16 @@ from viewpoint_generation.viewpoint_projection import *
 from viewpoint_generation.mesh_utils import submesh_from_faces
 
 
+# Identity model pose: no rotation, no translation, reproduces the mesh
+# exactly as authored. Existing results files/configs with no 'pose' key
+# compare equal to this, so they're treated as already-identity.
+DEFAULT_MODEL_POSE = {
+    'position': [0.0, 0.0, 0.0],
+    'orientation_rpy': [0.0, 0.0, 0.0],
+    'rotation_center': 'origin',
+}
+
+
 class ViewpointGeneration():
 
     mesh_file = None
@@ -27,6 +37,11 @@ class ViewpointGeneration():
     point_cloud_file = None
     point_cloud_units = 'm'
     results_file = None
+
+    # Position (m) + RPY orientation (rad) applied to the mesh within the
+    # scene, rotated about either the mesh's own origin or its centroid.
+    # See set_model_pose().
+    model_pose = dict(DEFAULT_MODEL_POSE)
 
     mesh = None
     point_cloud = None
@@ -164,10 +179,67 @@ class ViewpointGeneration():
             self.mesh = None
             self.mesh_file = None
             self.mesh_units = None
+            self.model_pose = dict(DEFAULT_MODEL_POSE)
             return True, 'No triangle mesh file provided. Mesh cleared.'
 
+        # A genuinely new mesh file/units resets any pose authored for the
+        # previous one -- a pose tuned for one part (or one unit mistake)
+        # isn't meaningful carried over to a different load. Compared
+        # against self.results (not self.mesh_file/self.mesh_units, which
+        # are unset on a fresh instance) so resuming a saved config whose
+        # results already recorded this exact file/units keeps its pose
+        # (typically loaded into self.model_pose by set_model_pose before
+        # set_mesh_file runs, at node startup) instead of clobbering it.
+        existing_mesh = self.results.get('meshes', [{}])[0]
+        if (mesh_file != existing_mesh.get('file', '')
+                or units != existing_mesh.get('units', '')):
+            self.model_pose = dict(DEFAULT_MODEL_POSE)
+        self.mesh_file = mesh_file
+        self.mesh_units = units
+        return self._rebuild_mesh()
+
+    def set_model_pose(self, x, y, z, roll, pitch, yaw, rotation_center):
+        """Set the model's pose within the scene: position (m, translation)
+        + roll/pitch/yaw (rad), rotated about either the mesh's own origin
+        or its centroid (vertex mean) before being translated into place.
+        Baked directly into self.mesh, so regions/point clouds/viewpoints/
+        the planning-scene collision mesh computed from it all move
+        together. A pose-only change invalidates already-computed
+        regions/clusters/viewpoints exactly like a mesh file/units change
+        does, since their coordinates are no longer valid under the new
+        pose.
+        """
+        if rotation_center not in ('origin', 'centroid'):
+            return False, "rotation_center must be 'origin' or 'centroid'."
+
+        new_pose = {
+            'position': [x, y, z],
+            'orientation_rpy': [roll, pitch, yaw],
+            'rotation_center': rotation_center,
+        }
+        if new_pose == self.model_pose:
+            return False, 'Model pose already set.'
+
+        self.model_pose = new_pose
+
+        if self.mesh_file is None:
+            return True, 'Model pose stored; will apply once a mesh is loaded.'
+
+        return self._rebuild_mesh()
+
+    def _rebuild_mesh(self):
+        """(Re)load self.mesh_file at self.mesh_units and apply
+        self.model_pose, updating self.mesh, self.raycasting_scene, and
+        self.results['meshes'][0]. Called by both set_mesh_file (on
+        file/units change) and set_model_pose (on pose change) so a
+        transform applied to either always ends up in the same place.
+        Regions/clusters/viewpoints are invalidated only when file, units,
+        or pose actually differ from what's recorded in self.results (so
+        resuming a saved config with nothing changed keeps its computed
+        data).
+        """
         try:
-            mesh = o3d.io.read_triangle_mesh(mesh_file)
+            mesh = o3d.io.read_triangle_mesh(self.mesh_file)
         except Exception as e:
             return False, f'Could not load requested triangle mesh file: {e}'
 
@@ -178,13 +250,13 @@ class ViewpointGeneration():
         mesh.compute_vertex_normals()
 
         # Scale the mesh to meters
-        if units == 'cm':
+        if self.mesh_units == 'cm':
             mesh.scale(0.01, center=(0, 0, 0))
-        elif units == 'mm':
+        elif self.mesh_units == 'mm':
             mesh.scale(0.001, center=(0, 0, 0))
-        elif units == 'in':
+        elif self.mesh_units == 'in':
             mesh.scale(0.0254, center=(0, 0, 0))
-        elif units == 'm':
+        elif self.mesh_units == 'm':
             # No scaling needed for meters
             pass
         else:
@@ -193,30 +265,50 @@ class ViewpointGeneration():
         # Check if the mesh has colors
         mesh.paint_uniform_color(self.mesh_color)
 
-        # Update the triangle mesh file
-        self.mesh_file = mesh_file
-        self.mesh_units = units
+        # Generate dimensions/surface-area strings from the mesh's intrinsic
+        # (unit-scaled, not-yet-posed) bounds, so a rotated part still
+        # reports its true LxWxH rather than a rotation-inflated world-frame
+        # AABB. Surface area is rotation/translation invariant either way.
+        bbox = mesh.get_axis_aligned_bounding_box()
+        min_b, max_b = bbox.min_bound, bbox.max_bound
+        dimensions_str = (
+            f"(LxWxH): {max_b[0] - min_b[0]:.2f} x "
+            f"{max_b[1] - min_b[1]:.2f} x {max_b[2] - min_b[2]:.2f} m")
+        surface_area_str = f"Surface Area: {mesh.get_surface_area():.2f} m^2"
+
+        # Apply model pose: rotate about the origin or the mesh's own
+        # centroid (vertex mean), then translate into place.
+        roll, pitch, yaw = self.model_pose['orientation_rpy']
+        if roll or pitch or yaw:
+            R = mesh.get_rotation_matrix_from_xyz((roll, pitch, yaw))
+            if self.model_pose['rotation_center'] == 'centroid':
+                center = mesh.get_center()
+            else:
+                center = (0.0, 0.0, 0.0)
+            mesh.rotate(R, center=center)
+        mesh.translate(self.model_pose['position'])
+
+        # Update the triangle mesh
         self.mesh = mesh
 
-        # Generate dimensions string
-        min_x, min_y, min_z, max_x, max_y, max_z = self.get_mesh_bounds()
-        dimensions_str = f"(LxWxH): {max_x - min_x:.2f} x {max_y - min_y:.2f} x {max_z - min_z:.2f} m"
-        # Generate Surface Area string
-        surface_area_str = f"Surface Area: {self.mesh.get_surface_area():.2f} m^2"
-
-        # Only reset results when a genuinely different mesh is loaded.
-        # When launching from a saved config the results file is loaded first;
-        # set_mesh_file is then called with the same mesh path AND units, so we
-        # preserve all regions/clusters already in self.results. If either the
-        # file or the units differ, the derived data is invalid and we reset.
+        # Only reset results when the mesh file, units, or pose genuinely
+        # changed. When launching from a saved config the results file is
+        # loaded first; set_mesh_file/set_model_pose are then called with
+        # the same file/units/pose, so we preserve all regions/clusters
+        # already in self.results. If any of the three differ, the derived
+        # data is invalid and we reset.
         existing_mesh = self.results.get('meshes', [{}])[0]
         existing_mesh_file = existing_mesh.get('file', '')
         existing_mesh_units = existing_mesh.get('units', '')
-        if mesh_file != existing_mesh_file or units != existing_mesh_units:
+        existing_pose = existing_mesh.get('pose', DEFAULT_MODEL_POSE)
+        if (self.mesh_file != existing_mesh_file
+                or self.mesh_units != existing_mesh_units
+                or self.model_pose != existing_pose):
             self.results = {'meshes': [
                 {
-                    'file': mesh_file,
-                    'units': units,
+                    'file': self.mesh_file,
+                    'units': self.mesh_units,
+                    'pose': dict(self.model_pose),
                     'material': 'unknown',
                     'dimensions': dimensions_str,
                     'surface_area': surface_area_str,
@@ -227,9 +319,9 @@ class ViewpointGeneration():
             ]
             }
             self.results_file = None
-        # else: same mesh file and units as the already-loaded results —
-        # preserve self.results and self.results_file so a saved config can be
-        # resumed without discarding its regions/clusters.
+        # else: same mesh file, units, and pose as the already-loaded
+        # results — preserve self.results and self.results_file so a saved
+        # config can be resumed without discarding its regions/clusters.
 
         # Raycasting Scene, built once and shared by FOV clustering's
         # occlusion check and viewpoint projection (both need line-of-sight

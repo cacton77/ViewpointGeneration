@@ -208,6 +208,9 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
 - `model.mesh.units` -- Mesh units (`m`, `cm`, `mm`, `in`)
 - `model.point_cloud.file` -- Path to a manually-loaded point cloud (optional; independent of the per-region point clouds sampled during segmentation)
 - `model.point_cloud.units` -- Point cloud units
+- `model.pose.position.x` / `.y` / `.z` -- Model position (m) within the scene
+- `model.pose.orientation.roll` / `.pitch` / `.yaw` -- Model orientation (rad)
+- `model.pose.rotation_center` -- Rotate about the mesh's own `origin` (default) or its `centroid` (Open3D's vertex-mean `get_center()`), before translating by `model.pose.position.*`. Baked directly into the mesh used for segmentation/point-cloud sampling/FOV clustering/viewpoint projection, so a pose change moves everything derived from the mesh together (and invalidates already-computed regions/clusters/viewpoints exactly like a mesh file/units change does). A pose authored for one part isn't meaningful on another: loading a genuinely different `model.mesh.file`/`.units` resets `model.pose.*` back to identity (position/RPY zero, `rotation_center` back to `origin`), pushed back out to these parameters so the GUI's fields reset too. Resuming a saved config whose results already recorded that exact file/units keeps its recorded pose instead of resetting it
 - `results.file` -- Path to results JSON
 - `settings.data_path` -- Base data directory
 
@@ -326,6 +329,11 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
     {
       "file": "/path/to/mesh.stl",
       "units": "m",
+      "pose": {
+        "position": [0.0, 0.0, 0.0],
+        "orientation_rpy": [0.0, 0.0, 0.0],
+        "rotation_center": "origin"
+      },
       "material": "unknown",
       "dimensions": "(LxWxH): 0.14 x 0.09 x 0.10 m",
       "surface_area": "Surface Area: 0.03 m^2",
@@ -449,6 +457,16 @@ Blind Spots* toggle renders these points as markers (see below).
 settings, the visualizer reads `fov_diameter`/`dof` from here to draw the **FOV
 Cylinder** viewpoint overlay (see above). Results files written before this field
 existed simply skip that overlay.
+
+**`pose`** records the `model.pose.*` transform baked into this mesh at
+generation time (see ROS 2 Interface > Parameters above) -- position in
+meters, orientation as roll/pitch/yaw radians, and which point
+(`rotation_center`) the rotation was applied about. `regions`/`point_cloud`/
+`viewpoint` coordinates elsewhere in this file are already expressed with
+this pose applied, since it's baked into the mesh before segmentation ever
+runs; the visualizer re-applies `pose` only when independently reloading the
+raw mesh file for display. Results files written before this field existed
+are treated as identity pose (no rotation/translation).
 
 **Traversal order:**
 - Mesh-level `order` -- Region visit order (a list of region indices).

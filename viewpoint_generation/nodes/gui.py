@@ -1330,6 +1330,17 @@ class GUIClient():
                         node_name, param_name, selected_text))
                 row.add_child(widget)  # ADD HERE
 
+            elif 'rotation_center' in param_name.lower():
+                widget = gui.Combobox()
+                algorithms = ['origin', 'centroid']
+                for algorithm in algorithms:
+                    widget.add_item(algorithm)
+                widget.selected_index = algorithms.index(param_value)
+                widget.set_on_selection_changed(
+                    lambda selected_text, selected_index: self.on_parameter_changed(
+                        node_name, param_name, selected_text))
+                row.add_child(widget)  # ADD HERE
+
             elif 'regions.algorithm' in param_name.lower():
                 widget = gui.Combobox()
                 algorithms = ['region_growth', 'partfield']
