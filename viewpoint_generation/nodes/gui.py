@@ -22,6 +22,7 @@ isMacOS = sys.platform == 'darwin'
 _TRAVERSAL_CUSTOM_PARAMS = frozenset({
     'tsp_algorithm', 'vrp_algorithm', 'vrp_joint_weights',
     'vrp_aco_n_ants', 'vrp_aco_n_iter', 'vrp_aco_alpha', 'vrp_aco_beta', 'vrp_aco_rho',
+    'vrp_clustered_k',
 })
 
 
@@ -820,12 +821,17 @@ class GUIClient():
         # action button at the tab level — mirroring the FOV clustering and
         # viewpoint projection buttons, which call their node's service.
         if node_name == 'viewpoint_traversal':
-            content.add_child(self._build_traversal_mode_section(
-                node_name, tab_data, em))
-            button = gui.Button("Optimize Traversal")
-            button.background_color = Materials.button_background_color
-            button.set_on_clicked(lambda: self.ros_thread.optimize_traversal())
-            content.add_child(button)
+            content.add_child(self._build_traversal_mode_section(node_name, tab_data, em))
+            btn_row = gui.Horiz(0.5 * em, gui.Margins(0, 0, 0, 0))
+            opt_btn = gui.Button("Optimize Traversal")
+            opt_btn.background_color = Materials.button_background_color
+            opt_btn.set_on_clicked(lambda: self.ros_thread.optimize_traversal())
+            clear_btn = gui.Button("Clear Paths")
+            clear_btn.background_color = Materials.button_background_color
+            clear_btn.set_on_clicked(lambda: self.ros_thread.clear_traversal_paths())
+            btn_row.add_child(opt_btn)
+            btn_row.add_child(clear_btn)
+            content.add_child(btn_row)
         elif node_name == self.ros_thread.tsdf_node_name:
             button = gui.Button("Reset Voxel Block Grid")
             button.background_color = Materials.button_background_color
@@ -845,8 +851,8 @@ class GUIClient():
             return v if v is not None else default
 
         tsp_algos = ['greedy', '2opt', '3opt', 'ILS', 'LKH']
-        vrp_algos = ['vrp_greedy', 'vrp_2opt', 'vrp_3opt',
-                     'vrp_ils', 'vrp_lkh', 'vrp_aco', 'vrp_hierarchical']
+        vrp_algos = ['vrp_greedy', 'vrp_2opt', 'vrp_3opt', 'vrp_ils', 'vrp_lkh', 'vrp_aco',
+                     'vrp_hierarchical', 'vrp_clustered']
         init_tsp = _val('tsp_algorithm', 'greedy')
         init_vrp = _val('vrp_algorithm', '')
         init_weights = list(
@@ -916,7 +922,7 @@ class GUIClient():
             jw_row.add_stretch()
             ne = gui.NumberEdit(gui.NumberEdit.DOUBLE)
             ne.double_value = float(w0)
-            ne.set_preferred_width(4 * em)
+            ne.set_preferred_width(5 * em)
             jw_row.add_child(ne)
             vrp_params.add_child(jw_row)
             weight_edits.append(ne)
@@ -956,12 +962,28 @@ class GUIClient():
                 ne.int_value = int(pval)
             else:
                 ne.double_value = float(pval)
-            ne.set_preferred_width(4 * em)
-            ne.set_on_value_changed(
-                lambda v, k=pkey: self.on_parameter_changed(node_name, k, v))
+            ne.set_preferred_width(5 * em)
+            ne.set_on_value_changed(lambda v, k=pkey: self.on_parameter_changed(node_name, k, v))
             aco_row.add_child(ne)
             vrp_params.add_child(aco_row)
             self.parameter_widgets[node_name][pkey] = ne
+
+        ck_lbl = gui.Label("Clustered Parameters:")
+        ck_lbl.text_color = Materials.text_color
+        vrp_params.add_child(ck_lbl)
+        ck_row = gui.Horiz(0.5 * em, gui.Margins(0.25 * em, 0.0 * em, 0.0 * em, 0.0 * em))
+        lbl = gui.Label("Ports (K):")
+        lbl.text_color = Materials.text_color
+        ck_row.add_child(lbl)
+        ck_row.add_stretch()
+        ck_ne = gui.NumberEdit(gui.NumberEdit.INT)
+        ck_ne.int_value = int(_val('vrp_clustered_k', 6))
+        ck_ne.set_preferred_width(5 * em)
+        ck_ne.set_on_value_changed(
+            lambda v: self.on_parameter_changed(node_name, 'vrp_clustered_k', v))
+        ck_row.add_child(ck_ne)
+        vrp_params.add_child(ck_row)
+        self.parameter_widgets[node_name]['vrp_clustered_k'] = ck_ne
 
         section.add_child(vrp_params)
 
@@ -1103,9 +1125,9 @@ class GUIClient():
         row.add_child(label_container)
         row.add_stretch()
 
-        # Set preferred_width based on length of text with 6 * em as max:
+        # Set preferred_width based on length of text with 10 * em as max:
         if len(label.text) > 12:
-            label_container.preferred_width = 6 * em
+            label_container.preferred_width = 10 * em
 
         # Create appropriate widget based on type
         widget = None
@@ -1126,7 +1148,7 @@ class GUIClient():
                 number_edit = gui.NumberEdit(gui.NumberEdit.INT)
                 number_edit.int_value = int(param_value)
                 number_edit.set_limits(param_range[0], param_range[1])
-                number_edit.set_preferred_width(4 * em)
+                number_edit.set_preferred_width(5 * em)
 
                 syncing = [False]
 
@@ -1150,7 +1172,7 @@ class GUIClient():
                 number_edit.set_on_value_changed(_numedit_changed_int)
 
                 slider_container = gui.Vert()
-                slider_container.preferred_width = 10 * em
+                slider_container.preferred_width = 8 * em
                 slider_container.add_child(widget)
                 row.add_child(slider_container)
                 row.add_fixed(0.25 * em)
@@ -1173,7 +1195,7 @@ class GUIClient():
                 number_edit = gui.NumberEdit(gui.NumberEdit.DOUBLE)
                 number_edit.double_value = float(param_value)
                 number_edit.set_limits(param_range[0], param_range[1])
-                number_edit.set_preferred_width(4 * em)
+                number_edit.set_preferred_width(5 * em)
 
                 syncing = [False]
 
@@ -1197,7 +1219,7 @@ class GUIClient():
                 number_edit.set_on_value_changed(_numedit_changed_dbl)
 
                 slider_container = gui.Vert()
-                slider_container.preferred_width = 10 * em
+                slider_container.preferred_width = 8 * em
                 slider_container.add_child(widget)
                 row.add_child(slider_container)
                 row.add_fixed(0.25 * em)

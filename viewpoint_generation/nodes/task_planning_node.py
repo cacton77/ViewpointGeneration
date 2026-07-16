@@ -23,7 +23,7 @@ from std_srvs.srv import Trigger, SetBool
 from controller_manager_msgs.srv import SwitchController
 from moveit_msgs.srv import ServoCommandType
 from moveit_msgs.msg import ServoStatus
-from viewpoint_generation_interfaces.srv import MoveToPoseStamped
+from viewpoint_generation_interfaces.srv import MoveToPoseStamped, FindNearestViewpoint
 from viewpoint_generation_interfaces.action import InspectRegion
 
 
@@ -83,6 +83,7 @@ class TaskPlanningNode(Node):
     viewpoint_traversal_node_name = 'viewpoint_traversal'
 
     selected_viewpoint = None
+    _viewpoint_region_ids = []  # original region IDs in VRP traversal order
 
     # Live mesh/region/viewpoint selection indices (visualization + execution
     # scope). selected_mesh is visualization-only; planning/execution always
@@ -242,6 +243,8 @@ class TaskPlanningNode(Node):
             Trigger, f'{self.node_name}/move_to_viewpoint', self.trigger_move_to_viewpoint_callback, callback_group=services_cb_group)
         self.move_to_pose_stamped_client = self.create_client(
             MoveToPoseStamped, f'{self.viewpoint_traversal_node_name}/move_to_pose_stamped', callback_group=services_cb_group)
+        self.find_nearest_viewpoint_client = self.create_client(
+            FindNearestViewpoint, f'{self.viewpoint_traversal_node_name}/find_nearest_viewpoint', callback_group=services_cb_group)
 
         self.inspect_region_action_server = ActionServer(
             self,
@@ -328,6 +331,7 @@ class TaskPlanningNode(Node):
 
     def load_viewpoints(self, filepath):
         self.viewpoints = []
+        self._viewpoint_region_ids = []
         self.results_dict = {}
         if filepath == '':
             self.get_logger().warning('Viewpoints file cleared, no viewpoints loaded')
@@ -382,10 +386,12 @@ class TaskPlanningNode(Node):
                     region_viewpoints.append(viewpoint)
 
                 self.viewpoints.append(region_viewpoints)
+                self._viewpoint_region_ids.append(region_id)
         except Exception as e:
             self.get_logger().error(
                 f'Failed to load viewpoints from {filepath}: {e}')
             self.viewpoints = []
+            self._viewpoint_region_ids = []
             return False
 
         self.get_logger().info(
@@ -779,17 +785,34 @@ class TaskPlanningNode(Node):
     # INSPECT REGION ACTION
     # ============================================================================
 
+    def _find_nearest_entry(self, region_id):
+        if not self.find_nearest_viewpoint_client.service_is_ready():
+            return 0
+        req = FindNearestViewpoint.Request()
+        req.region_idx = region_id
+        future = self.find_nearest_viewpoint_client.call_async(req)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
+        if future.result() is not None:
+            return future.result().nearest_viewpoint_idx
+        return 0
+
     def execute_inspect_region_callback(self, goal_handle):
         self.get_logger().info('Executing full region traversal...')
         self.flags.inspect_active = True
 
-        for region_idx, region_viewpoints in enumerate(self.viewpoints):
-            for i in range(len(region_viewpoints)):
-                self.select_viewpoint(region_idx, i)
+        for seq_idx, region_viewpoints in enumerate(self.viewpoints):
+            region_id = (self._viewpoint_region_ids[seq_idx]
+                         if seq_idx < len(self._viewpoint_region_ids) else seq_idx)
+            entry_offset = self._find_nearest_entry(region_id)
+            n = len(region_viewpoints)
+            ordered = list(range(entry_offset, n)) + list(range(0, entry_offset))
+
+            for i in ordered:
+                self.select_viewpoint(seq_idx, i)
                 self.flags.move_to_viewpoint = True
                 while self.flags.move_to_viewpoint:
                     self.get_logger().info(
-                        f'Moving to viewpoint {i} in region {region_idx}...')
+                        f'Moving to viewpoint {i} in region {seq_idx}...')
                     time.sleep(0.1)
                 while self.flags.turntable_moving:
                     self.get_logger().info('Waiting for turntable to stop moving...')

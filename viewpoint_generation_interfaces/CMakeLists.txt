@@ -35,6 +35,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/MoveToPoseStamped.srv"
   "srv/OptimizeViewpointTraversal.srv"
   "srv/ImportCadModel.srv"
+  "srv/FindNearestViewpoint.srv"
   "msg/FocusValue.msg"
   "msg/AutofocusData.msg"
   "msg/OrientationControlData.msg"

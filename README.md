@@ -229,12 +229,36 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
 ### Other Nodes
 
 - **task_planning_node** -- State machine for robot motion control, manages servo/trajectory controller switching. Parameters are namespaced (`controllers.*`, `navigation.*`, `settings.*`) so the GUI renders one tab per namespace. Owns the mesh/region/viewpoint selection parameters (`navigation.selected_mesh`, `navigation.selected_region`, `navigation.selected_viewpoint`, declared with live slider ranges) and `navigation.selected_traversal_algorithm`; `settings.results_file` points it at the results JSON to plan/execute over; the GUI/visualizer track these to highlight the selected geometry
-- **viewpoint_traversal_node** -- MoveIt-based motion planning to viewpoints with TSP optimization and workspace constraints
+- **viewpoint_traversal_node** -- MoveIt-based motion planning to viewpoints with TSP/VRP optimization and workspace constraints. Exposes `move_to_pose_stamped`, `optimize_traversal`, and `find_nearest_viewpoint` services. The VRP optimizer minimizes an **execution-time surrogate** by default (`vrp_cost_mode='time'`: per-segment TOTG time from the joint velocity/acceleration limits), or weighted joint-space distance in `joint` mode; with `vrp_validate_topk>1` it plans the top-K candidate tours and keeps the one with the lowest real MoveIt time. The `find_nearest_viewpoint` service returns the viewpoint in a given region that is closest to the robot's actual current joint state under the same cost model, enabling dynamic entry-point selection at execution time rather than relying on precomputed IK-based distances
 - **gui_node** -- Open3D visualization GUI with interactive mesh, region, cluster, and viewpoint rendering. Visualization is split into two orthogonal axes:
 
   - **Region surface (exclusive)** — *View → Region Surface* selects one coloring for the region surfaces: `Solid` (uniform region color) or `Cluster` (colored by owning cluster). Each region is its own exact triangle submesh (segmentation is mesh-native, so no subdivision or nearest-point projection is needed to render it), so selecting a region makes the **others semi-transparent** to focus on it. Selecting a region also shows only its path, shows the enabled overlays for its viewpoints, and auto-selects its first viewpoint.
   - **Viewpoint overlays (inclusive)** — *View → Viewpoint Overlays* independently toggles any combination of per-viewpoint geometries: `Viewpoint Marker`, `FOV Cylinder`, `Origin Line` (surface origin → camera), `Frustum`, and `Origin Marker`. **FOV Cylinder** is a white wireframe cylinder (radius `fov_diameter/2`, height `dof`) centered on each cluster's surface target and aligned to its averaged view direction — the literal coverage volume; overlapping FOVs visibly intersect, honestly depicting the *covering* solution. **Origin Marker** is a small white sphere at the cluster's surface origin, always white rather than tinted by selection or cluster color. **Viewpoint Marker** is colored by the viewpoint's `imaging_mode`: green for `photometric`, yellow for `standard` (blue overrides both when the viewpoint is selected). This set applies to the non-selected viewpoints.
   - **Selected viewpoint overlays** — *View → Selected Viewpoint Overlays* is a parallel, independent set of the same toggles that applies only to the currently-selected viewpoint (drawn with highlight colors). Because the two sets are independent, you can, e.g., show the FOV cylinder for the selected viewpoint only by enabling it here while leaving it off in *Viewpoint Overlays*.
+
+#### VRP Traversal Optimization Parameters (`viewpoint_traversal_node`)
+
+The VRP optimizer treats the inspection as a **clustered vehicle-routing problem**:
+the arm (starting/ending at its home "depot") must visit every viewpoint, region
+by region, minimising motion in joint space. `vrp_algorithm` selects the solver;
+the mathematical formulation and per-algorithm details are documented in
+[`VRP_SYSTEM_REFERENCE.md`](VRP_SYSTEM_REFERENCE.md).
+
+| Parameter | Default | Description |
+|---|---|---|
+| `vrp_algorithm` | `''` | VRP solver: `vrp_greedy`, `vrp_2opt`, `vrp_3opt`, `vrp_ils`, `vrp_lkh`, `vrp_aco`, `vrp_hierarchical`, `vrp_clustered`. Empty → use TSP instead |
+| `vrp_cost_mode` | `time` | `time` = TOTG execution-time surrogate (seconds); `joint` = weighted joint-space distance (radians) |
+| `vrp_max_velocity` | 0.5 | Per-joint max velocity (rad/s) for the time model |
+| `vrp_max_acceleration` | 1.0 | Per-joint max acceleration (rad/s²) for the time model |
+| `vrp_joint_weights` | all 1.0 | Length-7 per-joint weights, **`joint` mode only** |
+| `vrp_validate_topk` | 1 | >1: plan the top-K candidate tours with MoveIt, keep the lowest **real** execution time |
+| `vrp_aco_n_ants` / `_n_iter` | 20 / 100 | ACO colony size and iteration count |
+| `vrp_aco_alpha` / `_beta` / `_rho` | 1.0 / 2.0 / 0.1 | ACO pheromone weight / heuristic weight / evaporation rate |
+| `vrp_aco_n_jobs` | 1 | >1: run ACO ants across processes (spawn pool) |
+| `vrp_clustered_k` | 6 | Candidate entry/exit ports per region for `vrp_clustered` |
+| `vrp_n_turntable_samples` | 0 | **>0 enables the multi-config turntable sweep** — multiple feasible IK configs per viewpoint, activating config-aware `vrp_clustered` and weight-independent reachability |
+| `vrp_max_configs_per_vp` | 8 | Cap on candidate IK configs kept per viewpoint (sweep) |
+| `vrp_config_dedup_tol` | 0.1 | Joint-space L∞ tolerance (rad) for merging near-identical configs (sweep) |
 
 ### Custom Interfaces (viewpoint_generation_interfaces)
 
@@ -246,6 +270,7 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
 - `ImportCadModel.srv` -- Load a CAD model (file path + units)
 - `MoveToPoseStamped.srv` -- Move robot to a target pose
 - `OptimizeViewpointTraversal.srv` -- Optimize traversal order for a results file
+- `FindNearestViewpoint.srv` -- Given a region index, return the viewpoint in that region nearest to the robot's current joint state (used for dynamic entry selection at execution time)
 
 **Messages:**
 - `OrientationControlData.msg` -- Orientation control feedback (pitch/yaw/roll errors, PID gains)
@@ -340,6 +365,17 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
                 "unreachable": [1]
               }
             },
+            "vrp_clustered": {
+              "order": [0, 2, 1],
+              "distance": 3.9,
+              "configs": [2, 0, 1],
+              "joint_trajectory": {
+                "total_time_s": 10.8,
+                "total_joint_distance": 4.10,
+                "cartesian_waypoints": [[0.1, 0.2, 0.3]],
+                "unreachable": []
+              }
+            },
             "LKH":    {"order": [0, 1, 2], "distance": 0.79}
           }
         }
@@ -418,12 +454,26 @@ existed simply skip that overlay.
 - Mesh-level `order` -- Region visit order (a list of region indices).
 - Region-level `order` -- Cluster visit order *within* that region. Out of FOV
   clustering this is a plain list (identity order). After `optimize_traversal`
-  runs it becomes a **dict keyed by TSP algorithm name**, where each value is an
-  object `{"order": [...], "distance": ...}` holding that algorithm's optimized
-  list of cluster indices plus its path metrics (e.g. `distance` in metres).
-  Multiple algorithms accumulate in the same dict across runs, so the different
-  optimization results — and their metrics — are stored together in the results
-  file rather than in node parameters or a separate file.
+  runs it becomes a **dict keyed by TSP/VRP algorithm name**, where each value is
+  an object `{"order": [...], "distance": ...}` holding that algorithm's optimized
+  list of cluster indices plus its path metrics. The key is the selected algorithm's
+  name: TSP keys are `greedy`, `2opt`, `3opt`, `ILS`, `LKH`; VRP keys are
+  `vrp_greedy`, `vrp_2opt`, `vrp_3opt`, `vrp_ils`, `vrp_lkh`, `vrp_aco`,
+  `vrp_hierarchical`, `vrp_clustered` (i.e. the `vrp_algorithm` parameter value).
+  `distance` units follow `vrp_cost_mode` — seconds in `time` mode (execution-time
+  surrogate) or radians in `joint` mode. Multiple algorithms accumulate in the same
+  dict across runs, so the different optimization results — and their metrics — are
+  stored together in the results file.
+- Region-level `order.<algorithm>.configs` -- **Present for any VRP algorithm when
+  the turntable sweep is enabled** (`vrp_n_turntable_samples > 0`), which gives each
+  viewpoint multiple candidate IK configurations. A list parallel to `order`:
+  `configs[k]` is the index of the chosen IK configuration for cluster `order[k]`,
+  selected (via a config-selection DP over the whole tour) so joint-space travel is
+  minimised and the arm never has to swing between far IK branches. The trajectory
+  planner plans each segment to this exact configuration (joint-space goal) rather
+  than re-resolving IK from the Cartesian pose. `vrp_clustered` additionally
+  optimises the config *jointly* with region order and entry/exit; the other
+  algorithms optimise the order first, then select configs for that fixed tour.
 - Region-level `order.<algorithm>.joint_trajectory` -- moveit_py-computed arm
   motion cost for that algorithm's cluster order, added by
   `viewpoint_traversal_node`'s `optimize_traversal` service whenever the

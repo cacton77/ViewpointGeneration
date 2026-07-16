@@ -1,0 +1,3 @@
+int32 region_idx
+---
+int32 nearest_viewpoint_idx
