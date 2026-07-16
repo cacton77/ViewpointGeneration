@@ -9,6 +9,7 @@ growth can never bridge across a fold, thin wall, or gap the way a spatial
 radius/KNN search over a sampled point cloud can.
 """
 
+import copy
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -30,6 +31,18 @@ class RegionGrowingConfig:
 
     # Normal-based parameters
     normal_angle_threshold: float = np.pi / 6  # 30 degrees
+
+    # STL has no vertex-sharing guarantee -- a mesh exported with each
+    # triangle's vertices stored independently (common for CAD-authored
+    # STLs) can have geometrically-adjacent faces that don't share a vertex
+    # INDEX, which silently defeats build_face_adjacency's edge-based
+    # neighbor detection. Adjacency is computed against a vertex-welded copy
+    # of the mesh (merging vertices within this distance) so coincident
+    # vertices are detected as shared regardless of the source file's
+    # indexing; weld_epsilon is in the mesh's own units (meters, since the
+    # pipeline converts on load) and should stay well below the smallest
+    # real feature size on the part.
+    weld_epsilon: float = 1e-6
 
     def to_dict(self):
         return {
@@ -67,6 +80,13 @@ class RegionGrowingConfig:
                 "description": "Maximum angle difference in radians for normal-based region growing",
                 "control": "slider",
                 "range": [0, np.pi],
+            },
+            "weld_epsilon": {
+                "value": self.weld_epsilon,
+                "type": "float",
+                "description": "Distance (m) within which vertices are merged before computing face adjacency, so STL exports without shared vertex indices still detect real adjacency",
+                "control": "slider",
+                "range": [0.0, 0.001],
             },
         }
 
@@ -124,13 +144,24 @@ class RegionGrowing:
         return curvatures
 
     def preprocess_mesh(self, mesh: o3d.geometry.TriangleMesh) -> o3d.geometry.TriangleMesh:
-        """Ensure triangle normals are present and build face adjacency."""
+        """Ensure triangle normals are present and build face adjacency.
+
+        Adjacency is built from a vertex-welded copy of ``mesh``, not
+        ``mesh`` itself: merge_close_vertices only merges vertex data and
+        remaps triangle vertex indices, it does not add/remove/reorder
+        triangles, so the welded copy's face indices are always
+        interchangeable with the original's. Welding a copy (rather than
+        ``mesh`` in place) means the caller's mesh — the same object
+        ViewpointGeneration uses everywhere else (RaycastingScene, submesh
+        extraction, PartField export) — is never mutated by this call.
+        """
         if not mesh.has_triangle_normals():
             mesh.compute_triangle_normals()
 
         self.mesh = mesh
         self.face_normals = np.asarray(mesh.triangle_normals)
-        self.adjacency = self.build_face_adjacency(np.asarray(mesh.triangles))
+        welded = copy.deepcopy(mesh).merge_close_vertices(self.config.weld_epsilon)
+        self.adjacency = self.build_face_adjacency(np.asarray(welded.triangles))
 
         return mesh
 

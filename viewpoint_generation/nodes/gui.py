@@ -53,6 +53,7 @@ class GUIClient():
     MENU_ABOUT = 26
     MENU_SHOW_JOINT_PATH = 39
     MENU_SHOW_UNREACHABLE = 40
+    MENU_SHOW_BLIND_SPOTS = 46
     # Region surface mode (exclusive)
     MENU_SURFACE_SOLID = 27
     MENU_SURFACE_CLUSTER = 28
@@ -61,7 +62,7 @@ class GUIClient():
     MENU_OVERLAY_FOV_CYLINDER = 35
     MENU_OVERLAY_ORIGIN_LINE = 36
     MENU_OVERLAY_FRUSTUM = 37
-    MENU_OVERLAY_ORIGIN_SPHERE = 38
+    MENU_OVERLAY_ORIGIN_MARKER = 38
 
     # (menu id, overlay kind) pairs for the Viewpoint Overlays submenu.
     _OVERLAY_MENU_ITEMS = [
@@ -69,14 +70,14 @@ class GUIClient():
         (MENU_OVERLAY_FOV_CYLINDER,  OverlayKind.FOV_CYLINDER),
         (MENU_OVERLAY_ORIGIN_LINE,   OverlayKind.ORIGIN_LINE),
         (MENU_OVERLAY_FRUSTUM,       OverlayKind.FRUSTUM),
-        (MENU_OVERLAY_ORIGIN_SPHERE, OverlayKind.ORIGIN_SPHERE),
+        (MENU_OVERLAY_ORIGIN_MARKER, OverlayKind.ORIGIN_MARKER),
     ]
 
     MENU_SEL_OVERLAY_MARKER = 41
     MENU_SEL_OVERLAY_FOV_CYLINDER = 42
     MENU_SEL_OVERLAY_ORIGIN_LINE = 43
     MENU_SEL_OVERLAY_FRUSTUM = 44
-    MENU_SEL_OVERLAY_ORIGIN_SPHERE = 45
+    MENU_SEL_OVERLAY_ORIGIN_MARKER = 45
 
     # (menu id, overlay kind) pairs for the Selected Viewpoint Overlays submenu.
     _SELECTED_OVERLAY_MENU_ITEMS = [
@@ -84,7 +85,7 @@ class GUIClient():
         (MENU_SEL_OVERLAY_FOV_CYLINDER,  OverlayKind.FOV_CYLINDER),
         (MENU_SEL_OVERLAY_ORIGIN_LINE,   OverlayKind.ORIGIN_LINE),
         (MENU_SEL_OVERLAY_FRUSTUM,       OverlayKind.FRUSTUM),
-        (MENU_SEL_OVERLAY_ORIGIN_SPHERE, OverlayKind.ORIGIN_SPHERE),
+        (MENU_SEL_OVERLAY_ORIGIN_MARKER, OverlayKind.ORIGIN_MARKER),
     ]
 
     camera_updated = False
@@ -263,6 +264,10 @@ class GUIClient():
                                self.MENU_SHOW_UNREACHABLE)
             view_menu.set_checked(self.MENU_SHOW_UNREACHABLE,
                                   self.ros_thread.show_unreachable)
+            view_menu.add_item("Show Blind Spots",
+                               self.MENU_SHOW_BLIND_SPOTS)
+            view_menu.set_checked(self.MENU_SHOW_BLIND_SPOTS,
+                                  self.ros_thread.show_blind_spots)
             view_menu.add_separator()
             # Region surface coloring — exclusive (one at a time).
             surface_menu = gui.Menu()
@@ -280,9 +285,9 @@ class GUIClient():
             overlay_menu.add_item(
                 "Frustum",          self.MENU_OVERLAY_FRUSTUM)
             overlay_menu.add_item(
-                "Origin Sphere",    self.MENU_OVERLAY_ORIGIN_SPHERE)
+                "Origin Marker",    self.MENU_OVERLAY_ORIGIN_MARKER)
             overlay_menu.set_checked(self.MENU_OVERLAY_MARKER, True)
-            overlay_menu.set_checked(self.MENU_OVERLAY_ORIGIN_SPHERE, True)
+            overlay_menu.set_checked(self.MENU_OVERLAY_ORIGIN_MARKER, True)
             view_menu.add_menu("Viewpoint Overlays", overlay_menu)
             # Overlays for the selected viewpoint only (independent set).
             sel_overlay_menu = gui.Menu()
@@ -295,11 +300,11 @@ class GUIClient():
             sel_overlay_menu.add_item(
                 "Frustum",          self.MENU_SEL_OVERLAY_FRUSTUM)
             sel_overlay_menu.add_item(
-                "Origin Sphere",    self.MENU_SEL_OVERLAY_ORIGIN_SPHERE)
+                "Origin Marker",    self.MENU_SEL_OVERLAY_ORIGIN_MARKER)
             sel_overlay_menu.set_checked(self.MENU_SEL_OVERLAY_MARKER, True)
             sel_overlay_menu.set_checked(self.MENU_SEL_OVERLAY_FOV_CYLINDER, True)
             sel_overlay_menu.set_checked(self.MENU_SEL_OVERLAY_ORIGIN_LINE, True)
-            sel_overlay_menu.set_checked(self.MENU_SEL_OVERLAY_ORIGIN_SPHERE, True)
+            sel_overlay_menu.set_checked(self.MENU_SEL_OVERLAY_ORIGIN_MARKER, True)
             view_menu.add_menu("Selected Viewpoint Overlays", sel_overlay_menu)
             view_menu.add_separator()
             # Panel display options
@@ -381,6 +386,8 @@ class GUIClient():
             self.MENU_SHOW_JOINT_PATH, self._on_menu_show_joint_path)
         w.set_on_menu_item_activated(
             self.MENU_SHOW_UNREACHABLE, self._on_menu_show_unreachable)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_BLIND_SPOTS, self._on_menu_show_blind_spots)
         w.set_on_menu_item_activated(
             self.MENU_SURFACE_SOLID,
             lambda: self._on_menu_set_surface_mode(RegionSurfaceMode.SOLID))
@@ -576,6 +583,8 @@ class GUIClient():
             self.MENU_SHOW_JOINT_PATH, self.viz.show_joint_path_flag)
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_UNREACHABLE, self.viz.show_unreachable_flag)
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_BLIND_SPOTS, self.viz.show_blind_spots_flag)
 
     def _on_menu_show_axes(self):
         show = not gui.Application.instance.menubar.is_checked(
@@ -649,6 +658,13 @@ class GUIClient():
             self.MENU_SHOW_UNREACHABLE)
         self.viz.show_unreachable(show)
         self.ros_thread.show_unreachable = show
+        self._refresh_view_menu()
+
+    def _on_menu_show_blind_spots(self):
+        show = not gui.Application.instance.menubar.is_checked(
+            self.MENU_SHOW_BLIND_SPOTS)
+        self.viz.show_blind_spots(show)
+        self.ros_thread.show_blind_spots = show
         self._refresh_view_menu()
 
     def _on_menu_set_surface_mode(self, mode: RegionSurfaceMode):

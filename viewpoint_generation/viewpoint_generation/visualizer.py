@@ -34,7 +34,7 @@ class OverlayKind(enum.Enum):
     FOV_CYLINDER  = "fov_cylinder"   # Wireframe FOV coverage cylinder at the surface target
     ORIGIN_LINE   = "origin_line"    # Line from the surface origin to the camera position
     FRUSTUM       = "frustum"        # Camera frustum at the viewpoint
-    ORIGIN_SPHERE = "origin_sphere"  # Small sphere at the surface origin of each cluster
+    ORIGIN_MARKER = "origin_marker"  # Small white sphere at the surface origin of each cluster
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -202,14 +202,15 @@ def _build_origin_line(viewpoint_data: dict) -> o3d.geometry.LineSet:
     return ls
 
 
-def _build_origin_sphere(viewpoint_data: dict,
-                         radius: float = 2.0) -> o3d.geometry.TriangleMesh:
-    """A small sphere at the cluster's surface origin, coloured by cluster colour."""
+def _build_origin_marker(viewpoint_data: dict,
+                         radius: float = Materials.origin_marker_radius) -> o3d.geometry.TriangleMesh:
+    """A small sphere at the cluster's surface origin. Always plain white,
+    not tinted by cluster color or selection, so it reads as a fixed
+    reference point rather than another cluster-colored blob."""
     origin = 1000.0 * np.array(viewpoint_data['origin'], dtype=float)
-    color  = viewpoint_data.get('cluster_color', [1.0, 1.0, 1.0])
     sphere = o3d.geometry.TriangleMesh.create_sphere(radius=radius)
     sphere.translate(origin)
-    sphere.paint_uniform_color(color)
+    sphere.paint_uniform_color([1.0, 1.0, 1.0])
     sphere.compute_vertex_normals()
     return sphere
 
@@ -226,10 +227,16 @@ def _build_viewpoint_point_marker(viewpoint_data: dict) -> o3d.geometry.PointClo
 
 
 # kind -> (builder(viewpoint_data) -> geometry|None, default_material, selected_material)
+# default_material may instead be a callable(viewpoint_data) -> MaterialRecord
+# for a kind that needs per-cluster material variation (MARKER: green for a
+# photometric-tier viewpoint, yellow for standard-tier) — resolve via
+# _resolve_default_material rather than using it directly.
 _OVERLAY_REGISTRY: dict = {
     OverlayKind.MARKER: (
         _build_viewpoint_point_marker,
-        Materials.viewpoint_marker_material,
+        lambda vp: (Materials.standard_viewpoint_marker_material
+                    if (vp or {}).get('imaging_mode') == 'standard'
+                    else Materials.viewpoint_marker_material),
         Materials.selected_viewpoint_marker_material,
     ),
     OverlayKind.FOV_CYLINDER: (
@@ -247,10 +254,10 @@ _OVERLAY_REGISTRY: dict = {
         Materials.overlay_line_material,
         Materials.selected_overlay_line_material,
     ),
-    OverlayKind.ORIGIN_SPHERE: (
-        _build_origin_sphere,
-        Materials.viewpoint_material,
-        Materials.selected_viewpoint_material,
+    OverlayKind.ORIGIN_MARKER: (
+        _build_origin_marker,
+        Materials.origin_marker_material,
+        Materials.selected_origin_marker_material,
     ),
 }
 
@@ -436,10 +443,10 @@ class Visualizer:
         # Independent sets so the selected viewpoint can show a different subset
         # (e.g. only the selected viewpoint shows its FOV cylinder).
         self._enabled_overlays: set[OverlayKind] = {
-            OverlayKind.MARKER, OverlayKind.ORIGIN_SPHERE}
+            OverlayKind.MARKER, OverlayKind.ORIGIN_MARKER}
         self._selected_overlays: set[OverlayKind] = {
             OverlayKind.MARKER, OverlayKind.FOV_CYLINDER,
-            OverlayKind.ORIGIN_LINE, OverlayKind.ORIGIN_SPHERE}
+            OverlayKind.ORIGIN_LINE, OverlayKind.ORIGIN_MARKER}
         self._built_overlays: set[OverlayKind] = set()
 
         # Model state
@@ -490,6 +497,7 @@ class Visualizer:
         self.mesh_has_vertex_colors          = False
         self.show_joint_path_flag            = True
         self.show_unreachable_flag           = True
+        self.show_blind_spots_flag           = True
 
     def on_mouse(self, event) -> gui.Widget.EventCallbackResult:
         """Delegate mouse events to the turntable camera controller."""
@@ -572,6 +580,13 @@ class Visualizer:
             self._selected_overlays.discard(kind)
         self._update_overlay_visibility()
 
+    @staticmethod
+    def _resolve_default_material(default_mat, vp_data):
+        """default_mat is either a fixed MaterialRecord (most overlay kinds)
+        or a callable(vp_data) -> MaterialRecord (MARKER, whose color varies
+        per cluster by imaging_mode) — resolve either form uniformly."""
+        return default_mat(vp_data) if callable(default_mat) else default_mat
+
     def _build_overlay_kind(self, kind: OverlayKind):
         """Build geometry for one overlay kind for every cluster viewpoint."""
         builder, default_mat, _ = _OVERLAY_REGISTRY[kind]
@@ -585,7 +600,7 @@ class Visualizer:
                 geo = builder(vp)
                 if geo is None:
                     continue
-                self.add_geometry(name, geo, default_mat)
+                self.add_geometry(name, geo, self._resolve_default_material(default_mat, vp))
         self._built_overlays.add(kind)
 
     def _update_overlay_visibility(self):
@@ -600,7 +615,7 @@ class Visualizer:
         sel_cluster = self.selected_cluster_name
         for region_name, region_data in self.geometries_dict.items():
             region_visible = (not sel_region) or (region_name == sel_region)
-            for cluster_name in region_data.get('clusters', {}):
+            for cluster_name, cdata in region_data.get('clusters', {}).items():
                 is_selected_vp = (cluster_name == sel_cluster)
                 kinds = (self._selected_overlays if is_selected_vp
                          else self._enabled_overlays)
@@ -613,8 +628,9 @@ class Visualizer:
                                and kind in kinds)
                     self.scene.show_geometry(name, visible)
                     _, default_mat, selected_mat = _OVERLAY_REGISTRY[kind]
-                    self.scene_widget.scene.modify_geometry_material(
-                        name, selected_mat if is_selected_vp else default_mat)
+                    mat = (selected_mat if is_selected_vp else
+                           self._resolve_default_material(default_mat, cdata.get('viewpoint_data')))
+                    self.scene_widget.scene.modify_geometry_material(name, mat)
 
     # ── Core scene helper ────────────────────────────────────────────────────
 
@@ -1000,6 +1016,15 @@ class Visualizer:
                 if pcd_file and os.path.exists(pcd_file):
                     try:
                         region_pcd = o3d.io.read_point_cloud(pcd_file)
+                        # Region point clouds are always sampled/saved in
+                        # meters (ViewpointGeneration.set_mesh_file converts
+                        # the mesh to meters before segment_regions() samples
+                        # each region's cloud), independent of mesh_units
+                        # (which only describes the original raw mesh file).
+                        # Scale to mm once here so region_pcd-derived geometry
+                        # (blind-spot markers, the surface color KDTree below)
+                        # matches every other geometry in this mm-scaled scene.
+                        region_pcd.scale(1000.0, center=(0, 0, 0))
                     except Exception as e:
                         print(f"Error loading region point cloud {pcd_file}: {e}")
 
@@ -1008,6 +1033,21 @@ class Visualizer:
                     'point_cloud': region_pcd,
                     'color': region_color,
                 }
+
+                # Blind-spot points (fov_clustering's greedy-cover safety
+                # break — surface points no candidate viewpoint can see
+                # unoccluded). Independent of clusters/viewpoints: a region
+                # can be entirely blind (zero clusters) and still need this
+                # marked, so it is not gated on region_dict['clusters'].
+                blind_spot_points = region_dict.get('blind_spots', {}).get('points', [])
+                blind_spot_markers = None
+                if blind_spot_points and region_pcd is not None:
+                    blind_spot_markers = region_pcd.select_by_index(blind_spot_points)
+                    # select_by_index inherits the region cloud's own (grey)
+                    # vertex colors; repaint to match blind_spot_marker_material
+                    # explicitly, same convention as _build_unreachable_markers.
+                    blind_spot_markers.paint_uniform_color([1.0, 0.0, 1.0])
+                new_geometries_dict[region_name]['blind_spot_markers'] = blind_spot_markers
 
                 region_has_viewpoints = False
 
@@ -1058,6 +1098,7 @@ class Visualizer:
                                 'position':         vp_raw['position'],
                                 'direction':        vp_raw['direction'],
                                 'orientation':      vp_raw['orientation'],
+                                'imaging_mode':     vp_raw.get('imaging_mode', 'photometric'),
                                 'cluster_centroid': centroid.tolist(),
                                 'cluster_color':    cluster_color.tolist(),
                                 'fov_diameter':     camera_config.get('fov_diameter'),
@@ -1137,6 +1178,11 @@ class Visualizer:
                 self.add_geometry(f"{region_name}_unreachable_markers",
                                   unreachable_markers,
                                   Materials.unreachable_marker_material)
+            blind_spot_markers = region_data.get('blind_spot_markers')
+            if blind_spot_markers is not None:
+                self.add_geometry(f"{region_name}_blind_spot_markers",
+                                  blind_spot_markers,
+                                  Materials.blind_spot_marker_material)
 
         # Build every overlay kind used by either the shared or the
         # selected-viewpoint set, for every cluster.
@@ -1156,6 +1202,9 @@ class Visualizer:
         self.show_mesh(True)
         self.show_curvatures(False)
         self.show_noise_points(False)
+        # Independent of clusters/viewpoints — a region can be entirely
+        # blind (zero clusters) and still carry blind-spot markers.
+        self.show_blind_spots(self.show_blind_spots_flag)
 
         if show_clusters:
             # Always default to the solid region coloring once viewpoints
@@ -1295,6 +1344,7 @@ class Visualizer:
             self.scene.remove_geometry(f"{name}_joint_path")
             self.scene.remove_geometry(f"{name}_joint_markers")
             self.scene.remove_geometry(f"{name}_unreachable_markers")
+            self.scene.remove_geometry(f"{name}_blind_spot_markers")
 
     # ── Visibility (pure scene — no menu, no ROS, no cross-calls) ─────────────
 
@@ -1392,6 +1442,14 @@ class Visualizer:
         """Toggle markers on viewpoints the arm could not plan a motion to."""
         self.show_unreachable_flag = show
         self._show_region_scoped(["unreachable_markers"], show)
+
+    def show_blind_spots(self, show: bool):
+        """Toggle markers on surface points no viewpoint can see with
+        unoccluded line-of-sight (fov_clustering's greedy-cover safety
+        break) — a genuine inspection coverage gap, distinct from
+        show_unreachable's motion-planning failures."""
+        self.show_blind_spots_flag = show
+        self._show_region_scoped(["blind_spot_markers"], show)
 
     def _build_joint_path(self, region: dict, algorithm) -> tuple:
         order = region.get('order', {})
@@ -1587,6 +1645,8 @@ class Visualizer:
                             is_selected and self.show_joint_path_flag)
             self._safe_show(f"{region_name}_unreachable_markers",
                             is_selected and self.show_unreachable_flag)
+            self._safe_show(f"{region_name}_blind_spot_markers",
+                            is_selected and self.show_blind_spots_flag)
 
         # Overlays: every enabled kind, for the selected region only.
         self._update_overlay_visibility()

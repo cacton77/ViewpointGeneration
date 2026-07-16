@@ -6,12 +6,19 @@ from dataclasses import dataclass
 import pytransform3d.rotations as pr
 from bayes_opt import BayesianOptimization
 
+from viewpoint_generation.occlusion_search import search_hemisphere_direction
+
 
 @dataclass
 class ViewpointProjectionConfig:
 
     focal_distance: float = 0.3
-    hemisphere_points: int = 10000
+    # Hemisphere samples for the occlusion-aware direction-refinement search
+    # in generate_viewpoint (searches for a camera axis with unoccluded line
+    # of sight to a cluster's own points, since the mean-of-normals direction
+    # is never itself guaranteed to be occlusion-clear). Runs once per
+    # cluster, not per point, so a modest sample count is plenty.
+    hemisphere_points: int = 64
 
     def to_dict(self):
         return {
@@ -25,9 +32,9 @@ class ViewpointProjectionConfig:
             "hemisphere_points": {
                 "value": self.hemisphere_points,
                 "type": "integer",
-                "description": "Number of hemisphere sample points for viewpoint search",
+                "description": "Hemisphere samples for the occlusion-aware direction-refinement search (per cluster)",
                 "control": "slider",
-                "range": [100, 100000],
+                "range": [4, 100000],
             },
         }
 
@@ -35,34 +42,59 @@ class ViewpointProjectionConfig:
 class ViewpointProjection:
     def __init__(self, config: ViewpointProjectionConfig):
         self.config = config
-        self.raycasting_scene = o3d.t.geometry.RaycastingScene()
+        self.raycasting_scene = None
 
-    def set_mesh(self, mesh: o3d.geometry.TriangleMesh):
-        """
-        Sets the mesh for the raycasting scene.
-        """
+    def set_scene(self, raycasting_scene: o3d.t.geometry.RaycastingScene):
+        """Share a RaycastingScene built once from the full part mesh (by
+        ViewpointGeneration.set_mesh_file, alongside FOVClustering) instead of
+        building a private one per object."""
+        self.raycasting_scene = raycasting_scene
 
-        self.raycasting_scene.add_triangles(
-            o3d.t.geometry.TriangleMesh.from_legacy(mesh))
-
-    def generate_viewpoint(self, surface_points: list, surface_normals: list) -> list:
+    def generate_viewpoint(self, surface_points: list, surface_normals: list,
+                           fov_normal_threshold: float = None, occlusion_epsilon: float = 1e-4,
+                           rng_seed: int = 0, candidate_axis=None) -> list:
         """
         Projects the point cloud to a viewpoint based on the focal distance.
+
+        The naive direction is the mean of surface_normals, but that mean is
+        a different direction than whatever single candidate axis was
+        actually occlusion-tested during clustering (if any), and is never
+        itself validated against occlusion. When fov_normal_threshold is
+        given and a raycasting scene is set, this refines that direction via
+        search_hemisphere_direction: mean_normal and candidate_axis (e.g. the
+        occlusion-validated axis persisted by greedy_cover_clustering) are
+        always evaluated as guaranteed candidates, so refinement can never do
+        worse than either. imaging_mode is 'photometric' when the winning
+        direction is within fov_normal_threshold of the true mean normal,
+        'standard' otherwise (including total search failure, since an
+        unvalidated/possibly-occluded direction must not claim the better
+        tier).
         """
         origin = np.mean(surface_points, axis=0)
         origin_normal = np.mean(surface_normals, axis=0)
         # Normalize the average normal vector
         surface_normal = origin_normal / np.linalg.norm(origin_normal)
         direction = surface_normal
+        imaging_mode = 'photometric'
 
-        # Project point along the surface normal
+        if self.raycasting_scene is not None and fov_normal_threshold is not None:
+            cax = np.asarray(candidate_axis, dtype=float) if candidate_axis is not None else None
+            rng = np.random.default_rng(rng_seed)
+            axis, tier, visible_fraction = search_hemisphere_direction(
+                self.raycasting_scene, origin, surface_normal, surface_points,
+                fov_normal_threshold, self.config.focal_distance, occlusion_epsilon,
+                self.config.hemisphere_points, rng, candidate_axis=cax)
+            if axis is not None:
+                direction = axis
+                imaging_mode = tier
+            else:
+                imaging_mode = 'standard'
+
+        # Project point along the (possibly refined) direction
         viewpoint, orientation = self.project_point_along_direction(
-            origin, surface_normal)
+            origin, direction)
 
-        # Check occlusion
-        # distances, occluded = self.check_occlusion(viewpoint, surface_points)
-
-        return origin, viewpoint, direction, orientation
+        return origin, viewpoint, direction, orientation, imaging_mode
 
     def project_point_along_direction(self, origin: list, direction: list) -> list:
         """
@@ -145,7 +177,9 @@ if __name__ == "__main__":
     config.focal_distance = 3.0
     config.hemisphere_points = 10000
     vp = ViewpointProjection(config)
-    vp.set_mesh(mesh)
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(mesh))
+    vp.set_scene(scene)
 
     surface_points = point_cloud.points
     surface_normals = point_cloud.normals

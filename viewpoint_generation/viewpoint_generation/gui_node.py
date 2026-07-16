@@ -77,6 +77,7 @@ class ROSThread(Node):
                 ('show_viewpoints', True),
                 ('show_joint_path', True),
                 ('show_unreachable', True),
+                ('show_blind_spots', True),
             ]
         )
 
@@ -108,6 +109,8 @@ class ROSThread(Node):
             'show_joint_path').get_parameter_value().bool_value
         self.show_unreachable = self.get_parameter(
             'show_unreachable').get_parameter_value().bool_value
+        self.show_blind_spots = self.get_parameter(
+            'show_blind_spots').get_parameter_value().bool_value
         self.data_path = self.get_parameter(
             'data_path').get_parameter_value().string_value
 

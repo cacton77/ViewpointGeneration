@@ -787,7 +787,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     self.get_logger().error(message)
             elif (param.name.startswith('regions.region_growth.') or
                   param.name.startswith('regions.partfield.') or
-                  param.name.startswith('regions.fov_clustering.') or
+                  param.name.startswith('fov_clustering.') or
                   param.name.startswith('viewpoints.projection.')):
                 field_name = param.name.split('.')[-1]
                 success, message = self.viewpoint_generation.set_algorithm_param(

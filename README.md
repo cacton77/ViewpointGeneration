@@ -15,8 +15,10 @@ The pipeline follows these stages:
    - `region_growth` -- contiguous regions grown over triangle face-adjacency, using face-normal similarity and a per-face curvature analog (variance of neighboring face normals) as the merge criteria
    - `partfield` -- semantic parts from [PartField](https://github.com/nv-tlabs/PartField), grouped directly from its per-face labels (requires GPU + PartField mounted at `/models/PartField`)
 3. **Sample Region Point Clouds** -- Poisson disk sample each region's own submesh (sized from `fov_clustering.point_density`); cached to disk and referenced from the results file
-4. **FOV Clustering** -- Subdivide each region's sampled point cloud into clusters that fit within the camera's field of view and depth of field, using K-means with Bayesian optimization for cluster count
-5. **Project Viewpoints** -- Compute a camera pose (position + orientation) for each cluster at the configured focal distance, with ray-cast occlusion checking
+4. **FOV Clustering** -- Subdivide each region's sampled point cloud into clusters that fit within the camera's field of view and depth of field. Two interchangeable algorithms (selected via `regions.fov_clustering.algorithm`):
+   - `kmeans` -- K-means with Bayesian optimization for cluster count
+   - `greedy_cover` -- greedy set cover: a candidate viewpoint covers a region point only if it passes depth-of-field, field-of-view, and photometric-incidence tests *and* (when `occlusion_check` is enabled) has an unoccluded line of sight to that point against the **full part mesh**, not just the region being clustered. Points the straight-normal predicate leaves occluded get one more chance when `rescue_search` is enabled: a Monte Carlo hemisphere search (see `occlusion_search.py`) looks for *any* unoccluded viewing angle for that point, preferring ones close to its true normal. Points still unrescuable are reported per-region as `blind_spots` rather than silently folded into a cluster (see JSON Results Format below). Each emitted cluster carries its winning candidate's occlusion-validated axis forward as `candidate_axis`, for reuse in the next stage. Candidate anchors normally come from blue-noise farthest-point sampling; setting `structured_candidates` instead lays them on a per-region cylindrical grid (elevation = world Z, azimuth = angle around a vertical axis through the part's center, both spaced by `candidate_spacing`) so viewpoints from *different* regions tend to land at shared elevations/azimuths -- e.g. rings around a roughly cylindrical part -- at some cost to the greedy algorithm's freedom to pick the most locally-efficient anchor
+5. **Project Viewpoints** -- Compute a camera pose (position + orientation) for each cluster at the configured focal distance. The naive direction (mean of the cluster's own point normals) is refined by the same hemisphere search used above, using `candidate_axis` (when present) as a guaranteed-good starting point so refinement can never do worse than clustering already proved — this closes a gap where the mean direction was never itself re-validated against occlusion. The winning direction is tagged `imaging_mode`: `photometric` if it falls within the incidence cone (supports photometric-stereo normal-map reconstruction) or `standard` if only an off-cone angle is occlusion-clear (still gets an image, just not photometric-quality). FOV clustering's occlusion check and viewpoint projection share a single `RaycastingScene`, built once from the full part mesh when it is loaded, together with a large flat ground-plane occluder just below the table/turntable surface (z=0) -- so no computed viewpoint's camera position or line-of-sight can end up underground
 6. **Optimize Traversal** -- Solve a TSP to order viewpoints for efficient robot motion
 
 Results are saved as a JSON file.
@@ -31,6 +33,7 @@ viewpoint_generation/
 │   ├── partfield_segmentation.py   # PartField part segmentation (GPU, subprocess)
 │   ├── fov_clustering.py           # Field-of-view clustering
 │   ├── viewpoint_projection.py     # Viewpoint pose computation
+│   ├── occlusion_search.py         # Monte Carlo hemisphere occlusion search (blind-spot rescue + direction refinement)
 │   ├── mesh_utils.py               # Shared triangle-mesh helpers (submesh extraction)
 │   ├── visualizer.py               # Open3D visualization
 │   ├── gui_node.py                 # GUI node implementation
@@ -107,7 +110,12 @@ All algorithm parameters are exposed as dataclass configs with sensible defaults
 graph (two faces are neighbors only if they share an edge), so growth can
 never bridge across a fold, thin wall, or gap the way a spatial-radius search
 over a sampled point cloud could. "Curvature" here is a per-face analog: how
-much a face's normal deviates from its adjacent faces' normals.
+much a face's normal deviates from its adjacent faces' normals. Adjacency is
+computed against a vertex-welded copy of the mesh (`weld_epsilon`), not the
+raw input: STL has no vertex-sharing guarantee, and a mesh exported with each
+triangle's vertices stored independently (common for CAD-authored STLs) would
+otherwise silently read as disconnected 1-2-triangle islands, one per facet,
+with no way to detect the real edges between them.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -116,6 +124,19 @@ much a face's normal deviates from its adjacent faces' normals.
 | `max_cluster_size` | 100000 | Maximum faces per region |
 | `normal_angle_threshold` | pi/3 | Maximum normal deviation (radians) for region membership |
 | `curvature_threshold` | 0.1 | Maximum curvature difference for region membership |
+| `weld_epsilon` | 1e-6 m | Distance within which vertices are merged before computing face adjacency |
+
+**Tuning for low-poly / faceted parts.** `seed_threshold`'s default (0.1)
+assumes some triangles sit far enough from any edge to read as near-zero
+curvature. On a coarse or heavily-faceted mesh (few triangles per flat
+facet), *every* triangle can be adjacent to a real edge, so nothing clears
+the default threshold and segmentation silently returns zero regions. Raise
+`seed_threshold`/`curvature_threshold` to comfortably exceed the mesh's
+actual per-face curvature range (print `RegionGrowing.face_curvatures` after
+`preprocess_mesh` to check it) and lower `min_cluster_size` to the smallest
+facet you still want kept as its own region -- `normal_angle_threshold`
+remains what separates genuinely distinct facets, since real part edges are
+almost always well above it.
 
 **PartFieldSegmentationConfig** (used when `segmentation_algorithm == 'partfield'`)
 
@@ -149,13 +170,18 @@ noise faces (every face is assigned a part).
 | `candidate_spacing` | 0.0 m | Anchor spacing for `greedy_cover` candidate sampling; 0.0 = auto = `fov_diameter/2` |
 | `prune_redundant` | `true` | Remove redundant viewpoints after greedy cover (cannot open coverage holes) |
 | `rng_seed` | 0 | Random seed for `greedy_cover` candidate sampling (reproducibility) |
+| `occlusion_check` | `true` | Require unobstructed line-of-sight to the full part mesh (criterion 4 of the `greedy_cover` coverage predicate). Disabling reproduces the pre-occlusion (criteria 1-3 only) behavior |
+| `occlusion_epsilon` | 1e-4 m | Shrink margin subtracted from the occlusion ray's far bound so a point's own triangle is never mistaken for its own occluder |
+| `rescue_search` | `true` | Attempt a Monte Carlo hemisphere search for an alternative viewing angle before giving up on an occluded blind-spot point (`greedy_cover` only) |
+| `rescue_samples` | 64 | Hemisphere samples per blind-spot rescue attempt |
+| `structured_candidates` | `false` | Lay `greedy_cover` candidate anchors on a per-region cylindrical grid (elevation/azimuth around the part center, spaced by `candidate_spacing`) instead of blue-noise farthest-point sampling, so viewpoints across regions tend to share elevations/azimuths |
 
 **ViewpointProjectionConfig**
 
 | Parameter | Default | Description |
 |---|---|---|
 | `focal_distance` | 0.3 m | Distance from viewpoint to surface |
-| `hemisphere_points` | 10000 | Points used for hemisphere sampling |
+| `hemisphere_points` | 64 | Hemisphere samples for the occlusion-aware direction-refinement search in `project_viewpoints` (per cluster, not per point) |
 
 ## ROS 2 Interface
 
@@ -207,7 +233,7 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
 - **gui_node** -- Open3D visualization GUI with interactive mesh, region, cluster, and viewpoint rendering. Visualization is split into two orthogonal axes:
 
   - **Region surface (exclusive)** — *View → Region Surface* selects one coloring for the region surfaces: `Solid` (uniform region color) or `Cluster` (colored by owning cluster). Each region is its own exact triangle submesh (segmentation is mesh-native, so no subdivision or nearest-point projection is needed to render it), so selecting a region makes the **others semi-transparent** to focus on it. Selecting a region also shows only its path, shows the enabled overlays for its viewpoints, and auto-selects its first viewpoint.
-  - **Viewpoint overlays (inclusive)** — *View → Viewpoint Overlays* independently toggles any combination of per-viewpoint geometries: `Viewpoint Marker`, `FOV Cylinder`, `Origin Line` (surface origin → camera), `Frustum`, and `Origin Sphere`. **FOV Cylinder** is a white wireframe cylinder (radius `fov_diameter/2`, height `dof`) centered on each cluster's surface target and aligned to its averaged view direction — the literal coverage volume; overlapping FOVs visibly intersect, honestly depicting the *covering* solution. This set applies to the non-selected viewpoints.
+  - **Viewpoint overlays (inclusive)** — *View → Viewpoint Overlays* independently toggles any combination of per-viewpoint geometries: `Viewpoint Marker`, `FOV Cylinder`, `Origin Line` (surface origin → camera), `Frustum`, and `Origin Marker`. **FOV Cylinder** is a white wireframe cylinder (radius `fov_diameter/2`, height `dof`) centered on each cluster's surface target and aligned to its averaged view direction — the literal coverage volume; overlapping FOVs visibly intersect, honestly depicting the *covering* solution. **Origin Marker** is a small white sphere at the cluster's surface origin, always white rather than tinted by selection or cluster color. **Viewpoint Marker** is colored by the viewpoint's `imaging_mode`: green for `photometric`, yellow for `standard` (blue overrides both when the viewpoint is selected). This set applies to the non-selected viewpoints.
   - **Selected viewpoint overlays** — *View → Selected Viewpoint Overlays* is a parallel, independent set of the same toggles that applies only to the currently-selected viewpoint (drawn with highlight colors). Because the two sets are independent, you can, e.g., show the FOV cylinder for the selected viewpoint only by enabling it here while leaving it off in *Viewpoint Overlays*.
 
 ### Custom Interfaces (viewpoint_generation_interfaces)
@@ -289,14 +315,20 @@ which point it becomes a dict keyed by TSP algorithm name (see below).
           "clusters": [
             {
               "points": [1234, 5678],
+              "candidate_axis": [0.0, 0.0, 1.0],
               "viewpoint": {
                 "origin": [0.01, 0.02, 0.03],
                 "position": [0.1, 0.2, 0.3],
                 "direction": [0.0, 0.0, 1.0],
-                "orientation": [0.0, 0.0, 0.0, 1.0]
+                "orientation": [0.0, 0.0, 0.0, 1.0],
+                "imaging_mode": "photometric"
               }
             }
           ],
+          "blind_spots": {
+            "points": [17, 42, 88],
+            "reason": "occluded"
+          },
           "order": {
             "greedy": {
               "order": [0, 2, 1],
@@ -332,11 +364,49 @@ local to *that region's own point cloud*, not a shared/global one. `noise_faces`
 is a list of triangle indices no region claimed (always empty for PartField,
 since every face gets a part).
 
+**`cluster.candidate_axis`** (only produced by `fov_clustering.algorithm ==
+'greedy_cover'`; absent for `kmeans`, which never validates occlusion during
+clustering) -- the owning candidate's occlusion-validated view axis (unit
+vector), i.e. a direction already proven, during `fov_clustering()`, to have
+unoccluded line of sight to every point in this cluster. `project_viewpoints()`
+reuses it as a guaranteed-good starting point for direction refinement (see
+`viewpoint.imaging_mode` below) rather than trusting an unvalidated
+mean-of-normals direction.
+
+**`region.blind_spots`** (only produced by `fov_clustering.algorithm ==
+'greedy_cover'`; always `{"points": []}` for `kmeans`, which has no coverage
+predicate to fail) -- region-local point indices, in the same indexing space
+as cluster `points`, that no candidate viewpoint could cover, even after a
+Monte Carlo hemisphere search (`rescue_search`) tried every incidence angle
+in the outward hemisphere looking for *any* unoccluded viewing direction, not
+just the straight surface normal. These points are never assigned to any
+cluster, so `blind_spots.points` and the union of a region's
+`clusters[*].points` are disjoint. `reason` (present only when `points` is
+non-empty) is `"occluded"` when every affected point had at least one
+geometrically-valid candidate that occlusion alone ruled out, `"geometric"`
+when none did (e.g. a degenerate surface normal), or `"mixed"` when the
+region has both. A region can have `blind_spots` with zero `clusters` (the
+whole region is occluded). This is a genuine inspection coverage gap, not a
+clustering bug, and is also logged as a warning (`region N: <count> points
+are unreachable (...)`) when `fov_clustering()` runs. The GUI's *View → Show
+Blind Spots* toggle renders these points as markers (see below).
+
 **Viewpoint fields:**
 - `origin` -- Cluster centroid on the surface
-- `position` -- Camera position (centroid projected along normal by `focal_distance`)
-- `direction` -- Surface normal (unit vector, points outward from surface)
+- `position` -- Camera position (centroid projected along `direction` by `focal_distance`)
+- `direction` -- Unit vector, the emitted camera axis. Not simply the mean of
+  the cluster's point normals: when a raycasting scene and `fov_normal_threshold`
+  are available, `project_viewpoints()` refines it via the same hemisphere
+  search used for blind-spot rescue (starting from `candidate_axis` when
+  present, so it can never be worse than what clustering already proved),
+  since the raw mean direction is never itself guaranteed occlusion-free
 - `orientation` -- Camera orientation as quaternion (xyzw)
+- `imaging_mode` -- `"photometric"` if `direction` falls within
+  `fov_normal_threshold` of the cluster's true mean surface normal (supports
+  photometric-stereo normal-map reconstruction), `"standard"` if only an
+  off-cone angle has unoccluded line of sight (still a usable image, just not
+  photometric-quality). The GUI's `Viewpoint Marker` overlay colors
+  accordingly (green/yellow; see below)
 
 **`camera_config`** records the FOV geometry the results were generated with
 (`fov_diameter`, `dof`, `focal_distance`). Besides documenting the capture

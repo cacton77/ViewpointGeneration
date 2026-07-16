@@ -74,18 +74,24 @@ class Materials:
     selected_cluster_material.shader = "defaultUnlit"
     selected_cluster_material.base_color = [0.0, 0.0, 1.0, 1.0]
 
-    viewpoint_material = rendering.MaterialRecord()
-    viewpoint_material.shader = "defaultUnlit"
-    viewpoint_material.base_color = [1.0, 1.0, 1.0, 1.0]
     viewpoint_type = "sphere"
     viewpoint_sphere_size = 3  # Size in mm
     viewpoint_axis_size = 20
     viewpoint_arrow_scale = 2  # Scale factor for the arrow
 
-    selected_viewpoint_material = rendering.MaterialRecord()
-    selected_viewpoint_material.shader = "defaultUnlit"
-    selected_viewpoint_material.base_color = [0.0, 0.0, 1.0, 1.0]
-    # selected_viewpoint_material.base_color = [193/255, 76/255, 61/255, 1.0]
+    # Origin marker — small sphere at each cluster's surface origin. Plain
+    # white when unselected; the selected one matches
+    # selected_viewpoint_marker_material's blue so both markers agree on
+    # what color means "this is the selected viewpoint."
+    origin_marker_radius = 0.5  # Size in mm (half of 1.0, a quarter of the original 2.0)
+
+    origin_marker_material = rendering.MaterialRecord()
+    origin_marker_material.shader = "defaultUnlit"
+    origin_marker_material.base_color = [1.0, 1.0, 1.0, 1.0]
+
+    selected_origin_marker_material = rendering.MaterialRecord()
+    selected_origin_marker_material.shader = "defaultUnlit"
+    selected_origin_marker_material.base_color = [0.2, 0.45, 1.0, 1.0]
 
     # Fat-point viewpoint markers (same style as the unreachable markers).
     # Geometry is painted white so base_color tints it — green when unselected,
@@ -99,6 +105,17 @@ class Materials:
     selected_viewpoint_marker_material.shader = 'defaultUnlit'
     selected_viewpoint_marker_material.point_size = 12.0
     selected_viewpoint_marker_material.base_color = [0.2, 0.45, 1.0, 1.0]
+
+    # Standard-imaging viewpoint markers — same fat-point style as
+    # viewpoint_marker_material, but yellow: this viewpoint's direction
+    # falls outside the photometric incidence cone (occlusion-clear, but
+    # not suited for photometric-stereo normal-map reconstruction). Selected
+    # state still uses the shared selected_viewpoint_marker_material blue,
+    # so selection always reads the same regardless of imaging tier.
+    standard_viewpoint_marker_material = rendering.MaterialRecord()
+    standard_viewpoint_marker_material.shader = 'defaultUnlit'
+    standard_viewpoint_marker_material.point_size = 12.0
+    standard_viewpoint_marker_material.base_color = [1.0, 0.85, 0.1, 1.0]
 
     fov_material = rendering.MaterialRecord()
     fov_material.shader = "defaultUnlit"
@@ -138,6 +155,15 @@ class Materials:
     unreachable_marker_material.shader = 'defaultUnlit'
     unreachable_marker_material.point_size = 14.0
     unreachable_marker_material.base_color = [1.0, 0.0, 0.0, 1.0]
+
+    # Blind-spot points — surface points no viewpoint can see line-of-sight
+    # unoccluded (fov_clustering's greedy-cover safety break). Magenta rather
+    # than unreachable's red so the two distinct "can't do this" concepts
+    # (motion planning vs. inspection coverage) read as visually different.
+    blind_spot_marker_material = rendering.MaterialRecord()
+    blind_spot_marker_material.shader = 'defaultUnlit'
+    blind_spot_marker_material.point_size = 10.0
+    blind_spot_marker_material.base_color = [1.0, 0.0, 1.0, 1.0]
 
     ground_plane_material = MaterialRecord()
     ground_plane_material.shader = 'defaultLitTransparency'

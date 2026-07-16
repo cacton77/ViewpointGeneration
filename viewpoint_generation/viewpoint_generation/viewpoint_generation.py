@@ -39,6 +39,22 @@ class ViewpointGeneration():
     bb_color = (1., 1., 1.)
     text_color = (1., 1., 1.)
 
+    # Half-width (m) of the flat ground-plane occluder added to the shared
+    # raycasting scene, centered at the origin above the table/turntable
+    # surface the part sits on. Comfortably exceeds any plausible part or
+    # planning-volume footprint so it always spans the workspace.
+    ground_plane_half_size = 5.0
+    # Z offset (m) of the ground plane below the nominal table surface
+    # (z=0). Placed strictly below zero, not at it, so a mesh point resting
+    # exactly at z=0 doesn't coincide with the plane: the occlusion ray's
+    # self-intersection-avoidance shrink (occlusion_epsilon) stops each ray
+    # just short of its own target, so a ground plane exactly AT a target's
+    # z-level never gets crossed and silently fails to register as blocking
+    # -- confirmed empirically. -0.02 clears occlusion_epsilon's entire
+    # declared range ([0, 0.01], see FOVClusteringConfig) with 2x margin,
+    # while still being negligible next to any genuinely underground camera.
+    ground_plane_z = -0.02
+
     # Segmentation algorithm used to partition the surface into regions.
     # One of: 'region_growth' (mesh face-adjacency) or 'partfield' (PartField parts).
     segmentation_algorithm = 'partfield'
@@ -66,7 +82,6 @@ class ViewpointGeneration():
     )
     vp_config = ViewpointProjectionConfig(
         focal_distance=0.3,
-        hemisphere_points=10000,
     )
 
     rg = RegionGrowing(region_growing_config)
@@ -98,6 +113,29 @@ class ViewpointGeneration():
         max_z = bbox.max_bound[2]
 
         return min_x, min_y, min_z, max_x, max_y, max_z
+
+    def _build_ground_plane_mesh(self):
+        """A large flat quad just below z=0, added to the shared raycasting
+        scene as an occluder alongside the part mesh. Any ray between a
+        candidate camera position and a target point that would have to
+        pass through the table/turntable surface to connect them now
+        correctly registers as occluded, so occlusion-checked
+        coverage/rescue/refinement (see occlusion_search.py) can never
+        place or credit a viewpoint whose camera position is underground."""
+        s = self.ground_plane_half_size
+        z = self.ground_plane_z
+        plane = o3d.geometry.TriangleMesh()
+        plane.vertices = o3d.utility.Vector3dVector(np.array([
+            [-s, -s, z],
+            [ s, -s, z],
+            [ s,  s, z],
+            [-s,  s, z],
+        ]))
+        plane.triangles = o3d.utility.Vector3iVector(np.array([
+            [0, 1, 2],
+            [0, 2, 3],
+        ]))
+        return plane
 
     def get_mesh_vertices_and_triangles(self):
         """
@@ -193,8 +231,18 @@ class ViewpointGeneration():
         # preserve self.results and self.results_file so a saved config can be
         # resumed without discarding its regions/clusters.
 
-        # Raycasting Scene
-        self.vp.set_mesh(self.mesh)
+        # Raycasting Scene, built once and shared by FOV clustering's
+        # occlusion check and viewpoint projection (both need line-of-sight
+        # against the full part mesh, not just their own region/cluster).
+        # Includes a ground-plane occluder so no computed viewpoint's camera
+        # position or line-of-sight can end up underground.
+        self.raycasting_scene = o3d.t.geometry.RaycastingScene()
+        self.raycasting_scene.add_triangles(
+            o3d.t.geometry.TriangleMesh.from_legacy(self.mesh))
+        self.raycasting_scene.add_triangles(
+            o3d.t.geometry.TriangleMesh.from_legacy(self._build_ground_plane_mesh()))
+        self.fc.set_scene(self.raycasting_scene)
+        self.vp.set_scene(self.raycasting_scene)
 
         return True, ''
 
@@ -570,21 +618,40 @@ class ViewpointGeneration():
             if not success:
                 return False, msg
 
+        # Shared reference point for structured_candidates' cylindrical
+        # elevation/azimuth grid, so different regions' bins line up. The
+        # whole part's (not each region's own) center, so azimuth=0 means
+        # the same absolute direction everywhere.
+        min_x, min_y, _, max_x, max_y, _ = self.get_mesh_bounds()
+        part_center_xy = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+
         # Iterate through regions in the region dictionary
         for region_id, region in enumerate(self.results['meshes'][0]['regions']):
             print(
                 f"Performing FOV clustering on region {region_id} with {len(region['faces'])} faces.")
             region_point_cloud = self._load_region_point_cloud(region)
             # Perform FOV clustering
-            fov_clusters = self.fc.fov_clustering(region_point_cloud)
+            fov_clusters, blind_spots = self.fc.fov_clustering(
+                region_point_cloud, focal_distance=self.vp_config.focal_distance,
+                part_center_xy=part_center_xy)
             print(
                 f"Region {region_id} clustered into {len(fov_clusters)} FOV clusters.")
+            if blind_spots.get('points'):
+                print(
+                    f"WARNING: region {region_id}: {len(blind_spots['points'])} points "
+                    f"are unreachable ({blind_spots['reason']}) — genuine inspection "
+                    f"blind spot, not a clustering bug.")
             self.results['meshes'][0]['regions'][region_id]['clusters'] = []
             for fov_cluster in fov_clusters:
-                if len(fov_cluster) <= 3:
+                points = fov_cluster['points']
+                if len(points) <= 3:
                     continue
-                self.results['meshes'][0]['regions'][region_id]['clusters'].append({
-                    'points': fov_cluster})
+                cluster_entry = {'points': points}
+                if fov_cluster.get('axis') is not None:
+                    cluster_entry['candidate_axis'] = fov_cluster['axis']
+                self.results['meshes'][0]['regions'][region_id]['clusters'].append(
+                    cluster_entry)
+            self.results['meshes'][0]['regions'][region_id]['blind_spots'] = blind_spots
 
             # Assign default order
             self.results['meshes'][0]['regions'][region_id]['order'] = list(
@@ -615,15 +682,26 @@ class ViewpointGeneration():
                     fov_cluster['points'])
                 fov_points = np.asarray(fov_pcd.points)
                 fov_normals = np.asarray(fov_pcd.normals)
-                # Project viewpoint for the FOV cluster
-                origin, position, direction, orientation = self.vp.generate_viewpoint(
-                    fov_points, fov_normals)
+                # Project viewpoint for the FOV cluster. candidate_axis, when
+                # present, is the occlusion-validated axis clustering already
+                # proved works for this cluster's points — passed through so
+                # the direction-refinement search below can never do worse
+                # than what clustering already established, regardless of
+                # its own independent RNG draw.
+                candidate_axis = fov_cluster.get('candidate_axis')
+                origin, position, direction, orientation, imaging_mode = self.vp.generate_viewpoint(
+                    fov_points, fov_normals,
+                    fov_normal_threshold=self.fc_config.fov_normal_threshold,
+                    occlusion_epsilon=self.fc_config.occlusion_epsilon,
+                    rng_seed=self.fc_config.rng_seed,
+                    candidate_axis=candidate_axis)
                 # Store the viewpoint in the region dictionary
                 self.results['meshes'][0]['regions'][region_id]['clusters'][fov_cluster_id]['viewpoint'] = {
                     'origin': origin.tolist(),
                     'position': position.tolist(),
                     'direction': direction.tolist(),
-                    'orientation': orientation.tolist()
+                    'orientation': orientation.tolist(),
+                    'imaging_mode': imaging_mode,
                 }
                 # Visualize the projected viewpoint
                 # viewpoint_mesh = o3d.geometry.TriangleMesh.create_sphere(radius=0.005)

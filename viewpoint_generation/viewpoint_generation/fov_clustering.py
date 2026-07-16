@@ -18,6 +18,8 @@ from bayes_opt import UtilityFunction
 
 from dataclasses import dataclass
 
+from viewpoint_generation.occlusion_search import search_hemisphere_direction
+
 
 @dataclass
 class FOVClusteringConfig:
@@ -53,6 +55,26 @@ class FOVClusteringConfig:
     candidate_spacing: float = 0.0
     prune_redundant: bool = True  # Drop redundant viewpoints after greedy cover
     rng_seed: int = 0  # Seed for reproducible candidate sampling
+
+    # Occlusion (criterion 4 of the coverage predicate)
+    occlusion_check: bool = True  # Require unobstructed line-of-sight to the full part mesh
+    # Shrink margin (m) subtracted from the occlusion ray's tfar so a point's
+    # own triangle is never mistaken for its own occluder.
+    occlusion_epsilon: float = 1e-4
+
+    # Blind-spot rescue: Monte Carlo hemisphere search for an alternative
+    # viewing angle for points the straight-normal predicate leaves occluded.
+    rescue_search: bool = True  # Attempt to rescue occluded blind-spot points
+    rescue_samples: int = 64  # Hemisphere samples per rescue attempt
+
+    # Candidate anchor generation: 'farthest_point' (default, greedy maximin
+    # spacing) or structured. Structured lays candidates on a per-region
+    # cylindrical grid (elevation = world Z, azimuth = angle around a
+    # vertical axis through the part's center) instead of blue-noise
+    # farthest-point sampling, so viewpoints tend to line up at shared
+    # elevations/azimuths across regions -- at some cost to the greedy
+    # algorithm's freedom to pick the most locally-efficient anchor.
+    structured_candidates: bool = False
 
     def to_dict(self):
         return {
@@ -159,6 +181,38 @@ class FOVClusteringConfig:
                 "control": "slider",
                 "range": [0, 2147483647],
             },
+            "occlusion_check": {
+                "value": self.occlusion_check,
+                "type": "bool",
+                "description": "Require unobstructed line-of-sight to the full part mesh (criterion 4 of the greedy_cover coverage predicate)",
+                "control": "checkbox",
+            },
+            "occlusion_epsilon": {
+                "value": self.occlusion_epsilon,
+                "type": "float",
+                "description": "Shrink margin (m) subtracted from the occlusion ray's tfar so a point's own triangle is never mistaken for its own occluder",
+                "control": "slider",
+                "range": [0.0, 0.01],
+            },
+            "rescue_search": {
+                "value": self.rescue_search,
+                "type": "bool",
+                "description": "Attempt a Monte Carlo hemisphere search for an alternative viewing angle before giving up on an occluded blind-spot point",
+                "control": "checkbox",
+            },
+            "rescue_samples": {
+                "value": self.rescue_samples,
+                "type": "integer",
+                "description": "Hemisphere samples per blind-spot rescue attempt",
+                "control": "slider",
+                "range": [4, 1000],
+            },
+            "structured_candidates": {
+                "value": self.structured_candidates,
+                "type": "bool",
+                "description": "Lay candidate anchors on a per-region cylindrical grid (elevation/azimuth around the part center) instead of farthest-point sampling",
+                "control": "checkbox",
+            },
         }
 
 
@@ -191,9 +245,74 @@ def _farthest_point_sample(pts: np.ndarray, spacing: float, rng: np.random.Gener
     return selected
 
 
+def _structured_grid_sample(pts: np.ndarray, spacing: float, part_center_xy: tuple) -> list:
+    """Structured cylindrical-grid candidate anchors, scoped to one region.
+
+    Bins this region's points by (elevation, azimuth) in a frame shared
+    across the whole part -- elevation = world Z, azimuth = angle around a
+    vertical axis through `part_center_xy` -- so bins line up consistently
+    across different regions rather than each region getting its own
+    arbitrary local frame. Each occupied bin keeps one representative point
+    as a candidate anchor. `spacing` sets both the elevation ring spacing
+    (meters) and, via this region's mean radius from the vertical axis, the
+    azimuthal spacing (converted from an arc-length target to an angular
+    step). Always returns at least one index for a non-empty `pts`.
+
+    Regions whose mean radius from the axis is smaller than `spacing` are
+    too close to it for azimuthal binning to be meaningful (the "pole"
+    case) -- those fall back to elevation-only bands.
+
+    Each bin keeps whichever of its points is closest to the bin's exact
+    center (in elevation / arc-length units), not just the first point
+    encountered -- otherwise the chosen anchor could land anywhere within a
+    `spacing`-wide bin, undermining the point of sharing bin edges across
+    regions: two regions occupying the same bin should end up with anchors
+    that actually agree on elevation/azimuth, not just on which coarse
+    bucket they fell into.
+    """
+    m = len(pts)
+    if m == 0:
+        return []
+
+    cx, cy = part_center_xy
+    dx = pts[:, 0] - cx
+    dy = pts[:, 1] - cy
+    mean_radius = float(np.hypot(dx, dy).mean())
+
+    z_bin = np.round(pts[:, 2] / spacing).astype(np.int64)
+    z_offset = pts[:, 2] - z_bin * spacing
+    if mean_radius < spacing:
+        theta_bin = np.zeros(m, dtype=np.int64)
+        arc_offset = np.zeros(m)
+    else:
+        theta = np.arctan2(dy, dx)
+        angular_step = spacing / mean_radius
+        theta_bin = np.round(theta / angular_step).astype(np.int64)
+        theta_offset = theta - theta_bin * angular_step
+        theta_offset = (theta_offset + np.pi) % (2 * np.pi) - np.pi  # wrap to (-pi, pi]
+        arc_offset = theta_offset * mean_radius
+    dist_to_center = np.hypot(z_offset, arc_offset)
+
+    keys = np.stack([z_bin, theta_bin], axis=1)
+    _, bin_of = np.unique(keys, axis=0, return_inverse=True)
+    # Sort by (bin, distance-to-center) so the first row of each bin group
+    # is that bin's closest-to-center point, then take one per bin.
+    order = np.lexsort((dist_to_center, bin_of))
+    _, first_pos = np.unique(bin_of[order], return_index=True)
+    return order[first_pos].tolist()
+
+
 class FOVClustering:
     def __init__(self, config: FOVClusteringConfig = None):
         self.config = config or FOVClusteringConfig()
+        self.raycasting_scene = None
+
+    def set_scene(self, raycasting_scene: 'o3d.t.geometry.RaycastingScene'):
+        """Share a RaycastingScene built once from the full part mesh (by
+        ViewpointGeneration.set_mesh_file, alongside ViewpointProjection) so
+        occlusion checks in greedy_cover_clustering see the whole part, not
+        just the region being clustered."""
+        self.raycasting_scene = raycasting_scene
 
     def evaluate_fov_cluster(self, points, normals):
         """ Function to evaluate a cluster based on field of view and depth of field. """
@@ -463,13 +582,31 @@ class FOVClustering:
 
         return k_opt, valid_clusters
 
-    def fov_clustering(self, point_cloud):
+    def fov_clustering(self, point_cloud, focal_distance=None, part_center_xy=None):
         """ Partition a region of a point cloud into regions within camera fov and dof.
         input: point cloud of a region (with normals) Open3D PointCloud
-        Returns a list of clusters, where each cluster is a list of point indices. """
+        focal_distance: camera focal distance (m), from ViewpointProjectionConfig.
+            Only consumed by greedy_cover (needed for the occlusion ray's
+            camera position); ignored by the kmeans path.
+        part_center_xy: (x, y) of the whole part's center, from
+            ViewpointGeneration. Only consumed by greedy_cover when
+            cfg.structured_candidates is True (the shared reference point
+            for the cylindrical elevation/azimuth candidate grid, so
+            different regions' bins line up); ignored otherwise.
+        Returns: (clusters, blind_spots).
+            clusters is a list of {'points': [...], 'axis': [...]|None}
+            dicts. 'axis' is the owning candidate's occlusion-validated
+            view axis for greedy_cover clusters, used by project_viewpoints
+            as a guaranteed-good starting point; always None for kmeans,
+            which never validates occlusion during clustering.
+            blind_spots is {'points': [...]} and, when non-empty, also
+            {'reason': 'occluded'|'geometric'|'mixed'} — points the greedy
+            safety break (even after blind-spot rescue) could not assign to
+            any cluster (kmeans always returns {'points': []}, since it has
+            no coverage predicate to fail). """
 
         if self.config.algorithm == 'greedy_cover':
-            return self.greedy_cover_clustering(point_cloud)
+            return self.greedy_cover_clustering(point_cloud, focal_distance, part_center_xy)
 
         # Default: K-means + Bayesian optimization path
         points = np.asarray(point_cloud.points)
@@ -478,21 +615,24 @@ class FOVClustering:
         k_opt, fov_clusters = self.optimize_k_b_opt(
             points, normals, self.evaluate_fov_cluster)
 
-        return fov_clusters
+        return [{'points': c, 'axis': None} for c in fov_clusters], {'points': []}
 
-    def greedy_cover_clustering(self, point_cloud):
+    def greedy_cover_clustering(self, point_cloud, focal_distance=None, part_center_xy=None):
         """Greedy set-cover FOV clustering.
 
         Replaces the K-means+BO path when algorithm=='greedy_cover'.
-        Returns the same container: a list of clusters, each a list of
-        LOCAL point indices into the sub-cloud (matching the K-means output).
+        Returns (clusters, blind_spots): clusters is the same container the
+        K-means path returns (a list of clusters, each a list of LOCAL point
+        indices into the sub-cloud); blind_spots is {'points': [...]} (plus
+        'reason' when non-empty) — points the 5.4 safety break left uncovered,
+        never assigned to any cluster.
         """
         pts = np.asarray(point_cloud.points)     # (m, 3)
         normals = np.asarray(point_cloud.normals)  # (m, 3)
         m = len(pts)
 
         if m == 0:
-            return []
+            return [], {'points': []}
 
         cfg = self.config
         fov_radius = cfg.fov_diameter / 2.0
@@ -510,8 +650,57 @@ class FOVClustering:
         kdtree = cKDTree(pts)
         broad_radius = math.sqrt(fov_radius**2 + half_dof**2)
 
-        def _coverage_set(center, axis):
-            """Return set of local indices covered by a candidate at (center, axis)."""
+        occlusion_active = (cfg.occlusion_check
+                            and self.raycasting_scene is not None
+                            and focal_distance is not None)
+
+        def _occluded_mask(cam, target_idx):
+            """Batched any-hit line-of-sight test from cam to each target
+            point. target_idx: array of local ids that already passed
+            criteria 1-3. Returns a bool array, True where the ray is
+            blocked before reaching the target (i.e. NOT visible).
+
+            RaycastingScene.test_occlusions only accepts a single scalar
+            tfar for the whole batch, not one per ray, so a per-ray
+            "stop just short of this ray's own target" bound (the point of
+            occlusion_epsilon) can't be expressed via tfar directly. Instead
+            each ray's direction vector is left UN-normalized and scaled to
+            length (dist - epsilon) — Open3D's ray convention measures hit
+            distance in units of the direction vector, so this makes a
+            single scalar tfar=1.0 bound every ray to just short of its own
+            target in one batched call.
+            """
+            if len(target_idx) == 0:
+                return np.zeros(0, dtype=bool)
+            target_pts = pts[target_idx]                        # (k, 3)
+            d = target_pts - cam                                 # (k, 3)
+            dist = np.linalg.norm(d, axis=1)
+            shrink = np.clip(
+                1.0 - cfg.occlusion_epsilon / np.maximum(dist, 1e-12), 0.0, 1.0)
+            dirs = d * shrink[:, None]
+            rays_np = np.concatenate(
+                [np.tile(cam, (len(target_idx), 1)), dirs], axis=1).astype(np.float32)
+            rays = o3d.core.Tensor(rays_np, dtype=o3d.core.Dtype.Float32)
+            return self.raycasting_scene.test_occlusions(rays, tfar=1.0).numpy()
+
+        # Union of local ids that pass criteria 1-3 for ANY candidate,
+        # regardless of occlusion outcome. Used only to classify blind spots
+        # (Section 8: occluded vs. geometrically unreachable) — cheap to
+        # accumulate as a byproduct of coverage computation.
+        covered_union_geo = set()
+
+        def _coverage_set(center, axis, force_include=None):
+            """Return set of local indices covered by a candidate at
+            (center, axis): criteria 1-3 (DoF/FOV/incidence) first to shrink
+            the neighborhood, then criterion 4 (occlusion) as one batched
+            any-hit query over just those survivors.
+
+            force_include: a local point index whose incidence check
+            (criterion 3 only — DoF/FOV/occlusion still apply) is skipped.
+            Used by the blind-spot rescue pass: that point's axis was
+            deliberately chosen via hemisphere search specifically to see
+            it, possibly outside the photometric incidence cone (a
+            'standard imaging' rather than 'photometric' viewpoint)."""
             candidates = kdtree.query_ball_point(center, r=broad_radius)
             if not candidates:
                 return set()
@@ -520,12 +709,26 @@ class FOVClustering:
             axial = d @ axis                                   # (k,)
             lateral = np.linalg.norm(d - np.outer(axial, axis), axis=1)  # (k,)
             incidence = normals[idx] @ axis                    # (k,)
+            incidence_ok = incidence >= cos_thr
+            if force_include is not None:
+                incidence_ok = incidence_ok | (idx == force_include)
             mask = (np.abs(axial) <= half_dof) & (
-                lateral <= fov_radius) & (incidence >= cos_thr)
-            return set(idx[mask].tolist())
+                lateral <= fov_radius) & incidence_ok
+            survivors = idx[mask]
+            covered_union_geo.update(survivors.tolist())
+            if len(survivors) == 0 or not occlusion_active:
+                return set(survivors.tolist())
+            cam = center + focal_distance * axis
+            blocked = _occluded_mask(cam, survivors)
+            return set(survivors[~blocked].tolist())
 
-        # --- 5.1  Candidate anchors via farthest-point sampling ---
-        anchor_ids = _farthest_point_sample(pts, spacing, rng)
+        # --- 5.1  Candidate anchors: structured cylindrical grid (if
+        # enabled and a shared part-center reference was given) or the
+        # default blue-noise farthest-point sampling ---
+        if cfg.structured_candidates and part_center_xy is not None:
+            anchor_ids = _structured_grid_sample(pts, spacing, part_center_xy)
+        else:
+            anchor_ids = _farthest_point_sample(pts, spacing, rng)
         cand_centers = [pts[i] for i in anchor_ids]
         cand_axes = [normals[i] for i in anchor_ids]
         coverages = [_coverage_set(c, a)
@@ -539,7 +742,6 @@ class FOVClustering:
                 cand_centers.append(c)
                 cand_axes.append(a)
                 coverages.append(_coverage_set(c, a))
-        covered_union = set().union(*coverages) if coverages else set()
 
         # --- 5.4  Greedy forward set cover ---
         uncovered = set(range(m))
@@ -550,12 +752,52 @@ class FOVClustering:
                 coverages[c] & uncovered))
             gain = coverages[best] & uncovered
             if not gain:
-                break   # remaining points intrinsically uncoverable
+                break   # remaining points intrinsically uncoverable — can now
+                        # trigger for real on occluded points (Section 5.4)
             chosen.append(best)
             uncovered -= gain
 
-        if not chosen:
-            return [list(range(m))]
+        # --- 5.4.5  Blind-spot rescue: Monte Carlo hemisphere search for an
+        # alternative viewing angle, for points the straight-normal
+        # predicate above left occluded. Tried once per point (skipping any
+        # already covered incidentally by an earlier rescue this pass); a
+        # successful rescue is added as a new candidate via force_include so
+        # criteria 1/2/4 still apply normally, only criterion 3 (incidence)
+        # is skipped for this specific point. Does not track/report tier —
+        # that's authoritatively (re)determined later at projection time,
+        # where the emitted direction and full cluster are both known. ---
+        if occlusion_active and cfg.rescue_search and uncovered:
+            for p in sorted(uncovered):
+                if p not in uncovered:
+                    continue  # already incidentally rescued this pass
+                axis, tier, vf = search_hemisphere_direction(
+                    self.raycasting_scene, pts[p], normals[p], pts[p:p + 1],
+                    cfg.fov_normal_threshold, focal_distance, cfg.occlusion_epsilon,
+                    cfg.rescue_samples, rng)
+                if axis is None or vf <= 0.0:
+                    continue  # still genuinely blind
+                cov = _coverage_set(pts[p], axis, force_include=p)
+                if p not in cov:
+                    continue
+                new_idx = len(coverages)
+                cand_centers.append(pts[p])
+                cand_axes.append(axis)
+                coverages.append(cov)
+                chosen.append(new_idx)
+                uncovered -= cov
+
+        blind_points = sorted(uncovered)
+        if blind_points:
+            bs_set = set(blind_points)
+            if bs_set <= covered_union_geo:
+                reason = 'occluded'
+            elif bs_set.isdisjoint(covered_union_geo):
+                reason = 'geometric'
+            else:
+                reason = 'mixed'
+            blind_spots = {'points': blind_points, 'reason': reason}
+        else:
+            blind_spots = {'points': []}
 
         # --- 5.5  Redundancy prune (AFTER coverage is guaranteed) ---
         if cfg.prune_redundant and len(chosen) > 1:
@@ -567,27 +809,32 @@ class FOVClustering:
                 if coverages[c] <= others_union:
                     chosen.remove(c)
 
-        # --- 5.6  Disjoint assignment ---
+        # --- 5.6  Disjoint assignment (blind-spot points are never assigned:
+        # their camera can't actually see them, so crediting them to a
+        # cluster would violate the occlusion-respected guarantee) ---
         assignment = {c: [] for c in chosen}
-        for p in range(m):
+        assignable = set(range(m)) - uncovered
+        for p in assignable:
             owners = [c for c in chosen if p in coverages[c]]
-            if not owners:
-                # Assign uncovered point to the nearest chosen candidate
-                owner = min(chosen, key=lambda c: float(
-                    np.linalg.norm(pts[p] - cand_centers[c])))
-            else:
-                def _sort_key(c):
-                    dot = float(np.dot(normals[p], cand_axes[c]))
-                    dot = max(-1.0, min(1.0, dot))
-                    angle = math.acos(dot)
-                    axial = abs(
-                        float(np.dot(pts[p] - cand_centers[c], cand_axes[c])))
-                    return (angle, axial)
-                owner = min(owners, key=_sort_key)
+            def _sort_key(c):
+                dot = float(np.dot(normals[p], cand_axes[c]))
+                dot = max(-1.0, min(1.0, dot))
+                angle = math.acos(dot)
+                axial = abs(
+                    float(np.dot(pts[p] - cand_centers[c], cand_axes[c])))
+                return (angle, axial)
+            owner = min(owners, key=_sort_key)
             assignment[owner].append(p)
 
-        # --- 5.7  Emit (drop empty clusters) ---
-        return [members for members in assignment.values() if members]
+        # --- 5.7  Emit (drop empty clusters), each tagged with its owning
+        # candidate's occlusion-validated axis so project_viewpoints can
+        # reuse it as a guaranteed-good starting point instead of
+        # re-deriving an unvalidated one from the mean of assigned normals.
+        clusters = [
+            {'points': members, 'axis': cand_axes[owner].tolist()}
+            for owner, members in assignment.items() if members
+        ]
+        return clusters, blind_spots
 
 
 # Utility functions
@@ -655,9 +902,9 @@ if __name__ == "__main__":
         region_normals = np.asarray(region_pc.normals)
 
         # FOV clustering
-        region_fov_clusters = fc.fov_clustering(region_pc)
+        region_fov_clusters, _blind_spots = fc.fov_clustering(region_pc)
         for fov_cluster in region_fov_clusters:
-            fov_cluster_pc = region_pc.select_by_index(fov_cluster)
+            fov_cluster_pc = region_pc.select_by_index(fov_cluster['points'])
             # Translate slightly by average normal to avoid overlapping
             avg_normal = np.mean(np.asarray(fov_cluster_pc.normals), axis=0)
             fov_cluster_pc.translate(avg_normal * 0.001)  # Translate by
