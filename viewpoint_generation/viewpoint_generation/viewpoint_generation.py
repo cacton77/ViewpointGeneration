@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import open3d as o3d
 import open3d.visualization.gui as gui
 import open3d.visualization.rendering as rendering
+import pytransform3d.rotations as pr
 
 from matplotlib import colormaps
 from open3d.geometry import PointCloud, TriangleMesh
@@ -227,29 +228,22 @@ class ViewpointGeneration():
 
         return self._rebuild_mesh()
 
-    def _rebuild_mesh(self):
-        """(Re)load self.mesh_file at self.mesh_units and apply
-        self.model_pose, updating self.mesh, self.raycasting_scene, and
-        self.results['meshes'][0]. Called by both set_mesh_file (on
-        file/units change) and set_model_pose (on pose change) so a
-        transform applied to either always ends up in the same place.
-        Regions/clusters/viewpoints are invalidated only when file, units,
-        or pose actually differ from what's recorded in self.results (so
-        resuming a saved config with nothing changed keeps its computed
-        data).
-        """
+    def _load_scaled_mesh(self):
+        """Load self.mesh_file and scale it to meters per self.mesh_units,
+        with vertex normals and color -- the unposed mesh both
+        _rebuild_mesh (before applying model_pose) and _retransform_results
+        (to resolve the 'centroid' pivot) need. Returns (mesh, error); mesh
+        is None on failure, with error explaining why."""
         try:
             mesh = o3d.io.read_triangle_mesh(self.mesh_file)
         except Exception as e:
-            return False, f'Could not load requested triangle mesh file: {e}'
+            return None, f'Could not load requested triangle mesh file: {e}'
 
-        # Check if the mesh is empty
         if mesh.is_empty():
-            return False, 'The loaded triangle mesh is empty.'
+            return None, 'The loaded triangle mesh is empty.'
 
         mesh.compute_vertex_normals()
 
-        # Scale the mesh to meters
         if self.mesh_units == 'cm':
             mesh.scale(0.01, center=(0, 0, 0))
         elif self.mesh_units == 'mm':
@@ -257,13 +251,35 @@ class ViewpointGeneration():
         elif self.mesh_units == 'in':
             mesh.scale(0.0254, center=(0, 0, 0))
         elif self.mesh_units == 'm':
-            # No scaling needed for meters
             pass
         else:
-            return False, 'Unknown units. Mesh not scaled.'
+            return None, 'Unknown units. Mesh not scaled.'
 
-        # Check if the mesh has colors
         mesh.paint_uniform_color(self.mesh_color)
+        return mesh, ''
+
+    def _rebuild_mesh(self):
+        """(Re)load self.mesh_file at self.mesh_units and apply
+        self.model_pose, updating self.mesh, self.raycasting_scene, and
+        self.results['meshes'][0]. Called by both set_mesh_file (on
+        file/units change) and set_model_pose (on pose change) so a
+        transform applied to either always ends up in the same place.
+
+        Regions/clusters/viewpoints are preserved untouched when nothing
+        about the mesh identity or pose actually changed (resuming a saved
+        config). When only the pose changes (same file/units, same
+        rotation_center) and regions already exist, they're rigidly
+        transformed into the new pose rather than discarded -- e.g. a
+        tsdf_pose registration correcting an already-planned inspection
+        should move the plan, not force a full recompute. A file/units
+        change, a rotation_center change, or a pose change with nothing yet
+        computed all fall back to the original reset-to-empty behavior,
+        since there's nothing valid to carry over (or no reliable pivot to
+        carry it over with).
+        """
+        mesh, error = self._load_scaled_mesh()
+        if mesh is None:
+            return False, error
 
         # Generate dimensions/surface-area strings from the mesh's intrinsic
         # (unit-scaled, not-yet-posed) bounds, so a rotated part still
@@ -291,19 +307,29 @@ class ViewpointGeneration():
         # Update the triangle mesh
         self.mesh = mesh
 
-        # Only reset results when the mesh file, units, or pose genuinely
-        # changed. When launching from a saved config the results file is
-        # loaded first; set_mesh_file/set_model_pose are then called with
-        # the same file/units/pose, so we preserve all regions/clusters
-        # already in self.results. If any of the three differ, the derived
-        # data is invalid and we reset.
         existing_mesh = self.results.get('meshes', [{}])[0]
         existing_mesh_file = existing_mesh.get('file', '')
         existing_mesh_units = existing_mesh.get('units', '')
         existing_pose = existing_mesh.get('pose', DEFAULT_MODEL_POSE)
-        if (self.mesh_file != existing_mesh_file
-                or self.mesh_units != existing_mesh_units
-                or self.model_pose != existing_pose):
+
+        identity_changed = (self.mesh_file != existing_mesh_file
+                             or self.mesh_units != existing_mesh_units)
+        pose_changed = self.model_pose != existing_pose
+        can_retransform = (
+            not identity_changed and pose_changed
+            and existing_mesh.get('regions')
+            and existing_pose.get('rotation_center') == self.model_pose.get('rotation_center')
+        )
+
+        message = ''
+        if can_retransform:
+            self._retransform_results(existing_mesh, existing_pose, self.model_pose)
+            existing_mesh['pose'] = dict(self.model_pose)
+            existing_mesh['dimensions'] = dimensions_str
+            existing_mesh['surface_area'] = surface_area_str
+            self.results_file = None
+            message = 'Existing regions/clusters/viewpoints rigidly transformed to the new pose.'
+        elif identity_changed or pose_changed:
             self.results = {'meshes': [
                 {
                     'file': self.mesh_file,
@@ -336,7 +362,86 @@ class ViewpointGeneration():
         self.fc.set_scene(self.raycasting_scene)
         self.vp.set_scene(self.raycasting_scene)
 
-        return True, ''
+        return True, message
+
+    def _retransform_results(self, mesh_entry, old_pose, new_pose):
+        """Rigidly transform mesh_entry's already-computed regions/clusters/
+        viewpoints from old_pose's world frame into new_pose's, in place.
+        Only called when the mesh file/units and rotation_center haven't
+        changed (see _rebuild_mesh), so the same pivot resolves both poses.
+
+        Region point-cloud .ply caches are transformed (points + normals)
+        and overwritten in place; cluster candidate_axis/viewpoint
+        origin/position/direction/orientation are transformed directly in
+        the results dict. order.<algorithm>.joint_trajectory entries
+        (absolute-position-dependent arm motion, computed separately by
+        viewpoint_traversal_node) are dropped since they're now stale --
+        order/distance survive, since a rigid transform preserves every
+        pairwise distance.
+        """
+        old_R = np.asarray(o3d.geometry.get_rotation_matrix_from_xyz(old_pose['orientation_rpy']))
+        new_R = np.asarray(o3d.geometry.get_rotation_matrix_from_xyz(new_pose['orientation_rpy']))
+        old_t = np.asarray(old_pose['position'], dtype=float)
+        new_t = np.asarray(new_pose['position'], dtype=float)
+
+        if old_pose['rotation_center'] == 'centroid':
+            base_mesh, error = self._load_scaled_mesh()
+            pivot = np.asarray(base_mesh.get_center()) if base_mesh is not None else np.zeros(3)
+        else:
+            pivot = np.zeros(3)
+
+        # world_new = delta_R @ world_old + delta_t, derived by undoing
+        # old_pose (rotate by old_R^-1 about pivot, then subtract old_t)
+        # and reapplying new_pose (rotate by new_R about pivot, then add
+        # new_t).
+        delta_R = new_R @ old_R.T
+        delta_t = pivot + new_t - delta_R @ (pivot + old_t)
+
+        def transform_point(p):
+            return (delta_R @ np.asarray(p, dtype=float) + delta_t).tolist()
+
+        def transform_direction(v):
+            return (delta_R @ np.asarray(v, dtype=float)).tolist()
+
+        def transform_quaternion(xyzw):
+            x, y, z, w = xyzw
+            R_old_cam = pr.matrix_from_quaternion([w, x, y, z])
+            R_new_cam = delta_R @ R_old_cam
+            quat_wxyz = pr.quaternion_from_matrix(R_new_cam)
+            return [quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]]
+
+        for region in mesh_entry.get('regions', []):
+            pc_info = region.get('point_cloud')
+            if pc_info and pc_info.get('file'):
+                try:
+                    pcd = o3d.io.read_point_cloud(pc_info['file'])
+                    points = np.asarray(pcd.points)
+                    pcd.points = o3d.utility.Vector3dVector(
+                        (delta_R @ points.T).T + delta_t)
+                    if pcd.has_normals():
+                        normals = np.asarray(pcd.normals)
+                        pcd.normals = o3d.utility.Vector3dVector(
+                            (delta_R @ normals.T).T)
+                    o3d.io.write_point_cloud(pc_info['file'], pcd)
+                except Exception as e:
+                    print(f"Warning: could not retransform region point "
+                          f"cloud '{pc_info['file']}': {e}")
+
+            for cluster in region.get('clusters', []):
+                if 'candidate_axis' in cluster:
+                    cluster['candidate_axis'] = transform_direction(
+                        cluster['candidate_axis'])
+                vp = cluster.get('viewpoint')
+                if vp:
+                    vp['origin'] = transform_point(vp['origin'])
+                    vp['position'] = transform_point(vp['position'])
+                    vp['direction'] = transform_direction(vp['direction'])
+                    vp['orientation'] = transform_quaternion(vp['orientation'])
+
+            order = region.get('order')
+            if isinstance(order, dict):
+                for algo_result in order.values():
+                    algo_result.pop('joint_trajectory', None)
 
     def set_point_cloud_file(self, point_cloud_file, point_cloud_units):
         """Set the point cloud file and its units."""

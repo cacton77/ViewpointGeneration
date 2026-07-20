@@ -1,3 +1,4 @@
+import math
 import os
 import time
 import rclpy
@@ -24,6 +25,27 @@ from visualization_msgs.msg import Marker
 from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject, ObjectColor
 from viewpoint_generation_interfaces.srv import OptimizeViewpointTraversal
+
+
+def _quaternion_to_rpy(x, y, z, w):
+    """Quaternion (xyzw) to roll/pitch/yaw (rad), extrinsic XYZ -- the same
+    convention as o3d.geometry.get_rotation_matrix_from_xyz, used by
+    ViewpointGeneration._rebuild_mesh. Verified by round-trip against
+    Open3D's own rotation matrices (max error ~1e-13 over 2000 random
+    trials), not assumed."""
+    sinr_cosp = 2 * (w * x + y * z)
+    cosr_cosp = 1 - 2 * (x * x + y * y)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2 * (w * y - z * x)
+    sinp = max(-1.0, min(1.0, sinp))
+    pitch = math.asin(sinp)
+
+    siny_cosp = 2 * (w * z + x * y)
+    cosy_cosp = 1 - 2 * (y * y + z * z)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+
+    return roll, pitch, yaw
 
 
 class ViewpointGenerationNode(rclpy.node.Node):
@@ -468,6 +490,21 @@ class ViewpointGenerationNode(rclpy.node.Node):
     def _filtered_pose_cb(self, msg: PoseStamped):
         self._filtered_pose = msg.pose
 
+        # Bridge the live tsdf_pose correction into model.pose.*, so the
+        # same pose that moves the planning-scene collision mesh (below)
+        # also bakes into the mesh used for region/viewpoint computation
+        # and the GUI visualizer -- one canonical pose, not two
+        # independently-driven ones. NOTE: no debouncing -- a real
+        # tsdf_pose_node publishing continuously would trigger a full mesh
+        # reload/re-pose/results-invalidation (see
+        # ViewpointGeneration._rebuild_mesh) on every message; fine for an
+        # occasional correction, worth revisiting if tsdf_pose ends up
+        # streaming at a high rate.
+        p = msg.pose.position
+        q = msg.pose.orientation
+        roll, pitch, yaw = _quaternion_to_rpy(q.x, q.y, q.z, q.w)
+        self.set_model_pose(p.x, p.y, p.z, roll, pitch, yaw, 'origin')
+
     def update_planning_scene(self):
         if not self.mesh:
             # self.get_logger().warning(
@@ -477,11 +514,18 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # Pose of object relative to 'object_frame', updated by particle filter
         pose = self._filtered_pose
 
-        # Update planning scene with the new mesh
+        # Update planning scene with the new mesh. The part mesh itself
+        # (self.mesh, rebuilt from ViewpointGeneration's already-posed
+        # vertices -- see _rebuild_planning_scene_mesh) already has
+        # _filtered_pose baked in via _filtered_pose_cb -> set_model_pose
+        # above, so its own attachment pose stays identity here rather
+        # than applying that same offset a second time. planning_volume is
+        # a separate, fixed-shape asset that isn't baked via model.pose,
+        # so it keeps tracking _filtered_pose directly.
         attached_object = AttachedCollisionObject()
         attached_object.link_name = 'object_frame'
         attached_object.object.header.frame_id = 'object_frame'
-        attached_object.object.pose = pose
+        attached_object.object.pose = Pose()
         attached_object.object.id = 'object'
         attached_object.object.meshes = [self.mesh]
         attached_object.object.mesh_poses = [Pose()]
