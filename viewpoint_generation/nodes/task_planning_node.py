@@ -374,7 +374,10 @@ class TaskPlanningNode(Node):
                     orientation = cluster_dict['viewpoint']['orientation']
 
                     viewpoint = PoseStamped()
-                    viewpoint.header.frame_id = 'object_frame'
+                    # Viewpoints are authored in the mesh origin frame; the
+                    # object_frame->model_frame TF (from tsdf_pose) places them.
+                    # MoveIt resolves this frame via TF when moving to a goal.
+                    viewpoint.header.frame_id = 'model_frame'
                     viewpoint.pose.position.x = position[0]
                     viewpoint.pose.position.y = position[1]
                     viewpoint.pose.position.z = position[2]

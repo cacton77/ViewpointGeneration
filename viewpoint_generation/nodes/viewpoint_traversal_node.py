@@ -773,7 +773,9 @@ class ViewpointTraversalNode(Node):
             self.planning_component.set_goal_state(robot_state=goal_state)
         else:
             pose_goal = PoseStamped()
-            pose_goal.header.frame_id = "object_frame"
+            # Viewpoints are authored in the mesh origin frame; MoveIt resolves
+            # model_frame via the tsdf_pose object_frame->model_frame TF.
+            pose_goal.header.frame_id = "model_frame"
             pos = viewpoint['position']
             orient = viewpoint['orientation']  # [x, y, z, w]
             pose_goal.pose.position.x = pos[0]

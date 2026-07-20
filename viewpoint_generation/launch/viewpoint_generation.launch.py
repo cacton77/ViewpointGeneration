@@ -27,7 +27,28 @@ def generate_launch_description():
             default_value='false',
             description='Run in headless mode (without GUI).'
         ),
+        DeclareLaunchArgument(
+            'compute_threads',
+            default_value='6',
+            description='Cap on CPU threads/worker processes for the (torch + '
+                        'sklearn/loky) segmentation and FOV-clustering compute. '
+                        'Prevents this node from saturating every core and '
+                        'swapping, which starves the real-time controller. '
+                        'Keep well below the core count when control shares the box.'
+        ),
     ]
+
+    # Bound the parallel compute (PartField/torch BLAS threads and the
+    # sklearn/loky worker pool) so a planning run leaves cores + RAM for the
+    # rest of the system, most importantly the 100 Hz ros2_control loop.
+    compute_threads = LaunchConfiguration('compute_threads')
+    compute_env = {
+        'OMP_NUM_THREADS': compute_threads,
+        'MKL_NUM_THREADS': compute_threads,
+        'OPENBLAS_NUM_THREADS': compute_threads,
+        'NUMEXPR_NUM_THREADS': compute_threads,
+        'LOKY_MAX_CPU_COUNT': compute_threads,
+    }
 
     # Use PathJoinSubstitution to build the path at launch time
     config = PathJoinSubstitution([
@@ -40,6 +61,7 @@ def generate_launch_description():
         name="viewpoint_generation",
         executable="viewpoint_generation_node",
         parameters=[config],
+        additional_env=compute_env,
         output="screen",
         emulate_tty=True
     )

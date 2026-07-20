@@ -16,6 +16,10 @@ from rcl_interfaces.msg import Parameter as ParameterMsg, ParameterValue, Parame
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from ament_index_python.packages import get_package_prefix
 
+import numpy as np
+import tf2_ros
+from scipy.spatial.transform import Rotation
+
 from std_msgs.msg import Bool
 from geometry_msgs.msg import PoseStamped
 
@@ -113,6 +117,16 @@ class ROSThread(Node):
             'show_blind_spots').get_parameter_value().bool_value
         self.data_path = self.get_parameter(
             'data_path').get_parameter_value().string_value
+
+        # Live part placement: the mesh/regions/viewpoints are authored in the
+        # mesh origin frame (model_frame); tsdf_pose broadcasts where the part
+        # physically sits as the object_frame -> model_frame TF. The GUI looks
+        # this up each tick (see get_model_placement) to place the origin-frame
+        # geometry in the visualizer, rather than baking a pose into it.
+        self.model_frame = 'model_frame'
+        self.object_frame = 'object_frame'
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.t = threading.Thread(target=self.update, args=())
         self.t.daemon = True  # daemon threads run in background
@@ -361,6 +375,25 @@ class ROSThread(Node):
         plans/executes over the same viewpoints the GUI is visualizing."""
         self.set_target_node_parameter(self.task_planning_node_name,
                                        'settings.results_file', file_path)
+
+    def get_model_placement(self):
+        """Latest object_frame <- model_frame placement as a 4x4 transform
+        (metres), from the tsdf_pose TF, or None if it isn't available yet
+        (e.g. tsdf_pose not running). The GUI applies this to the origin-frame
+        model geometry each tick (see Visualizer.apply_model_placement)."""
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.object_frame, self.model_frame, rclpy.time.Time())
+        except (tf2_ros.LookupException,
+                tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException):
+            return None
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        T = np.eye(4)
+        T[:3, :3] = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+        T[:3, 3] = [t.x, t.y, t.z]
+        return T
 
     def optimize_traversal(self):
         """Optimize the viewpoint traversal path"""

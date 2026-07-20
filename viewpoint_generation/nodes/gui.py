@@ -1756,6 +1756,14 @@ class GUIClient():
         self.show_model_bounding_box(self.ros_thread.show_model_bounding_box)
         self.show_skybox(self.ros_thread.show_skybox)
 
+        # Apply the live part placement (object_frame <- model_frame TF, from
+        # tsdf_pose) to all origin-frame model geometry. The mesh/regions/
+        # viewpoints are authored in the mesh origin frame; this display-only
+        # transform moves them to where the part physically sits.
+        placement = self.ros_thread.get_model_placement()
+        if placement is not None:
+            self.viz.apply_model_placement(placement)
+
         # Sleep to maintain FPS
         this_draw_time = time.time()
         if this_draw_time - self.last_draw_time < 1/self.fps:

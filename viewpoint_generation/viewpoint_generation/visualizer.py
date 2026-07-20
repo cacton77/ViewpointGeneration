@@ -16,7 +16,6 @@ from matplotlib import colormaps
 
 from viewpoint_generation.assets.materials import Materials
 from viewpoint_generation.mesh_utils import submesh_from_faces
-from viewpoint_generation.viewpoint_generation import DEFAULT_MODEL_POSE
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -500,6 +499,35 @@ class Visualizer:
         self.show_unreachable_flag           = True
         self.show_blind_spots_flag           = True
 
+        # Names of every origin-frame model geometry added via add_geometry
+        # (mesh, point cloud, curvatures, regions, clusters, viewpoints, model
+        # bounding box). apply_model_placement transforms exactly these to the
+        # part's live placement; world-fixed geometry (ground grid, world axes,
+        # skybox) is added via self.scene.add_geometry directly and is left put.
+        self._placed_geometry_names: set = set()
+
+    def apply_model_placement(self, T_object_from_model: np.ndarray) -> None:
+        """Place all origin-frame model geometry at the part's live pose.
+
+        T_object_from_model is the object_frame <- model(origin) frame
+        transform (metres) from the tsdf_pose TF. Model geometry was authored
+        in the origin frame, scaled to the visualizer's mm working unit, and
+        baked with a -90 deg X display rotation (see add_geometry). The
+        equivalent display-frame transform is therefore
+        Rx . T_mm . Rx^-1, with T_mm = T scaled to mm, applied per geometry
+        via Open3DScene.set_geometry_transform."""
+        T = np.asarray(T_object_from_model, dtype=float)
+        if T.shape != (4, 4):
+            return
+        Rx = np.eye(4)
+        Rx[:3, :3] = o3d.geometry.get_rotation_matrix_from_xyz((-np.pi / 2, 0, 0))
+        T_mm = T.copy()
+        T_mm[:3, 3] *= 1000.0
+        M = Rx @ T_mm @ np.linalg.inv(Rx)
+        for name in self._placed_geometry_names:
+            if self.scene.has_geometry(name):
+                self.scene.set_geometry_transform(name, M)
+
     def on_mouse(self, event) -> gui.Widget.EventCallbackResult:
         """Delegate mouse events to the turntable camera controller."""
         return self.camera.on_mouse(event)
@@ -702,6 +730,9 @@ class Visualizer:
             center=(0, 0, 0),
         )
         self.scene.add_geometry(name, geometry, material)
+        # Track for apply_model_placement (re-adding resets the per-geometry
+        # transform to identity, so the tick loop re-applies the placement).
+        self._placed_geometry_names.add(name)
 
     # ── Lighting / ground plane ──────────────────────────────────────────────
 
@@ -975,22 +1006,11 @@ class Visualizer:
                     else:
                         mesh.scale(scale_map.get(mesh_units, 1.0), center=(0, 0, 0))
 
-                        # Apply the stored model pose (regions/point clouds/
-                        # viewpoints are already posed at generation time --
-                        # only this raw reload from the original mesh file
-                        # needs it). Position is stored in meters (the core
-                        # pipeline's working unit); convert to this
-                        # visualizer's internal mm working unit.
-                        pose = mesh_entry.get('pose', DEFAULT_MODEL_POSE)
-                        roll, pitch, yaw = pose['orientation_rpy']
-                        if roll or pitch or yaw:
-                            R = mesh.get_rotation_matrix_from_xyz((roll, pitch, yaw))
-                            center = (mesh.get_center()
-                                      if pose['rotation_center'] == 'centroid'
-                                      else (0.0, 0.0, 0.0))
-                            mesh.rotate(R, center=center)
-                        px, py, pz = pose['position']
-                        mesh.translate((px * 1000.0, py * 1000.0, pz * 1000.0))
+                        # Mesh, regions, and viewpoints are all authored in the
+                        # mesh's origin frame; the part's physical placement is
+                        # applied live as a per-geometry display transform from
+                        # the object_frame->model_frame TF (see the GUI's
+                        # apply_model_placement), never baked in here.
 
                         if mesh_idx == 0:
                             bbox = mesh.get_axis_aligned_bounding_box()

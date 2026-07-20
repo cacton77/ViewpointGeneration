@@ -25,6 +25,18 @@ def generate_launch_description():
                               description="Absolute path to an RViz config file for the whole "
                               "inspection cell. Defaults to the file mounted into the container "
                               "at /config/rviz/inspection_cell.rviz."),
+        DeclareLaunchArgument("launch_control", default_value="true",
+                              description="Launch the ros2_control layer locally. Set false to "
+                              "run control on a dedicated real-time host (bring it up there with "
+                              "inspection_cell_control.launch.py); this machine then runs only "
+                              "MoveIt + perception."),
+        DeclareLaunchArgument("compute_threads", default_value="6",
+                              description="Cap on CPU threads/worker processes for the "
+                              "viewpoint_generation segmentation/clustering compute, so it "
+                              "doesn't starve the real-time controller when they share a box."),
+        DeclareLaunchArgument("headless_mode", default_value="false",
+                              description="Run without the Open3D GUI (gui_node). Use on hosts "
+                              "with no X display; an rqt GUI is started instead."),
     ]
 
     cell_enabled = PythonExpression(
@@ -60,6 +72,7 @@ def generate_launch_description():
             "cell": LaunchConfiguration("cell"),
             "use_fake_hardware": LaunchConfiguration("sim"),
             "rviz_config": LaunchConfiguration("rviz_config"),
+            "launch_control": LaunchConfiguration("launch_control"),
         }.items(),
         condition=IfCondition(cell_enabled)
     )
@@ -136,6 +149,8 @@ def generate_launch_description():
         launch_arguments={
             "data_path": LaunchConfiguration("data_path"),
             "object": LaunchConfiguration("object"),
+            "compute_threads": LaunchConfiguration("compute_threads"),
+            "headless_mode": LaunchConfiguration("headless_mode"),
         }.items()
     )
 

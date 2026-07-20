@@ -18,7 +18,7 @@ The pipeline follows these stages:
 4. **FOV Clustering** -- Subdivide each region's sampled point cloud into clusters that fit within the camera's field of view and depth of field. Two interchangeable algorithms (selected via `regions.fov_clustering.algorithm`):
    - `kmeans` -- K-means with Bayesian optimization for cluster count
    - `greedy_cover` -- greedy set cover: a candidate viewpoint covers a region point only if it passes depth-of-field, field-of-view, and photometric-incidence tests *and* (when `occlusion_check` is enabled) has an unoccluded line of sight to that point against the **full part mesh**, not just the region being clustered. Points the straight-normal predicate leaves occluded get one more chance when `rescue_search` is enabled: a Monte Carlo hemisphere search (see `occlusion_search.py`) looks for *any* unoccluded viewing angle for that point, preferring ones close to its true normal. Points still unrescuable are reported per-region as `blind_spots` rather than silently folded into a cluster (see JSON Results Format below). Each emitted cluster carries its winning candidate's occlusion-validated axis forward as `candidate_axis`, for reuse in the next stage. Candidate anchors normally come from blue-noise farthest-point sampling; setting `structured_candidates` instead lays them on a per-region cylindrical grid (elevation = world Z, azimuth = angle around a vertical axis through the part's center, both spaced by `candidate_spacing`) so viewpoints from *different* regions tend to land at shared elevations/azimuths -- e.g. rings around a roughly cylindrical part -- at some cost to the greedy algorithm's freedom to pick the most locally-efficient anchor
-5. **Project Viewpoints** -- Compute a camera pose (position + orientation) for each cluster at the configured focal distance. The naive direction (mean of the cluster's own point normals) is refined by the same hemisphere search used above, using `candidate_axis` (when present) as a guaranteed-good starting point so refinement can never do worse than clustering already proved — this closes a gap where the mean direction was never itself re-validated against occlusion. The winning direction is tagged `imaging_mode`: `photometric` if it falls within the incidence cone (supports photometric-stereo normal-map reconstruction) or `standard` if only an off-cone angle is occlusion-clear (still gets an image, just not photometric-quality). FOV clustering's occlusion check and viewpoint projection share a single `RaycastingScene`, built once from the full part mesh when it is loaded, together with a large flat ground-plane occluder just below the table/turntable surface (z=0) -- so no computed viewpoint's camera position or line-of-sight can end up underground
+5. **Project Viewpoints** -- Compute a camera pose (position + orientation) for each cluster at the configured focal distance. The naive direction (mean of the cluster's own point normals) is refined by the same hemisphere search used above, using `candidate_axis` (when present) as a guaranteed-good starting point so refinement can never do worse than clustering already proved — this closes a gap where the mean direction was never itself re-validated against occlusion. The winning direction is tagged `imaging_mode`: `photometric` if it falls within the incidence cone (supports photometric-stereo normal-map reconstruction) or `standard` if only an off-cone angle is occlusion-clear (still gets an image, just not photometric-quality). FOV clustering and viewpoint projection use **separate** occlusion scenes so the two stages answer different questions. FOV clustering uses a **mesh-only** `RaycastingScene` (self-occlusion only): cluster feasibility is *pose-independent* -- it decides which surface a camera could ever image, regardless of how the part is placed. Viewpoint projection uses a **mesh + ground-plane** scene, with the ground-plane occluder (just below the table/turntable surface, z=0) transformed into the part's current placement (the `object_frame → model_frame` pose), so projection respects the actual environment and no emitted viewpoint's camera position or line-of-sight ends up underground *at the part's current pose*. Because Open3D's `RaycastingScene` is append-only, the ground plane is toggled by rebuilding the scene with or without it (`_make_raycasting_scene(include_ground=...)`)
 6. **Optimize Traversal** -- Solve a TSP to order viewpoints for efficient robot motion
 
 Results are saved as a JSON file.
@@ -208,11 +208,20 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
 - `model.mesh.units` -- Mesh units (`m`, `cm`, `mm`, `in`)
 - `model.point_cloud.file` -- Path to a manually-loaded point cloud (optional; independent of the per-region point clouds sampled during segmentation)
 - `model.point_cloud.units` -- Point cloud units
-- `model.pose.position.x` / `.y` / `.z` -- Model position (m) within the scene
-- `model.pose.orientation.roll` / `.pitch` / `.yaw` -- Model orientation (rad)
-- `model.pose.rotation_center` -- Rotate about the mesh's own `origin` (default) or its `centroid` (Open3D's vertex-mean `get_center()`), before translating by `model.pose.position.*`. Baked directly into the mesh used for segmentation/point-cloud sampling/FOV clustering/viewpoint projection. A pose authored for one part isn't meaningful on another: loading a genuinely different `model.mesh.file`/`.units` resets `model.pose.*` back to identity (position/RPY zero, `rotation_center` back to `origin`), pushed back out to these parameters so the GUI's fields reset too. Resuming a saved config whose results already recorded that exact file/units keeps its recorded pose instead of resetting it.
-
-  **Pose-only changes rigidly transform existing results instead of discarding them.** If regions/clusters/viewpoints already exist for the current mesh file/units and `rotation_center` hasn't changed, moving `model.pose.*` (by any amount, from any source -- the GUI or a live `/tsdf_pose/pose` correction) rigidly transforms every already-computed region point cloud (points + normals, `.ply` caches rewritten in place) and every cluster's `candidate_axis`/`viewpoint.origin`/`.position`/`.direction`/`.orientation` by the delta between the old and new pose, rather than resetting `regions` to empty. This is the intended workflow: generate viewpoints once (expensive: segmentation, FOV clustering, occlusion-aware projection), then let a `tsdf_pose` registration correction — or a manual GUI nudge — move that already-planned inspection to match where the part actually is, without recomputing it. `order`/`order.<algorithm>.distance` survive (a rigid transform preserves every pairwise distance); `order.<algorithm>.joint_trajectory` (absolute-position-dependent arm motion, computed separately by `viewpoint_traversal_node`'s `optimize_traversal`) is dropped, since it's now stale and needs replanning under the corrected pose. A mesh file/units change, a `rotation_center` change, or a pose change with nothing yet computed all still reset to empty as before -- there's nothing valid to carry over, or no reliable pivot to carry it over with.
+  **Part placement is not authored via parameters.** The mesh, regions, and
+  viewpoints are always generated and stored in the mesh's own **origin frame**
+  (`model_frame`); the mesh file's origin is never moved. Where the part
+  physically sits is a live **TF placement**: `tsdf_pose` registers the part and
+  broadcasts the `object_frame -> model_frame` transform. That placement is
+  applied only to *placement* consumers -- the `/planning_scene` collision
+  object pose, the GUI visualization (`Visualizer.apply_model_placement`), and
+  the occlusion ground-plane in the raycasting scene
+  (`ViewpointGeneration.set_placement`) -- and is never baked into the geometry
+  or written to a results file. Downstream viewpoint goals are stamped in
+  `model_frame` so MoveIt resolves them through the same TF. (The old
+  `model.pose.*` parameters, which baked a pose into the geometry and rigidly
+  re-transformed / re-saved results on every `/tsdf_pose/pose` message, have
+  been removed.)
 - `results.file` -- Path to results JSON
 - `settings.data_path` -- Base data directory
 
@@ -296,6 +305,12 @@ Arguments:
 - `object` -- Config/object name
 - `data_path` -- Base data directory
 - `headless_mode` -- Run without GUI (default: false)
+- `compute_threads` -- Cap on CPU threads/worker processes for the segmentation +
+  FOV-clustering compute (default: `6`). The node's PartField/torch BLAS threads and
+  the sklearn/loky worker pool otherwise fan out across every core, which saturates the
+  CPU (and swaps) and starves the real-time `ros2_control` loop when they share a
+  machine. Applied via `OMP_/MKL_/OPENBLAS_/NUMEXPR_NUM_THREADS` and `LOKY_MAX_CPU_COUNT`.
+  Keep it well below the core count on a shared box; raise it on a dedicated compute host.
 
 ### Full System Bringup
 
@@ -310,6 +325,17 @@ ros2 launch viewpoint_generation bringup.launch.py \
 Additional arguments:
 - `cell` -- Inspection cell configuration (`alpha` or `beta`)
 - `sim` -- Use fake/simulated hardware
+- `headless_mode` -- Run without the Open3D GUI (`gui_node`); starts rqt instead
+  (default: false). Forwarded to `viewpoint_generation.launch.py`. Use on hosts with
+  no X display.
+- `compute_threads` -- Forwarded to `viewpoint_generation.launch.py` (see above).
+- `launch_control` -- Launch the `ros2_control` layer locally (default: `true`). Set
+  `false` to run hard-real-time control on a **dedicated RT host** (bring it up there
+  with `inspection_cell_description/launch/inspection_cell_control.launch.py`, which is
+  standalone), while this machine runs only MoveIt + perception. The control launch
+  exposes `control_lock_memory` / `control_thread_priority` / `control_cpu_affinity`
+  for `SCHED_FIFO` priority, `mlockall`, and core pinning (pin to an `isolcpus` core on
+  the RT host).
 - `admittance_config_file` -- Admittance/orientation control config (default:
   `admittance_control_coupled_pendulum.yaml`). When `cell` is enabled, bringup includes
   `inspection_control/launch/coupled_pendulum.launch.py`, i.e. the Tier 3 coupled-pendulum
@@ -460,15 +486,11 @@ settings, the visualizer reads `fov_diameter`/`dof` from here to draw the **FOV
 Cylinder** viewpoint overlay (see above). Results files written before this field
 existed simply skip that overlay.
 
-**`pose`** records the `model.pose.*` transform baked into this mesh at
-generation time (see ROS 2 Interface > Parameters above) -- position in
-meters, orientation as roll/pitch/yaw radians, and which point
-(`rotation_center`) the rotation was applied about. `regions`/`point_cloud`/
-`viewpoint` coordinates elsewhere in this file are already expressed with
-this pose applied, since it's baked into the mesh before segmentation ever
-runs; the visualizer re-applies `pose` only when independently reloading the
-raw mesh file for display. Results files written before this field existed
-are treated as identity pose (no rotation/translation).
+All `regions`/`point_cloud`/`viewpoint` coordinates in this file are expressed
+in the mesh's **origin frame** (`model_frame`); the part's physical placement is
+never baked in (it is a live TF -- see the `model.pose.*` note under Parameters).
+Older results files may carry a now-ignored `pose` field recording a
+baked-in `model.pose.*` transform; it is no longer read.
 
 **Traversal order:**
 - Mesh-level `order` -- Region visit order (a list of region indices).

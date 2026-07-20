@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import open3d as o3d
 import open3d.visualization.gui as gui
 import open3d.visualization.rendering as rendering
-import pytransform3d.rotations as pr
 
 from matplotlib import colormaps
 from open3d.geometry import PointCloud, TriangleMesh
@@ -21,16 +20,6 @@ from viewpoint_generation.viewpoint_projection import *
 from viewpoint_generation.mesh_utils import submesh_from_faces
 
 
-# Identity model pose: no rotation, no translation, reproduces the mesh
-# exactly as authored. Existing results files/configs with no 'pose' key
-# compare equal to this, so they're treated as already-identity.
-DEFAULT_MODEL_POSE = {
-    'position': [0.0, 0.0, 0.0],
-    'orientation_rpy': [0.0, 0.0, 0.0],
-    'rotation_center': 'origin',
-}
-
-
 class ViewpointGeneration():
 
     mesh_file = None
@@ -39,13 +28,17 @@ class ViewpointGeneration():
     point_cloud_units = 'm'
     results_file = None
 
-    # Position (m) + RPY orientation (rad) applied to the mesh within the
-    # scene, rotated about either the mesh's own origin or its centroid.
-    # See set_model_pose().
-    model_pose = dict(DEFAULT_MODEL_POSE)
-
     mesh = None
     point_cloud = None
+
+    # Physical placement of the part expressed as object_frame <- model
+    # (origin) frame, a 4x4 homogeneous transform. The mesh geometry, regions,
+    # and viewpoints always stay in the origin frame; this placement is used
+    # ONLY to position the ground-plane occluder in the viewpoint-projection
+    # raycasting scene so its occlusion checks reflect the part's current pose
+    # (see set_placement / _make_raycasting_scene). Defaults to identity until a
+    # live pose is known.
+    _placement_object_from_model = np.eye(4)
 
     # Region Growth Parameters
 
@@ -104,8 +97,6 @@ class ViewpointGeneration():
     pf = PartFieldSegmentation(partfield_config)
     fc = FOVClustering(fc_config)
     vp = ViewpointProjection(vp_config)
-
-    raycasting_scene = o3d.t.geometry.RaycastingScene()
 
     def __init__(self):
         pass
@@ -180,60 +171,36 @@ class ViewpointGeneration():
             self.mesh = None
             self.mesh_file = None
             self.mesh_units = None
-            self.model_pose = dict(DEFAULT_MODEL_POSE)
             return True, 'No triangle mesh file provided. Mesh cleared.'
 
-        # A genuinely new mesh file/units resets any pose authored for the
-        # previous one -- a pose tuned for one part (or one unit mistake)
-        # isn't meaningful carried over to a different load. Compared
-        # against self.results (not self.mesh_file/self.mesh_units, which
-        # are unset on a fresh instance) so resuming a saved config whose
-        # results already recorded this exact file/units keeps its pose
-        # (typically loaded into self.model_pose by set_model_pose before
-        # set_mesh_file runs, at node startup) instead of clobbering it.
-        existing_mesh = self.results.get('meshes', [{}])[0]
-        if (mesh_file != existing_mesh.get('file', '')
-                or units != existing_mesh.get('units', '')):
-            self.model_pose = dict(DEFAULT_MODEL_POSE)
         self.mesh_file = mesh_file
         self.mesh_units = units
         return self._rebuild_mesh()
 
-    def set_model_pose(self, x, y, z, roll, pitch, yaw, rotation_center):
-        """Set the model's pose within the scene: position (m, translation)
-        + roll/pitch/yaw (rad), rotated about either the mesh's own origin
-        or its centroid (vertex mean) before being translated into place.
-        Baked directly into self.mesh, so regions/point clouds/viewpoints/
-        the planning-scene collision mesh computed from it all move
-        together. A pose-only change invalidates already-computed
-        regions/clusters/viewpoints exactly like a mesh file/units change
-        does, since their coordinates are no longer valid under the new
-        pose.
-        """
-        if rotation_center not in ('origin', 'centroid'):
-            return False, "rotation_center must be 'origin' or 'centroid'."
+    def set_placement(self, T_object_from_model):
+        """Update the part's physical placement (object_frame <- model/origin
+        frame) as a 4x4 homogeneous transform.
 
-        new_pose = {
-            'position': [x, y, z],
-            'orientation_rpy': [roll, pitch, yaw],
-            'rotation_center': rotation_center,
-        }
-        if new_pose == self.model_pose:
-            return False, 'Model pose already set.'
-
-        self.model_pose = new_pose
-
-        if self.mesh_file is None:
-            return True, 'Model pose stored; will apply once a mesh is loaded.'
-
-        return self._rebuild_mesh()
+        This does NOT move the mesh geometry, regions, or viewpoints -- those
+        stay in the mesh's origin frame and are placed downstream via the
+        object_frame->model_frame TF. The placement is used only to position
+        the ground-plane occluder in the viewpoint-projection scene so its
+        occlusion checks reflect the part's current pose. Only the projection
+        scene is refreshed: FOV clustering's scene is mesh-only (self-occlusion
+        only) and therefore pose-independent."""
+        T = np.asarray(T_object_from_model, dtype=float)
+        if T.shape != (4, 4):
+            return False, 'Placement must be a 4x4 transform.'
+        self._placement_object_from_model = T
+        if self.mesh is not None:
+            self.vp.set_scene(self._make_raycasting_scene(include_ground=True))
+        return True, 'Placement updated.'
 
     def _load_scaled_mesh(self):
         """Load self.mesh_file and scale it to meters per self.mesh_units,
-        with vertex normals and color -- the unposed mesh both
-        _rebuild_mesh (before applying model_pose) and _retransform_results
-        (to resolve the 'centroid' pivot) need. Returns (mesh, error); mesh
-        is None on failure, with error explaining why."""
+        with vertex normals and color, in the mesh's own origin frame.
+        Returns (mesh, error); mesh is None on failure, with error
+        explaining why."""
         try:
             mesh = o3d.io.read_triangle_mesh(self.mesh_file)
         except Exception as e:
@@ -259,32 +226,23 @@ class ViewpointGeneration():
         return mesh, ''
 
     def _rebuild_mesh(self):
-        """(Re)load self.mesh_file at self.mesh_units and apply
-        self.model_pose, updating self.mesh, self.raycasting_scene, and
-        self.results['meshes'][0]. Called by both set_mesh_file (on
-        file/units change) and set_model_pose (on pose change) so a
-        transform applied to either always ends up in the same place.
+        """(Re)load self.mesh_file at self.mesh_units into self.mesh, in the
+        mesh's own origin frame, and refresh the occlusion raycasting scenes and
+        self.results['meshes'][0]. The part's physical placement is never
+        baked into the geometry -- regions/clusters/viewpoints are computed
+        and stored in the origin frame, and the part is placed downstream via
+        the object_frame->model_frame TF.
 
-        Regions/clusters/viewpoints are preserved untouched when nothing
-        about the mesh identity or pose actually changed (resuming a saved
-        config). When only the pose changes (same file/units, same
-        rotation_center) and regions already exist, they're rigidly
-        transformed into the new pose rather than discarded -- e.g. a
-        tsdf_pose registration correcting an already-planned inspection
-        should move the plan, not force a full recompute. A file/units
-        change, a rotation_center change, or a pose change with nothing yet
-        computed all fall back to the original reset-to-empty behavior,
-        since there's nothing valid to carry over (or no reliable pivot to
-        carry it over with).
+        Regions/clusters/viewpoints are preserved untouched when the mesh
+        identity (file + units) is unchanged (resuming a saved config). A
+        file/units change resets them, since coordinates computed against a
+        different part are no longer valid.
         """
         mesh, error = self._load_scaled_mesh()
         if mesh is None:
             return False, error
 
-        # Generate dimensions/surface-area strings from the mesh's intrinsic
-        # (unit-scaled, not-yet-posed) bounds, so a rotated part still
-        # reports its true LxWxH rather than a rotation-inflated world-frame
-        # AABB. Surface area is rotation/translation invariant either way.
+        # Dimensions/surface-area strings from the mesh's origin-frame bounds.
         bbox = mesh.get_axis_aligned_bounding_box()
         min_b, max_b = bbox.min_bound, bbox.max_bound
         dimensions_str = (
@@ -292,49 +250,18 @@ class ViewpointGeneration():
             f"{max_b[1] - min_b[1]:.2f} x {max_b[2] - min_b[2]:.2f} m")
         surface_area_str = f"Surface Area: {mesh.get_surface_area():.2f} m^2"
 
-        # Apply model pose: rotate about the origin or the mesh's own
-        # centroid (vertex mean), then translate into place.
-        roll, pitch, yaw = self.model_pose['orientation_rpy']
-        if roll or pitch or yaw:
-            R = mesh.get_rotation_matrix_from_xyz((roll, pitch, yaw))
-            if self.model_pose['rotation_center'] == 'centroid':
-                center = mesh.get_center()
-            else:
-                center = (0.0, 0.0, 0.0)
-            mesh.rotate(R, center=center)
-        mesh.translate(self.model_pose['position'])
-
-        # Update the triangle mesh
         self.mesh = mesh
 
         existing_mesh = self.results.get('meshes', [{}])[0]
-        existing_mesh_file = existing_mesh.get('file', '')
-        existing_mesh_units = existing_mesh.get('units', '')
-        existing_pose = existing_mesh.get('pose', DEFAULT_MODEL_POSE)
-
-        identity_changed = (self.mesh_file != existing_mesh_file
-                             or self.mesh_units != existing_mesh_units)
-        pose_changed = self.model_pose != existing_pose
-        can_retransform = (
-            not identity_changed and pose_changed
-            and existing_mesh.get('regions')
-            and existing_pose.get('rotation_center') == self.model_pose.get('rotation_center')
-        )
+        identity_changed = (self.mesh_file != existing_mesh.get('file', '')
+                            or self.mesh_units != existing_mesh.get('units', ''))
 
         message = ''
-        if can_retransform:
-            self._retransform_results(existing_mesh, existing_pose, self.model_pose)
-            existing_mesh['pose'] = dict(self.model_pose)
-            existing_mesh['dimensions'] = dimensions_str
-            existing_mesh['surface_area'] = surface_area_str
-            self.results_file = None
-            message = 'Existing regions/clusters/viewpoints rigidly transformed to the new pose.'
-        elif identity_changed or pose_changed:
+        if identity_changed:
             self.results = {'meshes': [
                 {
                     'file': self.mesh_file,
                     'units': self.mesh_units,
-                    'pose': dict(self.model_pose),
                     'material': 'unknown',
                     'dimensions': dimensions_str,
                     'surface_area': surface_area_str,
@@ -345,103 +272,44 @@ class ViewpointGeneration():
             ]
             }
             self.results_file = None
-        # else: same mesh file, units, and pose as the already-loaded
-        # results — preserve self.results and self.results_file so a saved
-        # config can be resumed without discarding its regions/clusters.
+        # else: same mesh file + units as the already-loaded results --
+        # preserve self.results and self.results_file so a saved config can be
+        # resumed without discarding its regions/clusters.
 
-        # Raycasting Scene, built once and shared by FOV clustering's
-        # occlusion check and viewpoint projection (both need line-of-sight
-        # against the full part mesh, not just their own region/cluster).
-        # Includes a ground-plane occluder so no computed viewpoint's camera
-        # position or line-of-sight can end up underground.
-        self.raycasting_scene = o3d.t.geometry.RaycastingScene()
-        self.raycasting_scene.add_triangles(
-            o3d.t.geometry.TriangleMesh.from_legacy(self.mesh))
-        self.raycasting_scene.add_triangles(
-            o3d.t.geometry.TriangleMesh.from_legacy(self._build_ground_plane_mesh()))
-        self.fc.set_scene(self.raycasting_scene)
-        self.vp.set_scene(self.raycasting_scene)
-
+        self._apply_raycasting_scenes()
         return True, message
 
-    def _retransform_results(self, mesh_entry, old_pose, new_pose):
-        """Rigidly transform mesh_entry's already-computed regions/clusters/
-        viewpoints from old_pose's world frame into new_pose's, in place.
-        Only called when the mesh file/units and rotation_center haven't
-        changed (see _rebuild_mesh), so the same pivot resolves both poses.
+    def _make_raycasting_scene(self, include_ground: bool):
+        """Build an occlusion raycasting scene: the origin-frame part mesh, plus
+        -- only when include_ground is True -- a ground-plane occluder at the
+        turntable surface.
 
-        Region point-cloud .ply caches are transformed (points + normals)
-        and overwritten in place; cluster candidate_axis/viewpoint
-        origin/position/direction/orientation are transformed directly in
-        the results dict. order.<algorithm>.joint_trajectory entries
-        (absolute-position-dependent arm motion, computed separately by
-        viewpoint_traversal_node) are dropped since they're now stale --
-        order/distance survive, since a rigid transform preserves every
-        pairwise distance.
-        """
-        old_R = np.asarray(o3d.geometry.get_rotation_matrix_from_xyz(old_pose['orientation_rpy']))
-        new_R = np.asarray(o3d.geometry.get_rotation_matrix_from_xyz(new_pose['orientation_rpy']))
-        old_t = np.asarray(old_pose['position'], dtype=float)
-        new_t = np.asarray(new_pose['position'], dtype=float)
+        Open3D's RaycastingScene is append-only (no geometry removal), so the
+        ground plane is toggled by (re)building the scene with or without it.
+        The turntable surface is fixed at z~=0 in object_frame, so the ground
+        plane is expressed in the mesh's origin frame via the inverse placement
+        (self._placement_object_from_model); the part mesh itself is always
+        origin-frame."""
+        scene = o3d.t.geometry.RaycastingScene()
+        scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(self.mesh))
+        if include_ground:
+            ground = self._build_ground_plane_mesh()
+            ground.transform(np.linalg.inv(self._placement_object_from_model))
+            scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(ground))
+        return scene
 
-        if old_pose['rotation_center'] == 'centroid':
-            base_mesh, error = self._load_scaled_mesh()
-            pivot = np.asarray(base_mesh.get_center()) if base_mesh is not None else np.zeros(3)
-        else:
-            pivot = np.zeros(3)
+    def _apply_raycasting_scenes(self):
+        """Refresh both consumers' occlusion scenes.
 
-        # world_new = delta_R @ world_old + delta_t, derived by undoing
-        # old_pose (rotate by old_R^-1 about pivot, then subtract old_t)
-        # and reapplying new_pose (rotate by new_R about pivot, then add
-        # new_t).
-        delta_R = new_R @ old_R.T
-        delta_t = pivot + new_t - delta_R @ (pivot + old_t)
-
-        def transform_point(p):
-            return (delta_R @ np.asarray(p, dtype=float) + delta_t).tolist()
-
-        def transform_direction(v):
-            return (delta_R @ np.asarray(v, dtype=float)).tolist()
-
-        def transform_quaternion(xyzw):
-            x, y, z, w = xyzw
-            R_old_cam = pr.matrix_from_quaternion([w, x, y, z])
-            R_new_cam = delta_R @ R_old_cam
-            quat_wxyz = pr.quaternion_from_matrix(R_new_cam)
-            return [quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]]
-
-        for region in mesh_entry.get('regions', []):
-            pc_info = region.get('point_cloud')
-            if pc_info and pc_info.get('file'):
-                try:
-                    pcd = o3d.io.read_point_cloud(pc_info['file'])
-                    points = np.asarray(pcd.points)
-                    pcd.points = o3d.utility.Vector3dVector(
-                        (delta_R @ points.T).T + delta_t)
-                    if pcd.has_normals():
-                        normals = np.asarray(pcd.normals)
-                        pcd.normals = o3d.utility.Vector3dVector(
-                            (delta_R @ normals.T).T)
-                    o3d.io.write_point_cloud(pc_info['file'], pcd)
-                except Exception as e:
-                    print(f"Warning: could not retransform region point "
-                          f"cloud '{pc_info['file']}': {e}")
-
-            for cluster in region.get('clusters', []):
-                if 'candidate_axis' in cluster:
-                    cluster['candidate_axis'] = transform_direction(
-                        cluster['candidate_axis'])
-                vp = cluster.get('viewpoint')
-                if vp:
-                    vp['origin'] = transform_point(vp['origin'])
-                    vp['position'] = transform_point(vp['position'])
-                    vp['direction'] = transform_direction(vp['direction'])
-                    vp['orientation'] = transform_quaternion(vp['orientation'])
-
-            order = region.get('order')
-            if isinstance(order, dict):
-                for algo_result in order.values():
-                    algo_result.pop('joint_trajectory', None)
+        FOV clustering gets the mesh-only scene: it checks self-occlusion only,
+        so cluster feasibility is pose-independent -- it decides which surface a
+        camera could ever image, regardless of how the part is placed. Viewpoint
+        projection gets the mesh + placed ground-plane scene: it must respect the
+        actual turntable/environment at the part's current pose."""
+        if self.mesh is None:
+            return
+        self.fc.set_scene(self._make_raycasting_scene(include_ground=False))
+        self.vp.set_scene(self._make_raycasting_scene(include_ground=True))
 
     def set_point_cloud_file(self, point_cloud_file, point_cloud_units):
         """Set the point cloud file and its units."""
