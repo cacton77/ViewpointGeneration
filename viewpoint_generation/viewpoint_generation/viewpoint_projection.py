@@ -1,4 +1,5 @@
 import os
+import math
 import numpy as np
 import open3d as o3d
 import matplotlib.pyplot as plt
@@ -51,7 +52,9 @@ class ViewpointProjection:
         self.raycasting_scene = raycasting_scene
 
     def generate_viewpoint(self, surface_points: list, surface_normals: list,
-                           fov_normal_threshold: float = None, occlusion_epsilon: float = 1e-4,
+                           fov_normal_threshold: float = None,
+                           standard_normal_threshold: float = math.pi / 3,
+                           occlusion_epsilon: float = 1e-4,
                            rng_seed: int = 0, candidate_axis=None) -> list:
         """
         Projects the point cloud to a viewpoint based on the focal distance.
@@ -66,9 +69,12 @@ class ViewpointProjection:
         always evaluated as guaranteed candidates, so refinement can never do
         worse than either. imaging_mode is 'photometric' when the winning
         direction is within fov_normal_threshold of the true mean normal,
-        'standard' otherwise (including total search failure, since an
-        unvalidated/possibly-occluded direction must not claim the better
-        tier).
+        'standard' when it is within standard_normal_threshold, and
+        'inaccessible' when no direction inside standard_normal_threshold has
+        unoccluded line of sight (including total search failure, since an
+        unvalidated/possibly-occluded direction must not claim a valid tier).
+        Directions beyond standard_normal_threshold are too glancing to image
+        the surface and are never sampled or selected.
         """
         origin = np.mean(surface_points, axis=0)
         origin_normal = np.mean(surface_normals, axis=0)
@@ -82,13 +88,18 @@ class ViewpointProjection:
             rng = np.random.default_rng(rng_seed)
             axis, tier, visible_fraction = search_hemisphere_direction(
                 self.raycasting_scene, origin, surface_normal, surface_points,
-                fov_normal_threshold, self.config.focal_distance, occlusion_epsilon,
+                fov_normal_threshold, standard_normal_threshold,
+                self.config.focal_distance, occlusion_epsilon,
                 self.config.hemisphere_points, rng, candidate_axis=cax)
             if axis is not None:
                 direction = axis
                 imaging_mode = tier
             else:
-                imaging_mode = 'standard'
+                # No direction inside the standard cone had unoccluded line of
+                # sight: the surface patch can't be imaged from any valid
+                # angle (glancing directions beyond the standard cone don't
+                # count), so it's inaccessible rather than merely standard.
+                imaging_mode = 'inaccessible'
 
         # Project point along the (possibly refined) direction
         viewpoint, orientation = self.project_point_along_direction(

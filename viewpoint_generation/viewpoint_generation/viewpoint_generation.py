@@ -757,6 +757,7 @@ class ViewpointGeneration():
                 origin, position, direction, orientation, imaging_mode = self.vp.generate_viewpoint(
                     fov_points, fov_normals,
                     fov_normal_threshold=self.fc_config.fov_normal_threshold,
+                    standard_normal_threshold=self.fc_config.standard_normal_threshold,
                     occlusion_epsilon=self.fc_config.occlusion_epsilon,
                     rng_seed=self.fc_config.rng_seed,
                     candidate_axis=candidate_axis)

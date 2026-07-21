@@ -229,14 +229,22 @@ def _build_viewpoint_point_marker(viewpoint_data: dict) -> o3d.geometry.PointClo
 # kind -> (builder(viewpoint_data) -> geometry|None, default_material, selected_material)
 # default_material may instead be a callable(viewpoint_data) -> MaterialRecord
 # for a kind that needs per-cluster material variation (MARKER: green for a
-# photometric-tier viewpoint, yellow for standard-tier) — resolve via
-# _resolve_default_material rather than using it directly.
+# photometric-tier viewpoint, yellow for standard-tier, red for an
+# inaccessible one) — resolve via _resolve_default_material rather than using
+# it directly.
+def _viewpoint_marker_material(vp):
+    mode = (vp or {}).get('imaging_mode')
+    if mode == 'inaccessible':
+        return Materials.unreachable_marker_material
+    if mode == 'standard':
+        return Materials.standard_viewpoint_marker_material
+    return Materials.viewpoint_marker_material
+
+
 _OVERLAY_REGISTRY: dict = {
     OverlayKind.MARKER: (
         _build_viewpoint_point_marker,
-        lambda vp: (Materials.standard_viewpoint_marker_material
-                    if (vp or {}).get('imaging_mode') == 'standard'
-                    else Materials.viewpoint_marker_material),
+        _viewpoint_marker_material,
         Materials.selected_viewpoint_marker_material,
     ),
     OverlayKind.FOV_CYLINDER: (

@@ -49,8 +49,14 @@ class FOVClusteringConfig:
     algorithm: str = 'greedy_cover'  # 'kmeans' or 'greedy_cover'
 
     # Greedy set-cover parameters
-    # Max incidence angle (rad) for coverage
+    # Max incidence angle (rad) for photometric-stereo coverage
     fov_normal_threshold: float = math.pi / 4
+    # Max incidence angle (rad) for standard imaging. Between
+    # fov_normal_threshold and this angle a direction is valid for standard
+    # (non-photometric) imaging; beyond it the view is too glancing to capture
+    # surface information and is treated as inaccessible (neither sampled nor
+    # considered valid).
+    standard_normal_threshold: float = math.pi / 3
     # Anchor spacing (m); 0.0 = auto = fov_diameter/2
     candidate_spacing: float = 0.0
     prune_redundant: bool = True  # Drop redundant viewpoints after greedy cover
@@ -157,9 +163,16 @@ class FOVClusteringConfig:
             "fov_normal_threshold": {
                 "value": self.fov_normal_threshold,
                 "type": "float",
-                "description": "Max surface-normal incidence angle (radians) for greedy_cover coverage predicate",
+                "description": "Max surface-normal incidence angle (radians) for photometric-stereo imaging (greedy_cover coverage predicate)",
                 "control": "slider",
                 "range": [0.0, math.pi],
+            },
+            "standard_normal_threshold": {
+                "value": self.standard_normal_threshold,
+                "type": "float",
+                "description": "Max surface-normal incidence angle (radians) for standard imaging; beyond this the view is too glancing and is treated as inaccessible",
+                "control": "slider",
+                "range": [0.0, math.pi / 2],
             },
             "candidate_spacing": {
                 "value": self.candidate_spacing,
@@ -772,7 +785,8 @@ class FOVClustering:
                     continue  # already incidentally rescued this pass
                 axis, tier, vf = search_hemisphere_direction(
                     self.raycasting_scene, pts[p], normals[p], pts[p:p + 1],
-                    cfg.fov_normal_threshold, focal_distance, cfg.occlusion_epsilon,
+                    cfg.fov_normal_threshold, cfg.standard_normal_threshold,
+                    focal_distance, cfg.occlusion_epsilon,
                     cfg.rescue_samples, rng)
                 if axis is None or vf <= 0.0:
                     continue  # still genuinely blind
