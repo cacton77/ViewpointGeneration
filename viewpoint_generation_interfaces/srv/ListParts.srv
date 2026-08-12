@@ -1,0 +1,6 @@
+string filter            # optional case-insensitive search over title/part number
+string maturity_filter   # optional exact maturity state, e.g. RELEASED
+bool include_archived    # include items no longer visible on the tenant
+---
+PartSummary[] parts
+int32 total_count

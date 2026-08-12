@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inspection Parts Catalog</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Inspection Parts Catalog</h1>
+    <div class="topbar-actions">
+      <span id="ros-badge" class="badge badge-muted" title="ROS connection">ROS …</span>
+      <button id="sync-btn" class="btn btn-primary">Sync</button>
+    </div>
+  </header>
+
+  <section class="controls">
+    <input id="search" type="search" placeholder="Search parts by title, number, or description…"
+           autocomplete="off">
+    <select id="maturity">
+      <option value="">All maturities</option>
+      <option value="IN_WORK">In Work</option>
+      <option value="RELEASED">Released</option>
+      <option value="OBSOLETE">Obsolete</option>
+    </select>
+    <select id="state-filter">
+      <option value="">All states</option>
+      <option value="ready">Ready</option>
+      <option value="fetch">Fetch</option>
+      <option value="new">New</option>
+      <option value="stale">Stale</option>
+      <option value="nostp">No STEP</option>
+    </select>
+    <span id="status-line" class="status-line"></span>
+  </section>
+
+  <main>
+    <div id="grid" class="grid" aria-live="polite"></div>
+    <p id="empty" class="empty hidden">No parts match these filters.</p>
+  </main>
+
+  <section id="detail" class="detail hidden" aria-live="polite">
+    <button class="detail-close" id="detail-close" aria-label="Close details">&times;</button>
+    <div id="detail-body"></div>
+  </section>
+
+  <footer class="bottombar">
+    <span id="selection">No part selected</span>
+    <span id="toast" class="toast"></span>
+  </footer>
+
+  <script src="{{ url_for('static', filename='picker.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+string eng_item_id
+bool skip_plan_check     # fetch the STEP only, without resolving the plan
+---
+bool success
+string step_file_path    # absolute path inside the container
+string plan_status       # CURRENT | DOWNLOADED | UPDATED_FROM_REMOTE | STALE | NONE
+string plan_file_path
+string error_message

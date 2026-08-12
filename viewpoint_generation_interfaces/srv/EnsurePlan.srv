@@ -1,0 +1,5 @@
+string eng_item_id
+---
+string status            # CURRENT | DOWNLOADED | UPDATED_FROM_REMOTE | STALE | NONE
+string plan_file_path    # local path to the plan JSON (plan payload, not envelope)
+string message

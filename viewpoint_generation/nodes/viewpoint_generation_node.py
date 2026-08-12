@@ -15,8 +15,12 @@ from importlib import resources as importlib_resources
 from ament_index_python.packages import get_package_prefix
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
+from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
+                       ReliabilityPolicy)
+
 from std_srvs.srv import Trigger
 # from viewpoint_generation_interfaces.action import ViewpointGeneration
+from viewpoint_generation_interfaces.msg import PartSelected
 
 from std_msgs.msg import Bool, ColorRGBA
 from geometry_msgs.msg import PoseStamped, Pose, PointStamped, Point
@@ -102,7 +106,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     if not success:
                         self.get_logger().error(message)
 
-        # Segmentation algorithm selector: 'region_growth' or 'partfield'.
+        # Segmentation algorithm selector: 'region_growth', 'partfield', or
+        # 'brep' (the last requires a STEP-loaded mesh).
         self.declare_parameters(
             namespace='',
             parameters=[
@@ -127,6 +132,18 @@ class ViewpointGenerationNode(rclpy.node.Node):
         _auto_declare_parameters(
             prefix='regions.partfield.',
             config_dict=self.viewpoint_generation.partfield_config.to_dict(),
+            excluded=set(),
+        )
+        _auto_declare_parameters(
+            prefix='regions.brep.',
+            config_dict=self.viewpoint_generation.brep_config.to_dict(),
+            excluded=set(),
+        )
+        # Tessellation quality is applied when a STEP file is loaded, so
+        # changing it takes effect on the next model load.
+        _auto_declare_parameters(
+            prefix='model.mesh.tessellation.',
+            config_dict=self.viewpoint_generation.tessellation_config.to_dict(),
             excluded=set(),
         )
         _auto_declare_parameters(
@@ -164,6 +181,19 @@ class ViewpointGenerationNode(rclpy.node.Node):
             '/tsdf_pose/pose',
             self._filtered_pose_cb,
             10)
+
+        # Part selections from the 3DX catalog node. Matches the publisher's
+        # transient-local QoS so a selection made before this node started is
+        # still delivered on subscribe.
+        self.create_subscription(
+            PartSelected,
+            '/catalog/part_selected',
+            self._part_selected_cb,
+            QoSProfile(
+                depth=1,
+                history=HistoryPolicy.KEEP_LAST,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
         # Update planning scene timer
         self.create_timer(1.0, self.update_planning_scene)
@@ -391,6 +421,46 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # TF that tsdf_pose broadcasts.
         self._filtered_pose = msg.pose
         self.viewpoint_generation.set_placement(_pose_to_matrix(msg.pose))
+
+    def _part_selected_cb(self, msg: PartSelected):
+        """Load a part chosen in the 3DX catalog into the pipeline.
+
+        Sets the mesh from the STEP the catalog cached, and -- when the
+        catalog reports a plan that still matches the part's CAD revision --
+        loads that plan's regions/clusters/viewpoints instead of discarding
+        them, so an already-planned part is ready to inspect without re-running
+        the pipeline. A STALE plan is deliberately NOT loaded: its viewpoints
+        were computed against different geometry, and the operator decides
+        whether to re-plan."""
+        self.get_logger().info(
+            f'Catalog selected {msg.title!r} ({msg.part_number} rev {msg.revision}), '
+            f'plan status {msg.plan_status}.')
+
+        if not msg.step_file_path:
+            self.get_logger().warn('Part selection carried no model file; ignoring.')
+            return
+
+        units = msg.mesh_units or 'mm'
+
+        # Load the plan first when it is usable: set_mesh_file() preserves
+        # regions/clusters already recorded in self.results for the same
+        # file+units, so seeding results from the plan before the mesh is what
+        # lets a downloaded plan survive the load.
+        if msg.plan_status == 'CURRENT' and msg.plan_file_path:
+            if not self.set_results_file(msg.plan_file_path):
+                self.get_logger().warn(
+                    f'Could not load plan {msg.plan_file_path}; '
+                    'continuing with the model only.')
+
+        if not self.set_mesh_file(msg.step_file_path, units):
+            self.get_logger().error(
+                f'Failed to load selected model: {msg.step_file_path}')
+            return
+
+        if msg.plan_status == 'STALE':
+            self.get_logger().warn(
+                f'The stored plan for {msg.title!r} was generated for an earlier '
+                'CAD revision. Re-run segmentation before inspecting.')
 
     def update_planning_scene(self):
         if not self.mesh:
@@ -832,6 +902,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     self.get_logger().error(message)
             elif (param.name.startswith('regions.region_growth.') or
                   param.name.startswith('regions.partfield.') or
+                  param.name.startswith('regions.brep.') or
+                  param.name.startswith('model.mesh.tessellation.') or
                   param.name.startswith('fov_clustering.') or
                   param.name.startswith('viewpoints.projection.')):
                 field_name = param.name.split('.')[-1]

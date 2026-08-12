@@ -1,0 +1,3 @@
+bool full                # true = full reconcile, false = incremental pass
+---
+SyncResult result

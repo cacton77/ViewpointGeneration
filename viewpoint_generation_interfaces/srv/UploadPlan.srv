@@ -1,0 +1,6 @@
+string eng_item_id
+string results_json_path   # ViewpointGeneration results JSON to wrap and upload
+---
+bool success
+string plan_doc_id
+string message

@@ -18,6 +18,10 @@ from viewpoint_generation.partfield_segmentation import *
 from viewpoint_generation.fov_clustering import *
 from viewpoint_generation.viewpoint_projection import *
 from viewpoint_generation.mesh_utils import submesh_from_faces
+from viewpoint_generation.brep_segmentation import (
+    BRepSegmentation, BRepSegmentationConfig)
+from viewpoint_generation.step_loader import (
+    StepLoadResult, TessellationConfig, load_step)
 
 
 class ViewpointGeneration():
@@ -30,6 +34,17 @@ class ViewpointGeneration():
 
     mesh = None
     point_cloud = None
+
+    # B-rep topology from the most recently loaded STEP file (None whenever the
+    # loaded mesh came from a tessellated format such as STL/OBJ/PLY). Consumed
+    # only by the 'brep' segmentation algorithm and by the surface-type
+    # annotations in the results JSON -- every other stage sees the same
+    # o3d.geometry.TriangleMesh regardless of source format.
+    step_data = None
+
+    # Per-region CAD provenance from the most recent segmentation, parallel to
+    # the regions list. None for algorithms with no B-rep notion.
+    _region_metadata = None
 
     # Physical placement of the part expressed as object_frame <- model
     # (origin) frame, a 4x4 homogeneous transform. The mesh geometry, regions,
@@ -77,6 +92,8 @@ class ViewpointGeneration():
     partfield_config = PartFieldSegmentationConfig(
         num_parts=12,
     )
+    brep_config = BRepSegmentationConfig()
+    tessellation_config = TessellationConfig()
     fc_config = FOVClusteringConfig(
         fov_diameter=0.03,
         dof=0.02,
@@ -95,6 +112,7 @@ class ViewpointGeneration():
 
     rg = RegionGrowing(region_growing_config)
     pf = PartFieldSegmentation(partfield_config)
+    bs = BRepSegmentation(brep_config)
     fc = FOVClustering(fc_config)
     vp = ViewpointProjection(vp_config)
 
@@ -201,6 +219,15 @@ class ViewpointGeneration():
         with vertex normals and color, in the mesh's own origin frame.
         Returns (mesh, error); mesh is None on failure, with error
         explaining why."""
+        ext = os.path.splitext(self.mesh_file)[1].lower()
+        if ext in ('.stp', '.step'):
+            return self._load_step_mesh()
+
+        # Tessellated formats (STL, OBJ, PLY, OFF) carry no B-rep topology, so
+        # any topology cached from a previously loaded STEP no longer describes
+        # this mesh and must not leak into segmentation.
+        self.step_data = None
+
         try:
             mesh = o3d.io.read_triangle_mesh(self.mesh_file)
         except Exception as e:
@@ -222,6 +249,34 @@ class ViewpointGeneration():
         else:
             return None, 'Unknown units. Mesh not scaled.'
 
+        mesh.paint_uniform_color(self.mesh_color)
+        return mesh, ''
+
+    def _load_step_mesh(self):
+        """Load a STEP file via PythonOCC, tessellate it to an Open3D mesh, and
+        keep its B-rep metadata for topology-aware segmentation.
+
+        The returned mesh satisfies the same contract as the STL/OBJ path --
+        already scaled to meters, with vertex normals and color -- so nothing
+        downstream needs to know the model came from CAD.
+        Returns (mesh, error); mesh is None on failure."""
+        try:
+            self.step_data = load_step(
+                self.mesh_file,
+                units=self.mesh_units,
+                tess_config=self.tessellation_config,
+            )
+        except Exception as e:
+            self.step_data = None
+            return None, f'Could not load STEP file: {e}'
+
+        mesh = self.step_data.mesh
+        if mesh.is_empty():
+            self.step_data = None
+            return None, 'Tessellated STEP mesh is empty.'
+
+        # load_step() already scaled to meters, computed vertex normals, and
+        # painted the mesh, so it only needs the configured color applied.
         mesh.paint_uniform_color(self.mesh_color)
         return mesh, ''
 
@@ -262,6 +317,7 @@ class ViewpointGeneration():
                 {
                     'file': self.mesh_file,
                     'units': self.mesh_units,
+                    'source_format': 'STEP' if self.step_data is not None else 'mesh',
                     'material': 'unknown',
                     'dimensions': dimensions_str,
                     'surface_area': surface_area_str,
@@ -447,6 +503,15 @@ class ViewpointGeneration():
         if field_name in self.partfield_config.to_dict():
             return self._set_config_param(
                 self.partfield_config, self.pf, field_name, value)
+        if field_name in self.brep_config.to_dict():
+            return self._set_config_param(
+                self.brep_config, self.bs, field_name, value)
+        if field_name in self.tessellation_config.to_dict():
+            # Tessellation quality is baked into the mesh at load time, so a
+            # change only takes effect on the next load; it has no algorithm
+            # object to keep in sync.
+            setattr(self.tessellation_config, field_name, value)
+            return True, f'\'{field_name}\' set to {value}.'
         if field_name in self.fc_config.to_dict():
             return self._set_config_param(
                 self.fc_config, self.fc, field_name, value)
@@ -459,11 +524,12 @@ class ViewpointGeneration():
         """
         Select the algorithm used by segment_regions() to partition the surface.
         Args:
-            algorithm (str): 'region_growth' or 'partfield'.
+            algorithm (str): 'region_growth', 'partfield', or 'brep'.
+                'brep' requires a STEP-loaded mesh.
         Returns:
             tuple: (bool, str) success flag and message.
         """
-        valid = ('region_growth', 'partfield')
+        valid = ('region_growth', 'partfield', 'brep')
         if algorithm not in valid:
             return False, f'Unknown segmentation algorithm: \'{algorithm}\'. Valid: {valid}.'
         self.segmentation_algorithm = algorithm
@@ -542,6 +608,11 @@ class ViewpointGeneration():
     def _segment_surface(self):
         """
         Partition the mesh into regions using the selected algorithm.
+
+        Side effect: sets self._region_metadata to a list parallel to the
+        returned regions carrying each region's CAD provenance
+        ({'surface_type', 'brep_face_ids'}), or None for algorithms that have
+        no such notion. segment_regions() folds it into the results JSON.
         Returns:
             tuple: (regions, noise_faces). Each region is a list of triangle
             indices into self.mesh.triangles; noise_faces is a list of
@@ -549,9 +620,50 @@ class ViewpointGeneration():
         """
         if self.mesh is None:
             raise ValueError('No triangle mesh loaded. Cannot segment surface.')
+
+        self._region_metadata = None
+
+        if self.segmentation_algorithm == 'brep':
+            if self.step_data is None:
+                raise ValueError('B-rep segmentation requires a STEP file. '
+                                 'Load a .stp/.step file first.')
+            regions, noise_faces, metadata = self.bs.region_surface_types(
+                self.mesh, self.step_data)
+            self._region_metadata = metadata
+            return regions, noise_faces
+
         if self.segmentation_algorithm == 'partfield':
             return self.pf.segment(self.mesh)
         return self.rg.segment(self.mesh)
+
+    def _brep_metadata_for_faces(self, faces):
+        """CAD provenance for a region defined by an arbitrary face set.
+
+        Lets region_growth/partfield regions carry surface-type annotations
+        too when the mesh came from STEP: a region is labelled with the
+        surface types of the B-rep faces its triangles came from, and 'mixed'
+        when it spans more than one type.
+        Returns:
+            dict or None: {'surface_type', 'brep_face_ids'}, or None when no
+            B-rep topology is loaded.
+        """
+        if self.step_data is None or not len(faces):
+            return None
+        tri_to_brep = self.step_data.tri_to_brep
+        indices = np.asarray(faces, dtype=int)
+        indices = indices[indices < len(tri_to_brep)]
+        if not len(indices):
+            return None
+        brep_face_ids = sorted({int(fid) for fid in tri_to_brep[indices] if fid >= 0})
+        if not brep_face_ids:
+            return None
+        types = {self.step_data.brep_faces[fid].surface_type
+                 for fid in brep_face_ids
+                 if fid < len(self.step_data.brep_faces)}
+        return {
+            'surface_type': types.pop() if len(types) == 1 else 'mixed',
+            'brep_face_ids': brep_face_ids,
+        }
 
     def _results_dir(self):
         """Directory where results/region artifacts for the current mesh are
@@ -603,11 +715,13 @@ class ViewpointGeneration():
 
             regions, noise_faces = self._segment_surface()
 
+            metadata = getattr(self, '_region_metadata', None)
+
             self.results['meshes'][i]['regions'] = []
             for region_id, region in enumerate(regions):
                 point_cloud, point_cloud_file = self._sample_region_point_cloud(
                     region_id, region)
-                self.results['meshes'][i]['regions'].append({
+                region_entry = {
                     'faces': region,
                     'point_cloud': {
                         'file': point_cloud_file,
@@ -616,7 +730,17 @@ class ViewpointGeneration():
                     },
                     'clusters': [],
                     'order': []
-                })
+                }
+                # CAD provenance, present only for STEP-sourced meshes. Comes
+                # from the segmenter when it is B-rep aware, and is otherwise
+                # derived from which B-rep faces the region's triangles came
+                # from. Consumers that predate it simply ignore the fields.
+                region_metadata = (metadata[region_id]
+                                   if metadata is not None and region_id < len(metadata)
+                                   else self._brep_metadata_for_faces(region))
+                if region_metadata:
+                    region_entry.update(region_metadata)
+                self.results['meshes'][i]['regions'].append(region_entry)
             self.results['meshes'][i]['noise_faces'] = noise_faces
 
             self.results['meshes'][i]['order'] = list(

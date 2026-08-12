@@ -23,6 +23,9 @@ setup(
     ],
     package_data={
         'viewpoint_generation': ['assets/*.stl'],
+        # Picker UI assets are served by Flask from inside the installed
+        # package, so they have to ship with it.
+        'viewpoint_generation.picker': ['templates/*.html', 'static/*'],
     },
     install_requires=['setuptools'],
     zip_safe=True,
@@ -36,7 +39,9 @@ setup(
             'viewpoint_generation_node = nodes.viewpoint_generation_node:main',
             'gui_node = nodes.gui:main',
             'viewpoint_traversal_node = nodes.viewpoint_traversal_node:main',
-            'task_planning_node = nodes.task_planning_node:main'
+            'task_planning_node = nodes.task_planning_node:main',
+            'catalog_node = viewpoint_generation.catalog.ros_node:main',
+            'picker_node = viewpoint_generation.picker.app:main'
         ],
     },
 )

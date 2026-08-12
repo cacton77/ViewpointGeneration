@@ -10,10 +10,11 @@ ViewpointGeneration is structured as a standalone Python library (`viewpoint_gen
 
 The pipeline follows these stages:
 
-1. **Load CAD Model** -- Import an STL/OBJ mesh with unit conversion
-2. **Surface Segmentation** -- Segment the mesh directly into regions (by triangle face, not a sampled point cloud). Two interchangeable algorithms (selected via `regions.segmentation_algorithm`):
+1. **Load CAD Model** -- Import an STL/OBJ/PLY/OFF mesh, or a STEP file, with unit conversion. STEP files are tessellated through PythonOCC and additionally carry their B-rep topology (see [STEP ingest](#step-ingest))
+2. **Surface Segmentation** -- Segment the mesh directly into regions (by triangle face, not a sampled point cloud). Three interchangeable algorithms (selected via `regions.algorithm`):
    - `region_growth` -- contiguous regions grown over triangle face-adjacency, using face-normal similarity and a per-face curvature analog (variance of neighboring face normals) as the merge criteria
    - `partfield` -- semantic parts from [PartField](https://github.com/nv-tlabs/PartField), grouped directly from its per-face labels (requires GPU + PartField mounted at `/models/PartField`)
+   - `brep` -- one region per analytical B-rep face from the CAD model itself (requires a STEP-loaded mesh). No seeds, no thresholds, no GPU: the segmentation is the one the CAD author drew. Small faces are merged into their largest neighbour, and adjacent same-type faces can optionally be unioned
 3. **Sample Region Point Clouds** -- Poisson disk sample each region's own submesh (sized from `fov_clustering.point_density`); cached to disk and referenced from the results file
 4. **FOV Clustering** -- Subdivide each region's sampled point cloud into clusters that fit within the camera's field of view and depth of field. Two interchangeable algorithms (selected via `regions.fov_clustering.algorithm`):
    - `kmeans` -- K-means with Bayesian optimization for cluster count
@@ -34,20 +35,35 @@ viewpoint_generation/
 │   ├── fov_clustering.py           # Field-of-view clustering
 │   ├── viewpoint_projection.py     # Viewpoint pose computation
 │   ├── occlusion_search.py         # Monte Carlo hemisphere occlusion search (blind-spot rescue + direction refinement)
+│   ├── step_loader.py              # STEP/B-rep ingest via PythonOCC (OCP)
+│   ├── brep_segmentation.py        # B-rep topology segmentation (third algorithm)
 │   ├── mesh_utils.py               # Shared triangle-mesh helpers (submesh extraction)
 │   ├── visualizer.py               # Open3D visualization
 │   ├── gui_node.py                 # GUI node implementation
+│   ├── catalog/                    # 3DEXPERIENCE parts catalog
+│   │   ├── config.py               # DXConfig / SyncConfig / CatalogPaths (env-driven)
+│   │   ├── schema.py               # SQLite schema + CatalogDB access layer
+│   │   ├── client.py               # Authenticated 3DX REST session (DXClient)
+│   │   ├── sync.py                 # Sync daemon + plan/result upload (CatalogSync)
+│   │   ├── ros_node.py             # CatalogNode ROS 2 services and topics
+│   │   └── jms.py                  # Optional event-driven sync over STOMP
+│   ├── picker/                     # Browser-based part picker
+│   │   ├── app.py                  # Flask routes
+│   │   ├── templates/index.html
+│   │   └── static/{style.css,picker.js}
 │   └── assets/
 │       ├── materials.py            # Visualization materials
 │       └── planning_volume.stl     # Planning volume mesh
 ├── nodes/                          # ROS 2 node executables
 │   ├── viewpoint_generation_node.py
+│   ├── catalog_node.py
 │   ├── task_planning_node.py
 │   ├── viewpoint_traversal_node.py
 │   └── gui.py
 ├── launch/
 │   ├── bringup.launch.py           # Full system bringup
 │   ├── viewpoint_generation.launch.py
+│   ├── catalog.launch.py           # Catalog node + part picker UI
 │   └── viewpoint_traversal.launch.py
 ├── package.xml
 ├── setup.py
@@ -68,6 +84,15 @@ Listed in `requirements.txt`:
 - bayesian-optimization
 - matplotlib
 - requests
+
+For STEP ingest and the `brep` segmentation algorithm: `cadquery-ocp` (the
+maintained OpenCascade Python bindings, imported as `OCP`). `step_loader`
+imports it lazily, so the rest of the package works without it -- only loading
+a `.stp`/`.step` file requires it, and the error names the fix.
+
+For the 3DEXPERIENCE catalog: `requests` (already required), `flask` for the
+part picker UI, and `stomp.py` for the optional JMS event listener. The catalog
+degrades gracefully without the optional ones.
 
 For the optional `partfield` segmentation algorithm: a CUDA GPU and the
 [PartField](https://github.com/nv-tlabs/PartField) checkout mounted at
@@ -287,10 +312,20 @@ the mathematical formulation and per-algorithm details are documented in
 - `OptimizeViewpointTraversal.srv` -- Optimize traversal order for a results file
 - `FindNearestViewpoint.srv` -- Given a region index, return the viewpoint in that region nearest to the robot's current joint state (used for dynamic entry selection at execution time)
 
+- `ListParts.srv` -- Browse the local 3DX parts catalog (filter, maturity filter)
+- `SelectPart.srv` -- Fetch a part's STEP, resolve its plan, and announce the selection
+- `SyncNow.srv` -- Run a catalog sync (full or incremental) and return its counts
+- `EnsurePlan.srv` -- Report inspection plan validity for a part
+- `UploadPlan.srv` -- Wrap a results JSON in a PLM envelope and upload it to 3DX
+- `UploadResults.srv` -- Upload an inspection run's result bundle to 3DX
+
 **Messages:**
 - `OrientationControlData.msg` -- Orientation control feedback (pitch/yaw/roll errors, PID gains)
 - `FocusValue.msg` -- Focus metric data
 - `AutofocusData.msg` -- Autofocus feedback (images, metrics, ROI, poses)
+- `PartSummary.msg` -- One catalogued engineering item as shown in the picker
+- `PartSelected.msg` -- Published when a part is selected for inspection
+- `SyncResult.msg` -- Outcome of one catalog synchronization pass
 
 ## Launch
 
@@ -541,3 +576,108 @@ baked-in `model.pose.*` transform; it is no longer read.
   region's *Paths* in the tree view), so the same choice drives both the
   visualized path and the execution order. An empty value falls back to the
   first available algorithm.
+
+## STEP ingest
+
+STEP files load natively, producing the same `o3d.geometry.TriangleMesh` the
+STL/OBJ path produces plus a sidecar of B-rep topology. `_load_scaled_mesh()`
+dispatches on the file extension, so `set_mesh_file("part.stp", "mm")` is all
+that is required and every downstream stage is unchanged.
+
+`step_loader.load_step()` returns a `StepLoadResult`:
+
+| Field | Meaning |
+|-------|---------|
+| `mesh` | Tessellated Open3D mesh, scaled to metres, normals computed |
+| `brep_faces` | One `BRepFace` per face: surface type, triangle indices, area, exact centroid and normal |
+| `face_adjacency` | `face_id -> {face_id}` from shared B-rep edges (exact CAD topology) |
+| `tri_to_brep` | Triangle index -> B-rep face id |
+| `source_file`, `units` | Provenance |
+
+Surface types are classified from the analytical surface: `plane`, `cylinder`,
+`cone`, `sphere`, `torus`, `bezier`, `bspline`, `revolution`, `extrusion`,
+`offset`, `other`.
+
+**Vertex merging is load-bearing.** OpenCascade tessellates each B-rep face
+independently with its own vertex pool, so adjacent faces produce coincident
+but *distinct* vertices at shared edges. `RegionGrowing` derives face adjacency
+from shared vertex indices, so without welding it sees a mesh that falls apart
+at every B-rep boundary and can never grow a region across one. The loader
+welds with `merge_close_vertices(1e-8)` and then **rebuilds** `tri_to_brep` and
+every `BRepFace.triangle_indices` from the surviving triangles, because welding
+renumbers (and can drop degenerate) triangles.
+
+Tessellation quality is exposed as ROS parameters under
+`model.mesh.tessellation.` (`linear_deflection`, `angular_deflection`,
+`relative`) and applies on the next model load.
+
+### B-rep segmentation parameters
+
+Declared under `regions.brep.`:
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `min_face_area` | `1e-6` | Faces below this area (m²) merge into their largest neighbour; 0 disables |
+| `merge_same_type` | `false` | Union adjacent faces sharing an analytical surface type |
+| `max_regions` | `0` | Cap on emitted regions (0 = one per B-rep face) |
+
+## 3DEXPERIENCE parts catalog
+
+`catalog/` keeps a local SQLite index of engineering items published on a
+3DEXPERIENCE tenant, caches their STEP files and thumbnails, and exchanges
+inspection plans and results with the PLM record. `picker/` renders it as a
+browser UI.
+
+### Running it
+
+```bash
+ros2 launch viewpoint_generation catalog.launch.py          # catalog node + picker
+python -m viewpoint_generation.catalog.sync --full          # one-shot CLI sync
+python -m viewpoint_generation.catalog.sync --contexts      # discover security contexts
+python -m viewpoint_generation.catalog.sync --sync-item ID  # add one item by id
+```
+
+The picker listens on `PICKER_PORT` (default 5050); with `network_mode: host`
+it is reachable at `http://localhost:5050`.
+
+### Configuration
+
+All configuration is environment-driven (see `.env.example` in
+`inspection-docker`): `DX_PASSPORT_URL`, `DX_SPACE_URL`, `DX_TENANT`,
+`DX_USERNAME`, `DX_PASSWORD`, `DX_SECURITY_CONTEXT` (including its `ctx::`
+prefix), `DX_BOOKMARK_SCOPE`, `DX_COLLAB_SPACE`, `DX_MATURITY_FILTER`,
+`CATALOG_ROOT`, `CATALOG_SYNC_INTERVAL`, `CELL_ID`, `DX_JMS_BROKER_URL`.
+
+`SyncConfig` follows the repo's `to_dict()` convention, so every field is
+auto-declared as a ROS parameter under `catalog.` on the catalog node.
+
+### ROS interface
+
+Services `catalog/{list_parts,select_part,sync_now,ensure_plan,upload_plan,upload_results}`;
+topics `/catalog/part_selected` (transient-local, so late joiners still learn the
+current part) and `/catalog/sync_complete`.
+
+`ViewpointGenerationNode` subscribes to `/catalog/part_selected` and loads the
+selected STEP automatically. A plan reported `CURRENT` is loaded with it; a
+`STALE` plan is deliberately *not* loaded, since its viewpoints were computed
+against different geometry.
+
+### Plan envelope
+
+Uploaded plans wrap the existing results JSON verbatim under `plan`, adding
+`plm_context` (eng item id, part number, revision, cestamp, cell id, software
+version), `pipeline_config`, and `summary`. Existing consumers are unaffected;
+`_unwrap_envelope()` also accepts a bare results JSON. Plan validity is decided
+by comparing the envelope's `cestamp` against the part's current one -- a plan
+is valid only for the CAD revision it was generated against.
+
+### Region provenance in the results JSON
+
+When the mesh came from STEP, each region additionally carries:
+
+- `surface_type` -- the analytical surface type, or `mixed` when a region spans
+  several (region_growth/partfield regions get this too, derived from which
+  B-rep faces their triangles came from)
+- `brep_face_ids` -- the B-rep faces the region covers
+
+and the mesh entry carries `source_format: "STEP"`.
