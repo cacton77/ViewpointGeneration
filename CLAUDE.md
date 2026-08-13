@@ -56,6 +56,15 @@ portable between the two. Resolve cached STEP/thumbnail paths through
 canonical location for the current environment) rather than trusting the stored
 column directly.
 
+## Reading model files
+
+Never call `o3d.io.read_triangle_mesh()` on a path that could be a model the
+operator selected. It cannot parse STEP and signals that failure by returning
+an *empty mesh* rather than raising, so the caller silently displays nothing.
+Use `mesh_utils.read_mesh_file()`, which dispatches on the extension and
+returns `(mesh, error)` in the file's own units. The exceptions are fixed
+package assets that are always STL (e.g. `planning_volume.stl`).
+
 ## STEP loading invariants
 
 If you touch `step_loader.py`, preserve these:

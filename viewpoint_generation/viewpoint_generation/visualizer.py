@@ -15,7 +15,7 @@ import open3d.visualization.gui as gui
 from matplotlib import colormaps
 
 from viewpoint_generation.assets.materials import Materials
-from viewpoint_generation.mesh_utils import submesh_from_faces
+from viewpoint_generation.mesh_utils import read_mesh_file, submesh_from_faces
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -840,9 +840,12 @@ class Visualizer:
         """Load and display a mesh. Returns {'mesh': mesh, 'bbox': bbox} or None."""
         print(f"Importing mesh from {file_path}")
         try:
-            mesh = o3d.io.read_triangle_mesh(file_path)
-            if mesh.is_empty():
-                print(f"Warning: Mesh file {file_path} is empty or invalid.")
+            # read_mesh_file, not o3d.io.read_triangle_mesh: the latter cannot
+            # parse STEP and fails silently with an empty mesh, so a
+            # STEP-loaded part would simply never appear in the scene.
+            mesh, error = read_mesh_file(file_path)
+            if mesh is None:
+                print(f"Warning: {error}")
                 return None
 
             self.mesh_name  = file_path.rsplit('/', 1)[-1].rsplit('.', 1)[0]
@@ -1008,9 +1011,11 @@ class Visualizer:
             mesh = None
             if mesh_file:
                 try:
-                    mesh = o3d.io.read_triangle_mesh(mesh_file)
-                    if mesh.is_empty():
-                        mesh = None
+                    # Handles STEP as well as tessellated formats; see
+                    # read_mesh_file.
+                    mesh, mesh_error = read_mesh_file(mesh_file)
+                    if mesh is None:
+                        print(f"Error loading mesh {mesh_file}: {mesh_error}")
                     else:
                         mesh.scale(scale_map.get(mesh_units, 1.0), center=(0, 0, 0))
 

@@ -1626,9 +1626,11 @@ class GUIClient():
         file_dialog = gui.FileDialog(
             gui.FileDialog.OPEN, "Choose mesh file", self.window.theme)
         file_dialog.set_path(self.ros_thread.data_path)
-        file_dialog.add_filter(".stl .obj", "Mesh Files (*.stl, *.obj)")
+        file_dialog.add_filter(".stl .obj .stp .step",
+                               "Model Files (*.stl, *.obj, *.stp, *.step)")
         file_dialog.add_filter(".stl", "Stereolithography Mesh(*.stl)")
         file_dialog.add_filter(".obj", "Wavefront OBJ Mesh(*.obj)")
+        file_dialog.add_filter(".stp .step", "STEP CAD Model(*.stp, *.step)")
 
         file_dialog.set_on_cancel(self.window.close_dialog)
         file_dialog.set_on_done(

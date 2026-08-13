@@ -626,6 +626,15 @@ Tessellation quality is exposed as ROS parameters under
 `model.mesh.tessellation.` (`linear_deflection`, `angular_deflection`,
 `relative`) and applies on the next model load.
 
+**Everything that reads a model file must go through
+`mesh_utils.read_mesh_file()`**, which dispatches on the extension and returns
+the geometry in the file's own units. `o3d.io.read_triangle_mesh()` cannot
+parse STEP and fails *silently* by returning an empty mesh, so any code path
+calling it directly renders nothing at all for a STEP-loaded part — which is
+exactly how the visualizer first went blank. Tessellated STEP meshes are cached
+by (path, mtime, size) and handed out as copies, since callers scale what they
+receive.
+
 ### B-rep segmentation parameters
 
 Declared under `regions.brep.`:
