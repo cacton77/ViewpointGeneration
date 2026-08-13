@@ -124,18 +124,74 @@ class CatalogSync:
         self.db = CatalogDB(db_path)
         self.last_result = None
         self.syncing = False
+        # Set by the last enumeration when the scope resolved to a bookmark.
+        self.active_bookmark = None
 
     # --- scope and filtering ---------------------------------------------
 
-    def _in_scope(self, item):
-        """True when a remote item passes the configured maturity/space filters."""
+    def _in_scope(self, item, apply_space_filter=True):
+        """True when a remote item passes the configured maturity/space filters.
+
+        Args:
+            item: A normalized remote item.
+            apply_space_filter: Enforce the collaborative-space filter. Turned
+                off when the scope came from a bookmark, since a curated
+                bookmark *is* the scope and may legitimately span spaces.
+        """
         states = self.config.maturity_states()
         if states and (item.get('maturity') or '').upper() not in states:
             return False
         space_filter = self.config.collab_space_filter
-        if space_filter and (item.get('collab_space') or '') != space_filter:
+        if apply_space_filter and space_filter and (
+                item.get('collab_space') or '') != space_filter:
             return False
         return True
+
+    def _resolve_bookmark(self):
+        """Resolve the configured scope to a 3DX bookmark, if it names one.
+
+        Returns:
+            dict: The bookmark, or None when the scope is a search string.
+        """
+        scope = (self.config.bookmark_scope or '').strip()
+        if not scope or scope == '*' or not self.config.use_bookmark_scope:
+            return None
+        try:
+            return self.client.find_bookmark(scope)
+        except (DXAuthError, DXAPIError) as e:
+            logger.debug('Bookmark lookup for %r failed: %s', scope, e)
+            return None
+
+    def _fetch_bookmark_items(self, bookmark):
+        """Fetch the engineering items a bookmark contains.
+
+        Returns:
+            tuple: (items, scanned) of normalized in-scope items and the number
+            of bookmark members examined.
+        """
+        members = self.client.list_bookmark_items(bookmark['id'])
+        parts = [m for m in members if self.client.is_eng_item(m)]
+        logger.info('Bookmark %r holds %d member(s), %d of them engineering items.',
+                    bookmark.get('title'), len(members), len(parts))
+
+        if len(parts) > self.config.max_items:
+            logger.warning('Bookmark %r holds %d engineering items, more than the '
+                           'CATALOG_MAX_ITEMS budget of %d; only the first %d are '
+                           'catalogued.', bookmark.get('title'), len(parts),
+                           self.config.max_items, self.config.max_items)
+
+        collected = {}
+        for member in parts[:self.config.max_items]:
+            try:
+                item = self.client.get_eng_item(member['id'])
+            except (DXAuthError, DXAPIError) as e:
+                logger.warning('Could not read bookmarked item %s: %s',
+                               member['id'], e)
+                continue
+            if item and item.get('eng_item_id') and self._in_scope(
+                    item, apply_space_filter=False):
+                collected[item['eng_item_id']] = item
+        return list(collected.values()), len(members)
 
     def _scope_query(self):
         """Build the search expression scoping this catalog.
@@ -178,6 +234,15 @@ class CatalogSync:
             tuple: (items, scanned) of normalized in-scope items and the number
             of remote items examined.
         """
+        # A scope naming a real bookmark is enumerated directly: that is the
+        # curated set the operator maintains in 3DX, and it needs no scan
+        # budget or guessing at search terms.
+        bookmark = self._resolve_bookmark()
+        if bookmark is not None:
+            self.active_bookmark = bookmark
+            return self._fetch_bookmark_items(bookmark)
+        self.active_bookmark = None
+
         collected = {}
         skip = 0
         scanned = 0
@@ -324,6 +389,13 @@ class CatalogSync:
                 result.message = message
                 result.errors = 1
                 return result
+
+            # A bookmark-scoped catalog is small and its membership is exact,
+            # so a full reconcile is both cheap and strictly better than a
+            # partial page scan.
+            if self._resolve_bookmark() is not None:
+                self.syncing = False
+                return self.run_full_sync()
 
             query, _ = self._scope_query()
             items, _ = self.client.search_eng_items(
@@ -1165,8 +1237,11 @@ def main(argv=None):
 
     if args.bookmarks:
         for bookmark in catalog.client.list_bookmarks():
-            print(f"{bookmark.get('id')}  {bookmark.get('title')!r}  "
-                  f"[{bookmark.get('collabspace')}]")
+            members = catalog.client.list_bookmark_items(bookmark['id'])
+            parts = [m for m in members if catalog.client.is_eng_item(m)]
+            print(f"{bookmark.get('id')}  {bookmark.get('title')!r:32} "
+                  f"[{bookmark.get('collabspace')}]  "
+                  f"{len(members)} member(s), {len(parts)} engineering item(s)")
         return 0
 
     if args.render_thumbnails:

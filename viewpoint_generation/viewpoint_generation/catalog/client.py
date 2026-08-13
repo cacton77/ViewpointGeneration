@@ -578,6 +578,103 @@ class DXClient:
                 return bookmark
         return None
 
+    def list_bookmark_items(self, bookmark_id, recursive=True, page_size=1000,
+                            _seen=None):
+        """List the objects a bookmark contains.
+
+        The mask family here is `dsbks:BksMask.*`, NOT the `dskern:Mask.*` /
+        `dsbks:Mask.*` spelling used elsewhere -- `dsbks:Mask.Items` is
+        rejected with "Mask does not exist" while `dsbks:BksMask.Items` works.
+        That one naming difference is the whole reason bookmark contents look
+        unreachable if you guess at the mask name.
+
+        Unlike the search endpoint, the `totalItems` reported inside `items` is
+        a genuine total, so it can be trusted to drive paging ($top caps at
+        1000 per the service documentation).
+
+        Args:
+            bookmark_id: The bookmark (or bookmark folder) object id.
+            recursive: Also descend into sub-bookmarks (folders).
+            page_size: Items per request, capped at 1000 by the service.
+            _seen: Internal guard against cycles in the folder graph.
+
+        Returns:
+            list: dicts with `id`, `type`, and `relative_path` for each member.
+        """
+        success, message = self.ensure_login()
+        if not success:
+            raise DXAuthError(message)
+
+        seen = _seen if _seen is not None else set()
+        if bookmark_id in seen:
+            return []
+        seen.add(bookmark_id)
+
+        url = (f"{self.config.space_url.rstrip('/')}"
+               f'/resources/v1/modeler/dsbks/dsbks:Bookmark/{bookmark_id}')
+        collected = []
+        skip = 0
+        top = min(page_size, 1000)
+        while True:
+            payload = self._get_json(url, params={'$mask': 'dsbks:BksMask.Items',
+                                                  '$top': str(top),
+                                                  '$skip': str(skip)})
+            members = payload.get('member') or []
+            if not members:
+                break
+            items = members[0].get('items') or {}
+            entries = items.get('member') or []
+            for entry in entries:
+                referenced = entry.get('referencedObject') or {}
+                if referenced.get('identifier'):
+                    collected.append({
+                        'id': referenced['identifier'],
+                        'type': referenced.get('type'),
+                        'relative_path': referenced.get('relativePath') or '',
+                    })
+            total = items.get('totalItems')
+            skip += len(entries)
+            if not entries or (total is not None and skip >= total):
+                break
+
+        if recursive:
+            for child in self.list_sub_bookmarks(bookmark_id):
+                collected.extend(self.list_bookmark_items(
+                    child['id'], recursive=True, page_size=page_size, _seen=seen))
+        return collected
+
+    def list_sub_bookmarks(self, bookmark_id):
+        """List a bookmark's child bookmarks (folders).
+
+        Returns:
+            list: dicts with `id` and `type`.
+        """
+        url = (f"{self.config.space_url.rstrip('/')}"
+               f'/resources/v1/modeler/dsbks/dsbks:Bookmark/{bookmark_id}')
+        payload = self._get_json(url, params={'$mask': 'dsbks:BksMask.Bookmarks',
+                                              '$top': '1000'})
+        members = payload.get('member') or []
+        if not members:
+            return []
+        children = []
+        for entry in (members[0].get('bookmarks') or {}).get('member') or []:
+            referenced = entry.get('referencedObject') or {}
+            if referenced.get('identifier'):
+                children.append({'id': referenced['identifier'],
+                                 'type': referenced.get('type')})
+        return children
+
+    @staticmethod
+    def is_eng_item(item):
+        """True when a bookmark member is an engineering item.
+
+        Bookmarks hold anything the operator dragged in -- Documents,
+        requirement groups, electrical systems -- so members have to be
+        filtered before being treated as parts.
+        """
+        return ('dseng:EngItem' in (item.get('relative_path') or '')
+                or item.get('type') == 'VPMReference')
+
     # --- documents: creation, file transfer, relationships -----------------
     #
     # The 3DSpace "documents" service is the tenant's file API. Creation is a

@@ -124,11 +124,15 @@ class SyncConfig:
 
     # Seconds between background incremental syncs. 0 disables the timer.
     sync_interval: int = 300
-    # Search string identifying the parts in scope. This is the 3DX bookmark
-    # name the operator curates ("Inspection Parts"); it is passed to the
-    # dseng search as $searchStr. '*' matches everything the security context
-    # can see.
+    # Identifies the parts in scope. When it matches the title of a 3DX
+    # bookmark, that bookmark's contents ARE the catalog -- the curated set the
+    # operator maintains in 3DX. Otherwise it is used as a search string
+    # ($searchStr), where '*' matches everything the security context can see.
     bookmark_scope: str = '*'
+    # Resolve bookmark_scope against 3DX bookmarks before treating it as a
+    # search string. Turn off to force search behaviour even when a bookmark of
+    # that name exists.
+    use_bookmark_scope: bool = True
     # Comma-separated maturity states to keep, e.g. 'RELEASED,IN_WORK'.
     # Empty means no maturity filtering.
     maturity_filter: str = ''
@@ -162,6 +166,7 @@ class SyncConfig:
         return cls(
             sync_interval=_env_int('CATALOG_SYNC_INTERVAL', 300),
             bookmark_scope=_env('DX_BOOKMARK_SCOPE', '*'),
+            use_bookmark_scope=_env('DX_USE_BOOKMARK_SCOPE', '1') not in ('0', 'false', 'False'),
             maturity_filter=_env('DX_MATURITY_FILTER', ''),
             collab_space_filter=_env('DX_COLLAB_SPACE', ''),
             page_size=_env_int('CATALOG_PAGE_SIZE', 100),
@@ -189,8 +194,14 @@ class SyncConfig:
             "bookmark_scope": {
                 "value": self.bookmark_scope,
                 "type": "string",
-                "description": "3DX search string scoping the catalog (bookmark name, or '*' for everything visible)",
+                "description": "Catalog scope: the title of a 3DX bookmark whose contents are the catalog, or a search string ('*' = everything visible)",
                 "control": "text",
+            },
+            "use_bookmark_scope": {
+                "value": self.use_bookmark_scope,
+                "type": "boolean",
+                "description": "Resolve the scope against 3DX bookmarks before falling back to treating it as a search string",
+                "control": "toggle",
             },
             "maturity_filter": {
                 "value": self.maturity_filter,

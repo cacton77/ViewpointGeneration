@@ -666,7 +666,16 @@ it is reachable at `http://localhost:5050`.
 
 ### Configuration
 
-`DX_COLLAB_SPACE` is pushed into the 3DX query as the tag predicate
+**`DX_BOOKMARK_SCOPE` is resolved as a 3DX bookmark first.** When it matches a
+bookmark's title, that bookmark's contents *are* the catalog: the operator
+curates the set in 3DX and the cell follows it, with no scan budget and no
+search terms to guess. Members are enumerated via
+`dsbks:BksMask.Items` (sub-folders included, recursively) and filtered to
+engineering items, since bookmarks also hold documents, requirement groups and
+the like. If no bookmark of that name exists, the value falls back to being a
+search string. Set `DX_USE_BOOKMARK_SCOPE=0` to force search behaviour.
+
+When the scope is a search string instead, `DX_COLLAB_SPACE` is pushed into the query as the tag predicate
 `[ds6w:project]:"<space>"` and ANDed with `DX_BOOKMARK_SCOPE`, so filtering
 happens on the server and the `CATALOG_MAX_ITEMS` scan budget is spent only on
 in-scope items. If that predicate ever returns nothing on the first page (a
