@@ -75,13 +75,16 @@ def generate_launch_description():
         emulate_tty=True,
     )
 
+    # The picker is configured through its own CLI (it is equally runnable
+    # outside ROS), so the port is passed as a process argument rather than a
+    # ROS parameter -- as a parameter it would be silently ignored. main()
+    # uses parse_known_args, so the --ros-args launch appends are harmless.
     picker_node = Node(
         package='viewpoint_generation',
         executable='picker_node',
         name='picker',
-        parameters=[{
-            'picker.port': LaunchConfiguration('picker_port'),
-        }],
+        arguments=['--port', LaunchConfiguration('picker_port'),
+                   '--units', LaunchConfiguration('mesh_units')],
         output='screen',
         emulate_tty=True,
         condition=IfCondition(LaunchConfiguration('picker')),

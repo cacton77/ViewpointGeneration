@@ -37,6 +37,24 @@ def generate_launch_description():
         DeclareLaunchArgument("headless_mode", default_value="false",
                               description="Run without the Open3D GUI (gui_node). Use on hosts "
                               "with no X display; an rqt GUI is started instead."),
+        DeclareLaunchArgument("catalog", default_value="true",
+                              description="Launch the 3DEXPERIENCE parts catalog node. It serves "
+                              "whatever is already cached even without DX_* credentials, so it is "
+                              "safe to leave on."),
+        DeclareLaunchArgument("picker", default_value="true",
+                              description="Launch the browser part picker UI alongside the catalog "
+                              "node (requires catalog:=true)."),
+        DeclareLaunchArgument("picker_port", default_value="5050",
+                              description="Port the part picker UI listens on."),
+        DeclareLaunchArgument("catalog_sync_interval", default_value="300",
+                              description="Seconds between background incremental catalog syncs "
+                              "(0 disables the timer)."),
+        DeclareLaunchArgument("catalog_sync_on_startup", default_value="false",
+                              description="Run a full catalog sync when the system starts. Off by "
+                              "default because a full pass over a broad DX_BOOKMARK_SCOPE takes "
+                              "minutes; the periodic timer and the picker's Sync button cover it."),
+        DeclareLaunchArgument("catalog_mesh_units", default_value="mm",
+                              description="Units used to load STEP files selected from the catalog."),
     ]
 
     cell_enabled = PythonExpression(
@@ -154,6 +172,27 @@ def generate_launch_description():
         }.items()
     )
 
+    # 3DEXPERIENCE parts catalog + picker UI. Always-on (not gated on cell),
+    # like the Foxglove bridge: browsing the catalog and caching STEP files is
+    # useful with or without cell hardware attached.
+    catalog_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            PathJoinSubstitution([
+                FindPackageShare("viewpoint_generation"),
+                "launch",
+                "catalog.launch.py"
+            ])
+        ]),
+        launch_arguments={
+            "sync_interval": LaunchConfiguration("catalog_sync_interval"),
+            "sync_on_startup": LaunchConfiguration("catalog_sync_on_startup"),
+            "mesh_units": LaunchConfiguration("catalog_mesh_units"),
+            "picker": LaunchConfiguration("picker"),
+            "picker_port": LaunchConfiguration("picker_port"),
+        }.items(),
+        condition=IfCondition(LaunchConfiguration("catalog"))
+    )
+
     return LaunchDescription(declared_arguments + [
         control_moveit_launch,
         viewpoint_generation_launch,
@@ -161,4 +200,5 @@ def generate_launch_description():
         task_planning_node,
         admittance_control_launch,
         foxglove_bridge_node,
+        catalog_launch,
     ])
