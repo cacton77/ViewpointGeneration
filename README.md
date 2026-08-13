@@ -666,6 +666,13 @@ it is reachable at `http://localhost:5050`.
 
 ### Configuration
 
+`DX_COLLAB_SPACE` is pushed into the 3DX query as the tag predicate
+`[ds6w:project]:"<space>"` and ANDed with `DX_BOOKMARK_SCOPE`, so filtering
+happens on the server and the `CATALOG_MAX_ITEMS` scan budget is spent only on
+in-scope items. If that predicate ever returns nothing on the first page (a
+tenant whose index lacks the tag), the sync falls back to the plain scope and
+filters by space locally.
+
 All configuration is environment-driven (see `.env.example` in
 `inspection-docker`): `DX_PASSPORT_URL`, `DX_SPACE_URL`, `DX_TENANT`,
 `DX_USERNAME`, `DX_PASSWORD`, `DX_SECURITY_CONTEXT` (including its `ctx::`

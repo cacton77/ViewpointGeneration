@@ -137,6 +137,34 @@ class CatalogSync:
             return False
         return True
 
+    def _scope_query(self):
+        """Build the search expression scoping this catalog.
+
+        The tenant's search backend accepts Exalead-style tag predicates in
+        `[tag]:value` form, and `[ds6w:project]` is the collaborative space.
+        Using it pushes space filtering to the server, so the max_items scan
+        budget is spent on relevant items instead of being burned on other
+        spaces' content and filtered away locally. Predicates AND together with
+        free text, so a scope of `INSP` becomes
+        `[ds6w:project]:"Colin Acton Space" AND INSP`.
+
+        Returns:
+            tuple: (query, fallback) -- the fallback drops the space predicate,
+            for tenants whose index does not carry that tag.
+        """
+        scope = (self.config.bookmark_scope or '*').strip()
+        space = (self.config.collab_space_filter or '').strip()
+
+        terms = []
+        if space:
+            terms.append(f'[ds6w:project]:"{space}"')
+        if scope and scope != '*':
+            terms.append(scope)
+
+        if not terms:
+            return '*', '*'
+        return ' AND '.join(terms), (scope or '*')
+
     def _fetch_remote_items(self):
         """Page through the tenant's engineering items within the configured scope.
 
@@ -153,10 +181,22 @@ class CatalogSync:
         collected = {}
         skip = 0
         scanned = 0
+        query, fallback = self._scope_query()
         while scanned < self.config.max_items:
             page_size = min(self.config.page_size, self.config.max_items - scanned)
             items, _ = self.client.search_eng_items(
-                query=self.config.bookmark_scope, top=page_size, skip=skip)
+                query=query, top=page_size, skip=skip)
+            if not items and skip == 0 and query != fallback:
+                # The space predicate matched nothing on the very first page.
+                # Rather than silently reporting an empty catalog, fall back to
+                # the plain scope and filter by space locally -- a tenant whose
+                # index lacks the ds6w:project tag answers 200 with no results
+                # rather than an error.
+                logger.info('Scope query %r returned nothing; retrying as %r '
+                            'with client-side space filtering.', query, fallback)
+                query = fallback
+                items, _ = self.client.search_eng_items(
+                    query=query, top=page_size, skip=skip)
             if not items:
                 break
             for item in items:
@@ -285,8 +325,9 @@ class CatalogSync:
                 result.errors = 1
                 return result
 
+            query, _ = self._scope_query()
             items, _ = self.client.search_eng_items(
-                query=self.config.bookmark_scope, top=self.config.page_size)
+                query=query, top=self.config.page_size)
             if len(items) >= self.config.page_size:
                 logger.info('Incremental sync filled its %d-item page; '
                             'escalating to a full sync.', self.config.page_size)
