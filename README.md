@@ -720,6 +720,10 @@ file by `catalog/thumbnails.py`, which rasterizes the mesh directly (sorted
 triangles, flat Lambertian shading) through matplotlib's Agg backend — no
 GL/EGL context, so it works in a headless container.
 
+(3DX holds a `.cgr` visualization file per CAD part, but that is CATIA
+tessellated geometry rather than an image, and adds nothing over the STEP the
+catalog already fetches.)
+
 A preview is rendered automatically whenever a STEP is fetched or adopted.
 Parts without a STEP show the picker's placeholder. To backfill:
 

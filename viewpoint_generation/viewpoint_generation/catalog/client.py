@@ -394,49 +394,113 @@ class DXClient:
 
     # --- derived outputs (STEP) -------------------------------------------
 
-    def list_derived_outputs(self, item_id):
+    def list_derived_outputs(self, item_id, item_type='VPMReference'):
         """List derived outputs (converted formats) generated for an item.
 
-        The `dsdo` service is not exposed on every tenant -- it is absent here,
-        in which case this returns an empty list and the catalog records the
-        item as having no STEP available rather than failing the sync.
+        The resource is `dsdo:DerivedOutput**s**` (plural) and is reached by
+        POSTing to `/Locate` with the object to look up -- there is no GET
+        collection, and the singular spelling 404s. Masks come from yet another
+        prefix: `dsmvdo:DerivedOutputsMask.*`.
+
+        Items that have no derived output answer 400/500 "Error in Get Derived
+        Output Info" rather than an empty result, so that is treated as "none"
+        instead of an error.
 
         Returns:
-            list: Derived output dicts, each with at least `id`, `name`, and
-            `format` when the service is available.
+            list: One dict per derived output, each with `id` (the derived
+            output object) and `files` (dicts with `id`, `format`, `filename`,
+            `title`, `filesize`).
         """
         success, message = self.ensure_login()
         if not success:
             raise DXAuthError(message)
 
         space = self.config.space_url.rstrip('/')
-        candidates = (
-            (f'{space}/resources/v1/modeler/dsdo/dsdo:DerivedOutput',
-             {'$ids': item_id, '$mask': DEFAULT_MASK}),
-            (f'{space}/resources/v1/modeler/dsdo/dsdo:DerivedOutput/search',
-             {'$searchStr': item_id, '$mask': DEFAULT_MASK}),
-        )
-        for url, params in candidates:
-            payload = self._get_json(url, params=params)
-            members = payload.get('member') or payload.get('data') or []
-            if members:
-                return members
-        logger.debug('No derived-output service response for item %s; '
-                     'treating the item as having no STEP output.', item_id)
-        return []
+        url = f'{space}/resources/v1/modeler/dsdo/dsdo:DerivedOutputs/Locate'
+        body = {'referencedObject': [{
+            'id': item_id,
+            'type': item_type,
+            'source': space,
+            'relativePath': f'/resources/v1/modeler/dseng/dseng:EngItem/{item_id}',
+        }]}
+
+        response = self._request(
+            'POST', url, params={'$mask': 'dsmvdo:DerivedOutputsMask.AllDetails'},
+            json=body, headers={'Content-Type': 'application/json'})
+        if response.status_code >= 400:
+            logger.debug('No derived outputs for %s (%s): %s', item_id,
+                         response.status_code, response.text[:120])
+            return []
+        try:
+            payload = response.json()
+        except ValueError:
+            return []
+
+        outputs = []
+        for member in payload.get('member') or []:
+            derived = member.get('derivedOutputs') or {}
+            if not derived.get('id'):
+                continue
+            files = (derived.get('derivedOutputfiles')
+                     or derived.get('derivedoutputfiles') or [])
+            outputs.append({
+                'id': derived['id'],
+                'files': [{
+                    'id': entry.get('id'),
+                    'format': entry.get('format') or '',
+                    'filename': entry.get('filename') or '',
+                    'title': (entry.get('streamAttributes') or {}).get('title') or '',
+                    'filesize': entry.get('filesize'),
+                    'downloadable': entry.get('downloadable', True),
+                } for entry in files],
+            })
+        return outputs
 
     def find_step_output(self, item_id):
-        """Locate a STEP derived output for an item, if one exists.
+        """Locate a STEP derived output file for an item, if one exists.
 
         Returns:
-            dict: The matching derived output, or None.
+            tuple: (derived_output_id, file) or (None, None).
         """
         for output in self.list_derived_outputs(item_id):
-            haystack = ' '.join(str(output.get(key, '')) for key in
-                                ('name', 'title', 'format', 'type')).lower()
-            if 'step' in haystack or 'stp' in haystack:
-                return output
-        return None
+            for entry in output['files']:
+                haystack = f"{entry.get('format', '')} {entry.get('filename', '')}".upper()
+                if entry.get('downloadable') and ('STEP' in haystack or '.STP' in haystack):
+                    return output['id'], entry
+        return None, None
+
+    def download_derived_output(self, derived_output_id, file_id, dest):
+        """Download one derived output file through its FCS checkout ticket.
+
+        Returns:
+            tuple: (Path or None, str) the downloaded path and a message.
+        """
+        space = self.config.space_url.rstrip('/')
+        url = (f'{space}/resources/v1/modeler/dsdo/dsdo:DerivedOutputs/'
+               f'{derived_output_id}/dsdo:DerivedOutputFiles/'
+               f'{urllib.parse.quote(str(file_id), safe="")}/DownloadTicket')
+        response = self._request('POST', url, json={},
+                                 headers={'Content-Type': 'application/json'})
+        if response.status_code >= 400:
+            return None, (f'Download ticket request failed '
+                          f'({response.status_code}): {response.text[:200]}')
+        try:
+            elements = (response.json().get('data') or {}).get('dataelements') or {}
+        except ValueError:
+            return None, f'Download ticket returned a non-JSON body: {response.text[:150]}'
+
+        ticket_url = elements.get('ticketURL')
+        job_ticket = elements.get('ticket')
+        if not ticket_url or not job_ticket:
+            return None, f'Download ticket was incomplete: {sorted(elements)}'
+
+        # The job ticket is base64 and contains '+' and '/', so it must be
+        # passed as a real query parameter and let requests encode it --
+        # concatenating it into the URL yields "FCS Bad ticket".
+        param = elements.get('ticketparamname') or '__fcs__jobTicket'
+        success, message = self.download_file(
+            ticket_url, dest, params={param: job_ticket})
+        return (Path(dest) if success else None), message
 
     # --- files -------------------------------------------------------------
 
@@ -477,12 +541,16 @@ class DXClient:
                         'name': elements.get('title') or elements.get('fileName') or ''}
         return {}
 
-    def download_file(self, ticket_url, dest):
+    def download_file(self, ticket_url, dest, params=None):
         """Stream a ticketed FCS URL to a local path.
 
         Args:
             ticket_url: A signed FCS URL from `get_download_ticket()`.
             dest: Destination path; parent directories are created.
+            params: Query parameters to send with the request. Pass the FCS job
+                ticket here rather than pre-formatting it into the URL: it is
+                base64 and its '+' and '/' characters must be percent-encoded,
+                or FCS rejects the request with "Failed to decrypt; Bad ticket".
 
         Returns:
             tuple: (bool, str) success flag and message.
@@ -492,7 +560,7 @@ class DXClient:
             dest.parent.mkdir(parents=True, exist_ok=True)
             # The ticket carries its own authorization; 3DX headers are
             # unnecessary and the FCS host rejects some of them.
-            with self.session.get(ticket_url, stream=True,
+            with self.session.get(ticket_url, params=params, stream=True,
                                   timeout=self.config.download_timeout) as response:
                 if response.status_code >= 400:
                     return False, (f'File download failed ({response.status_code}): '

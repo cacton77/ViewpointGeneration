@@ -594,7 +594,8 @@ class CatalogSync:
     def _check_step_availability(self, eng_item_id):
         """Record whether the tenant reports a STEP derived output for an item."""
         try:
-            available = self.client.find_step_output(eng_item_id) is not None
+            derived_id, _ = self.client.find_step_output(eng_item_id)
+            available = derived_id is not None
         except (DXAPIError, DXAuthError) as e:
             logger.debug('Derived-output check failed for %s: %s', eng_item_id, e)
             available = False
@@ -666,19 +667,20 @@ class CatalogSync:
             success, message = self.client.ensure_login()
             if not success:
                 raise DXAuthError(message)
-            output = self.client.find_step_output(eng_item_id)
-            if output is not None:
-                ticket = self.client.get_download_ticket(
-                    output.get('id') or eng_item_id)
-                if ticket.get('url'):
-                    ok, message = self.client.download_file(ticket['url'], dest)
-                    if ok:
-                        self.db.set_step_cache(eng_item_id, dest, part.get('cestamp'))
-                        self.db.log_sync('step_fetched', eng_item_id, str(dest))
-                        self._render_thumbnail_if_enabled(eng_item_id)
-                        return dest, f'Downloaded STEP to {dest}.'
-                    logger.warning('STEP download failed for %s: %s',
-                                   eng_item_id, message)
+            derived_id, step_file = self.client.find_step_output(eng_item_id)
+            if derived_id is not None:
+                path, message = self.client.download_derived_output(
+                    derived_id, step_file['id'], dest)
+                if path is not None:
+                    self.db.set_step_cache(eng_item_id, dest, part.get('cestamp'))
+                    self.db.log_sync(
+                        'step_fetched', eng_item_id,
+                        f"{step_file.get('format')} -> {dest}")
+                    self._render_thumbnail_if_enabled(eng_item_id)
+                    return dest, (f"Downloaded {step_file.get('format')} STEP "
+                                  f'to {dest}.')
+                logger.warning('STEP download failed for %s: %s',
+                               eng_item_id, message)
         except (DXAuthError, DXAPIError) as e:
             logger.warning('STEP fetch failed for %s: %s', eng_item_id, e)
 
