@@ -361,6 +361,21 @@ ros2 launch viewpoint_generation bringup.launch.py \
 Additional arguments:
 - `cell` -- Inspection cell configuration (`alpha` or `beta`)
 - `sim` -- Use fake/simulated hardware
+- `catalog` -- Launch the 3DEXPERIENCE catalog node (default: `true`). Like the
+  Foxglove bridge it is not gated on `cell`: browsing the catalog and caching
+  STEP files is useful with or without cell hardware. It serves whatever is
+  already cached even when the `DX_*` credentials are absent.
+- `picker` -- Launch the browser part picker alongside the catalog node
+  (default: `true`, requires `catalog:=true`)
+- `picker_port` -- Port the picker listens on (default: `5050`). With
+  `network_mode: host` it is reachable at `http://localhost:5050`.
+- `catalog_sync_interval` -- Seconds between background incremental syncs
+  (default: `300`; `0` disables the timer)
+- `catalog_sync_on_startup` -- Run a full sync at bringup (default: `false`; a
+  full pass over a broad `DX_BOOKMARK_SCOPE` takes minutes, and the periodic
+  timer and the picker's Sync button cover it)
+- `catalog_mesh_units` -- Units used to load STEP files selected from the
+  catalog (default: `mm`)
 - `headless_mode` -- Run without the Open3D GUI (`gui_node`); starts rqt instead
   (default: false). Forwarded to `viewpoint_generation.launch.py`. Use on hosts with
   no X display.
