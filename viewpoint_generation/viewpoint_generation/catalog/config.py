@@ -140,8 +140,17 @@ class SyncConfig:
     # Maximum items pulled per search request, and overall.
     page_size: int = 100
     max_items: int = 1000
-    # Download thumbnails during sync.
+    # Download thumbnails during sync. Only real previews are cached; the
+    # platform's generic per-type icons are skipped, since they are identical
+    # for every part.
     fetch_thumbnails: bool = True
+    # Render a preview locally from the STEP file when one is fetched. This is
+    # the only source of meaningful thumbnails on tenants that publish no
+    # per-object preview image.
+    render_thumbnails: bool = True
+    # Units STEP files from this tenant are authored in, used both when loading
+    # a selected part and when rendering its thumbnail.
+    mesh_units: str = 'mm'
     # Anomaly score above which an inspection result auto-creates an Issue.
     ncr_threshold: float = 0.8
     # Cell identity stamped into uploaded plan/result envelopes.
@@ -158,6 +167,8 @@ class SyncConfig:
             page_size=_env_int('CATALOG_PAGE_SIZE', 100),
             max_items=_env_int('CATALOG_MAX_ITEMS', 1000),
             fetch_thumbnails=_env('CATALOG_FETCH_THUMBNAILS', '1') not in ('0', 'false', 'False'),
+            render_thumbnails=_env('CATALOG_RENDER_THUMBNAILS', '1') not in ('0', 'false', 'False'),
+            mesh_units=_env('CATALOG_MESH_UNITS', 'mm'),
             ncr_threshold=_env_float('CATALOG_NCR_THRESHOLD', 0.8),
             cell_id=_env('CELL_ID', 'alpha'),
         )
@@ -210,8 +221,20 @@ class SyncConfig:
             "fetch_thumbnails": {
                 "value": self.fetch_thumbnails,
                 "type": "boolean",
-                "description": "Download and cache item thumbnails during sync",
+                "description": "Download real preview images from 3DX during sync (generic per-type icons are always skipped)",
                 "control": "toggle",
+            },
+            "render_thumbnails": {
+                "value": self.render_thumbnails,
+                "type": "boolean",
+                "description": "Render a preview locally from the STEP file when one is cached",
+                "control": "toggle",
+            },
+            "mesh_units": {
+                "value": self.mesh_units,
+                "type": "string",
+                "description": "Units STEP files from this tenant are authored in ('m', 'mm', 'cm', 'in')",
+                "control": "text",
             },
             "ncr_threshold": {
                 "value": self.ncr_threshold,

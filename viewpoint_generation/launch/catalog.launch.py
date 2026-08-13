@@ -63,7 +63,7 @@ def generate_launch_description():
     catalog_parameters = [{
         'catalog.sync_interval': LaunchConfiguration('sync_interval'),
         'catalog.sync_on_startup': LaunchConfiguration('sync_on_startup'),
-        'catalog.auto_select_units': LaunchConfiguration('mesh_units'),
+        'catalog.mesh_units': LaunchConfiguration('mesh_units'),
     }]
 
     catalog_node = Node(

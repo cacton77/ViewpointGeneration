@@ -509,17 +509,25 @@ class DXClient:
 
     # --- thumbnails --------------------------------------------------------
 
+    # Platform type icons live under this path. They are per-*type*, not
+    # per-object, so every Physical Product returns byte-identical artwork --
+    # useless for telling parts apart in a picker.
+    GENERIC_ICON_MARKER = '/snresources/images/icons/'
+
     def get_thumbnail(self, item_id):
         """Fetch an item's thumbnail image.
 
-        3DX exposes a rendered CAD preview only for objects that carry
-        geometry; for everything else the platform serves a type icon. Both
-        arrive as PNG bytes through the `documents` service's image URLs, and
-        this returns whichever is available.
+        A rendered CAD preview is published only for objects that expose
+        geometry. This tenant does not: the engineering items carry no files,
+        their representations are not reachable, and the `documents` service
+        offers only the platform's type icon. The returned `is_generic` flag
+        says which of the two arrived, so callers can decline to cache
+        artwork that is identical for every part.
 
         Returns:
-            tuple: (bytes, str) image data and its source URL, or (None, '')
-            when no image is published for the item.
+            tuple: (bytes, str, bool) image data, its source URL, and whether
+            it is a generic platform icon rather than a real preview.
+            (None, '', False) when no image is published at all.
         """
         details = self.get_object_details(item_id)
         elements = details.get('dataelements', {}) or {}
@@ -534,8 +542,9 @@ class DXClient:
                 continue
             content_type = response.headers.get('content-type', '')
             if response.status_code == 200 and content_type.startswith('image/'):
-                return response.content, image_url
-        return None, ''
+                is_generic = self.GENERIC_ICON_MARKER in image_url
+                return response.content, image_url, is_generic
+        return None, '', False
 
     # --- bookmarks ---------------------------------------------------------
 

@@ -191,7 +191,13 @@ class CatalogSync:
                 result.errors = 1
                 return result
 
-            remote_items, _ = self._fetch_remote_items()
+            remote_items, scanned = self._fetch_remote_items()
+            # Archiving means "no longer visible on the tenant". That inference
+            # is only sound when the scope was enumerated exhaustively: if the
+            # scan stopped at the max_items budget, the items beyond it were
+            # never looked at, and archiving them would wrongly retire parts
+            # that are perfectly present remotely.
+            scan_truncated = scanned >= self.config.max_items
             local_parts = self.db.get_all_parts()
             seen = set()
 
@@ -223,7 +229,17 @@ class CatalogSync:
 
             stale = [item_id for item_id, part in local_parts.items()
                      if item_id not in seen and part.get('sync_status') != 'archived']
-            if stale:
+            if stale and scan_truncated:
+                logger.warning(
+                    'Scan stopped at the %d-item budget, so %d local part(s) '
+                    'were not seen this pass; leaving them alone rather than '
+                    'archiving. Narrow DX_BOOKMARK_SCOPE or raise '
+                    'CATALOG_MAX_ITEMS to enumerate the whole scope.',
+                    self.config.max_items, len(stale))
+                result.error_details.append(
+                    f'Scan truncated at {self.config.max_items} items; '
+                    f'{len(stale)} part(s) left unreconciled.')
+            elif stale:
                 self.db.archive_parts(stale)
                 result.archived = len(stale)
         except (DXAuthError, DXAPIError) as e:
@@ -363,17 +379,25 @@ class CatalogSync:
         self._check_step_availability(item_id)
 
     def _fetch_thumbnail(self, eng_item_id):
-        """Download and cache an item's thumbnail.
+        """Download and cache an item's thumbnail, if a real preview exists.
+
+        Generic platform type icons are deliberately not cached: they are
+        identical for every item of the same type, so a grid of them tells the
+        operator nothing. Parts whose STEP is cached get a locally rendered
+        preview instead (see `render_thumbnail`), and the rest fall back to the
+        picker's placeholder.
 
         Returns:
-            Path: The cached image, or None when the item publishes no image.
+            Path: The cached image, or None when no real preview is published.
         """
         try:
-            data, source_url = self.client.get_thumbnail(eng_item_id)
+            data, source_url, is_generic = self.client.get_thumbnail(eng_item_id)
         except DXAPIError as e:
             logger.debug('Thumbnail unavailable for %s: %s', eng_item_id, e)
             return None
-        if not data:
+        if source_url:
+            self.db.set_thumbnail_url(eng_item_id, source_url)
+        if not data or is_generic:
             return None
         dest = self.paths.thumb_path(eng_item_id)
         try:
@@ -384,6 +408,75 @@ class CatalogSync:
             return None
         self.db.set_thumbnail(eng_item_id, dest)
         return dest
+
+    def render_thumbnail(self, eng_item_id, force=False):
+        """Render a preview from a part's cached STEP file.
+
+        Args:
+            eng_item_id: The part to render.
+            force: Re-render even when a thumbnail is already cached.
+
+        Returns:
+            tuple: (Path or None, str) the rendered image and a message.
+        """
+        from viewpoint_generation.catalog.thumbnails import render_step_thumbnail
+
+        part = self.db.get_part(eng_item_id)
+        if part is None:
+            return None, f'Unknown part: {eng_item_id}.'
+
+        dest = self.paths.thumb_path(eng_item_id)
+        if dest.exists() and not force:
+            return dest, 'Thumbnail already cached.'
+
+        step_path = self.resolved_step_path(part)
+        if step_path is None:
+            return None, 'No cached STEP file to render a thumbnail from.'
+
+        success, message = render_step_thumbnail(
+            step_path, dest, units=self.config.mesh_units)
+        if not success:
+            return None, message
+        self.db.set_thumbnail(eng_item_id, dest)
+        return dest, message
+
+    def _render_thumbnail_if_enabled(self, eng_item_id):
+        """Render a preview after a STEP lands, when rendering is enabled.
+
+        Best-effort: a thumbnail is a convenience, so a failure here is logged
+        and never propagated into the STEP fetch the operator is waiting on.
+        """
+        if not self.config.render_thumbnails:
+            return
+        try:
+            path, message = self.render_thumbnail(eng_item_id, force=True)
+        except Exception as e:  # noqa: BLE001 - rendering must never break a fetch
+            logger.debug('Thumbnail rendering failed for %s: %s', eng_item_id, e)
+            return
+        if path is None:
+            logger.debug('Thumbnail for %s: %s', eng_item_id, message)
+
+    def render_missing_thumbnails(self, force=False):
+        """Render previews for every part that has a STEP but no thumbnail.
+
+        Returns:
+            tuple: (int, int) counts of rendered and skipped/failed parts.
+        """
+        rendered = failed = 0
+        # Archived parts are included: one whose STEP is already cached is
+        # still selectable and still deserves a preview.
+        for part in self.db.list_parts(include_archived=True):
+            if self.resolved_step_path(part) is None:
+                continue
+            if self.resolved_thumb_path(part) is not None and not force:
+                continue
+            path, message = self.render_thumbnail(part['eng_item_id'], force=force)
+            if path is None:
+                failed += 1
+                logger.debug('Thumbnail for %s: %s', part['eng_item_id'], message)
+            else:
+                rendered += 1
+        return rendered, failed
 
     def _check_step_availability(self, eng_item_id):
         """Record whether the tenant reports a STEP derived output for an item."""
@@ -469,6 +562,7 @@ class CatalogSync:
                     if ok:
                         self.db.set_step_cache(eng_item_id, dest, part.get('cestamp'))
                         self.db.log_sync('step_fetched', eng_item_id, str(dest))
+                        self._render_thumbnail_if_enabled(eng_item_id)
                         return dest, f'Downloaded STEP to {dest}.'
                     logger.warning('STEP download failed for %s: %s',
                                    eng_item_id, message)
@@ -481,6 +575,7 @@ class CatalogSync:
         if dest.exists():
             self.db.set_step_cache(eng_item_id, dest, part.get('cestamp'))
             self.db.log_sync('step_adopted', eng_item_id, str(dest))
+            self._render_thumbnail_if_enabled(eng_item_id)
             return dest, f'Using locally provided STEP at {dest}.'
         if cached is not None:
             return cached, ('Using cached STEP from an earlier revision; '
@@ -980,6 +1075,11 @@ def main(argv=None):
                         help='List the security contexts available to the user.')
     parser.add_argument('--bookmarks', action='store_true',
                         help='List bookmarks visible to the user.')
+    parser.add_argument('--render-thumbnails', action='store_true',
+                        help='Render previews from cached STEP files for every '
+                             'part missing a thumbnail.')
+    parser.add_argument('--force', action='store_true',
+                        help='With --render-thumbnails, re-render existing ones.')
     parser.add_argument('--sync-item', metavar='ENG_ITEM_ID',
                         help='Add or refresh a single item by id, regardless of '
                              'the configured scope. Useful when a part sits '
@@ -1026,6 +1126,11 @@ def main(argv=None):
         for bookmark in catalog.client.list_bookmarks():
             print(f"{bookmark.get('id')}  {bookmark.get('title')!r}  "
                   f"[{bookmark.get('collabspace')}]")
+        return 0
+
+    if args.render_thumbnails:
+        rendered, failed = catalog.render_missing_thumbnails(force=args.force)
+        print(f'Rendered {rendered} thumbnail(s); {failed} could not be rendered.')
         return 0
 
     if args.sync_item:

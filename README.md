@@ -686,6 +686,26 @@ version), `pipeline_config`, and `summary`. Existing consumers are unaffected;
 by comparing the envelope's `cestamp` against the part's current one -- a plan
 is valid only for the CAD revision it was generated against.
 
+### Thumbnails
+
+3DEXPERIENCE publishes a per-*type* icon rather than a per-object preview for
+these items (identical artwork for every Physical Product), so those icons are
+not cached. Previews are instead rendered locally from a part's cached STEP
+file by `catalog/thumbnails.py`, which rasterizes the mesh directly (sorted
+triangles, flat Lambertian shading) through matplotlib's Agg backend — no
+GL/EGL context, so it works in a headless container.
+
+A preview is rendered automatically whenever a STEP is fetched or adopted.
+Parts without a STEP show the picker's placeholder. To backfill:
+
+```bash
+python -m viewpoint_generation.catalog.sync --render-thumbnails [--force]
+```
+
+Controlled by `catalog.render_thumbnails` (and `CATALOG_RENDER_THUMBNAILS`);
+`catalog.mesh_units` sets the units used both to load selected STEP files and
+to render them.
+
 ### Region provenance in the results JSON
 
 When the mesh came from STEP, each region additionally carries:

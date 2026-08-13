@@ -319,10 +319,17 @@ class CatalogDB:
             conn.commit()
 
     def set_thumbnail(self, eng_item_id, thumbnail_path):
-        """Record the local cache path of a downloaded thumbnail."""
+        """Record the local cache path of a thumbnail."""
         with self._connect() as conn:
             conn.execute('UPDATE parts SET thumbnail_path = ? WHERE eng_item_id = ?',
                          (str(thumbnail_path) if thumbnail_path else None, eng_item_id))
+            conn.commit()
+
+    def set_thumbnail_url(self, eng_item_id, thumbnail_url):
+        """Record the remote URL an item's image came from."""
+        with self._connect() as conn:
+            conn.execute('UPDATE parts SET thumbnail_url = ? WHERE eng_item_id = ?',
+                         (thumbnail_url or None, eng_item_id))
             conn.commit()
 
     def set_step_available(self, eng_item_id, available):

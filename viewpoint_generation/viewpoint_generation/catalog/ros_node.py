@@ -174,9 +174,10 @@ class CatalogNode(rclpy.node.Node):
             setattr(self.sync_config, ros_name[len('catalog.'):],
                     self.get_parameter(ros_name).value)
 
+        # Units live on SyncConfig (declared above as catalog.mesh_units), so
+        # the same value drives model loading and thumbnail rendering.
         self.declare_parameters(namespace='', parameters=[
             ('catalog.sync_on_startup', True),
-            ('catalog.auto_select_units', 'mm'),
         ])
 
     def parameter_callback(self, params):
@@ -365,7 +366,7 @@ class CatalogNode(rclpy.node.Node):
         msg.revision = part.get('revision') or ''
         msg.cestamp = part.get('cestamp') or ''
         msg.step_file_path = str(step_path)
-        msg.mesh_units = self.get_parameter('catalog.auto_select_units').value
+        msg.mesh_units = self.sync_config.mesh_units
         msg.plan_status = plan_status.value
         msg.plan_file_path = plan_path or ''
         self.part_selected_pub.publish(msg)
