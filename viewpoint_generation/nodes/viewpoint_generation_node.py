@@ -49,8 +49,10 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
     # The 3DX part currently loaded, learned from /catalog/part_selected.
     # Empty when the operator loaded a mesh by hand: plans still get written,
-    # they just have no PLM record to attach to.
+    # they just have no PLM record to attach to. `selected_step_path` is what
+    # detects that a different mesh has been loaded over the selection.
     selected_eng_item_id = ''
+    selected_step_path = ''
 
     def __init__(self):
         node_name = 'viewpoint_generation'
@@ -291,6 +293,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
         if not os.path.exists(mesh_file):
             mesh_file = os.path.join(self.data_path, mesh_file)
 
+        # Loading any mesh other than the selected part's own STEP drops the
+        # catalog association. Without this, hand-loading a mesh over a
+        # previous catalog selection would keep writing plans into -- and
+        # recording them against -- the part that is no longer loaded.
+        if mesh_file != self.selected_step_path:
+            self._clear_plm_context()
+
         success, message = self.viewpoint_generation.set_mesh_file(
             mesh_file, mesh_units)
 
@@ -458,7 +467,10 @@ class ViewpointGenerationNode(rclpy.node.Node):
             return
 
         units = msg.mesh_units or 'mm'
+        # Recorded before set_mesh_file() so its "mesh replaced outside the
+        # catalog" guard recognises this load as the selection itself.
         self.selected_eng_item_id = msg.eng_item_id or ''
+        self.selected_step_path = msg.step_file_path
 
         # Load the plan first when it is usable: set_mesh_file() preserves
         # regions/clusters already recorded in self.results for the same
@@ -491,6 +503,18 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self.get_logger().warn(
                 f'The stored plan for {msg.title!r} was generated for an earlier '
                 'CAD revision. Re-run segmentation before inspecting.')
+
+    def _clear_plm_context(self):
+        """Drop the catalog association, so plans stop being attributed to a
+        part that is no longer loaded."""
+        if not self.selected_eng_item_id:
+            return
+        self.get_logger().info(
+            'Mesh replaced outside the catalog; plans will no longer be recorded '
+            f'against {self.selected_eng_item_id}.')
+        self.selected_eng_item_id = ''
+        self.selected_step_path = ''
+        self.viewpoint_generation.plan_dir = None
 
     def _apply_plm_context(self, msg: PartSelected):
         """Point plan output at the catalog and stamp the part's identity on it."""
