@@ -1,0 +1,13 @@
+# Register a generated inspection plan in the local catalog.
+# Called by the viewpoint generation node after every pipeline stage that
+# writes a plan file, so each one becomes a selectable entry in the picker.
+string eng_item_id
+string plan_path          # the plan JSON just written
+string stage              # segmented | clustered | projected | ordered ('' = infer from content)
+bool force_upload         # upload to 3DX regardless of the auto-upload stage policy
+---
+bool success
+string plan_id
+string stage              # the stage actually recorded
+string upload_status      # local | uploading | synced | failed
+string message

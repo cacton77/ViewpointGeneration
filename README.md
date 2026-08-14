@@ -38,6 +38,7 @@ viewpoint_generation/
 │   ├── step_loader.py              # STEP/B-rep ingest via PythonOCC (OCP)
 │   ├── brep_segmentation.py        # B-rep topology segmentation (third algorithm)
 │   ├── mesh_utils.py               # Shared triangle-mesh helpers (submesh extraction)
+│   ├── plan_io.py                  # Plan file naming, stage inference, read/write
 │   ├── visualizer.py               # Open3D visualization
 │   ├── gui_node.py                 # GUI node implementation
 │   ├── catalog/                    # 3DEXPERIENCE parts catalog
@@ -316,7 +317,8 @@ the mathematical formulation and per-algorithm details are documented in
 - `SelectPart.srv` -- Fetch a part's STEP, resolve its plan, and announce the selection
 - `SyncNow.srv` -- Run a catalog sync (full or incremental) and return its counts
 - `EnsurePlan.srv` -- Report inspection plan validity for a part
-- `UploadPlan.srv` -- Wrap a results JSON in a PLM envelope and upload it to 3DX
+- `RecordPlan.srv` -- Register a generated plan file in the catalog (and upload it when the stage policy says so)
+- `UploadPlan.srv` -- Record a results JSON as a plan and upload it to 3DX on demand
 - `UploadResults.srv` -- Upload an inspection run's result bundle to 3DX
 
 **Messages:**
@@ -395,7 +397,29 @@ Additional arguments:
 
 ## JSON Results Format
 
-Results are saved with the naming convention `{N_regions}_regions_{N_clusters}_clusters_{timestamp}.json`:
+Results are saved with the naming convention
+`{stage}_{N}r_{M}c_{V}v_{timestamp}.json`, e.g.
+`projected_12r_75c_75v_20260814T162442Z.json`. Zero counts are omitted, so a
+segmentation-only plan is `segmented_12r_20260814T162427Z.json`. The stage is
+one of `segmented` → `clustered` → `projected` → `ordered`, matching the
+pipeline step that produced the file. Naming, reading, and writing all live in
+`plan_io.py`, which both the core class and `viewpoint_traversal_node` use.
+
+Alongside `meshes`, a plan carries three self-describing top-level keys:
+
+| key | meaning |
+| --- | --- |
+| `schema_version` | plan format version (`"2.0"`) |
+| `plm_context` | 3DX identity: `eng_item_id`, `part_number`, `revision`, `cestamp`, `collab_space`, `stage`, `generated_at`, `generated_by`, `cell_id`, `software_version` |
+| `summary` | `num_regions`, `num_clusters`, `num_viewpoints`, and the mesh identity |
+
+These sit **beside** `meshes`, never wrapping it, so every consumer that reads
+`json.load(...)['meshes']` is unaffected. `viewpoint_traversal_node` round-trips
+the whole dict, so an optimized plan inherits its part linkage automatically.
+
+`plan_io.infer_stage()` derives the stage from content rather than trusting the
+filename: a region's `order` becomes an algorithm-keyed dict only after
+traversal optimization, which is what separates `ordered` from `projected`.
 
 Each mesh holds a `regions` **list**; each region holds a `clusters` **list**.
 The `"0"`, `"1"` keys shown below are list indices. A region's `order` is a
@@ -664,6 +688,13 @@ python -m viewpoint_generation.catalog.sync --sync-item ID  # add one item by id
 The picker listens on `PICKER_PORT` (default 5050); with `network_mode: host`
 it is reachable at `http://localhost:5050`.
 
+Opening a part shows its **inspection plans** as a horizontally scrolling strip
+of chips -- one per plan recorded for that part, newest first -- colour-coded by
+pipeline stage and annotated with region/cluster/viewpoint counts, age, and 3DX
+upload state. Picking a chip loads that exact plan (★ marks the current one, ⚠ a
+plan generated against an earlier CAD revision, ✕ one whose file is missing);
+the leading **model only** chip loads the geometry with no plan at all.
+
 ### Configuration
 
 **`DX_BOOKMARK_SCOPE` is resolved as a 3DX bookmark first.** When it matches a
@@ -693,23 +724,51 @@ auto-declared as a ROS parameter under `catalog.` on the catalog node.
 
 ### ROS interface
 
-Services `catalog/{list_parts,select_part,sync_now,ensure_plan,upload_plan,upload_results}`;
+Services `catalog/{list_parts,select_part,sync_now,ensure_plan,record_plan,upload_plan,upload_results}`;
 topics `/catalog/part_selected` (transient-local, so late joiners still learn the
 current part) and `/catalog/sync_complete`.
 
 `ViewpointGenerationNode` subscribes to `/catalog/part_selected` and loads the
-selected STEP automatically. A plan reported `CURRENT` is loaded with it; a
-`STALE` plan is deliberately *not* loaded, since its viewpoints were computed
-against different geometry.
+selected STEP automatically. A plan reported `CURRENT`, `DOWNLOADED`,
+`UPDATED_FROM_REMOTE`, or `SELECTED` is loaded with it; a merely `STALE` plan
+is deliberately *not* loaded, since its viewpoints were computed against
+different geometry. `SELECTED` means the operator picked that exact plan in the
+picker, which overrides the staleness guard and logs a prominent warning.
 
-### Plan envelope
+### Plan history
 
-Uploaded plans wrap the existing results JSON verbatim under `plan`, adding
-`plm_context` (eng item id, part number, revision, cestamp, cell id, software
-version), `pipeline_config`, and `summary`. Existing consumers are unaffected;
-`_unwrap_envelope()` also accepts a bare results JSON. Plan validity is decided
-by comparing the envelope's `cestamp` against the part's current one -- a plan
-is valid only for the CAD revision it was generated against.
+Every plan the pipeline writes is recorded in the catalog's `plans` table, one
+row per pipeline stage, so a part accumulates a selectable history rather than
+only a latest. `ViewpointGenerationNode` calls `catalog/record_plan` after
+segmentation, clustering, projection, and traversal optimization; the call is
+fire-and-forget, so an absent or slow catalog node degrades to "written to disk
+but not recorded" instead of stalling the pipeline.
+
+Plans for a catalogued part are written to `catalog/plans/{eng_item_id}/`,
+which survives STEP cache invalidation. Per-region point clouds stay beside the
+mesh in `steps/…_results/`, since they are a function of geometry rather than
+of the plan. A mesh loaded outside the catalog keeps the old behaviour: the
+plan is written beside the mesh and simply has no database row.
+
+Plan validity is decided by comparing a plan's `cestamp` against the part's
+current one -- a plan is valid only for the CAD revision it was generated
+against.
+
+**Uploading.** `auto_upload_plan_stages` (default `ordered`) selects which
+stages become 3DX Documents automatically, so a full pipeline run leaves one
+document on the tenant rather than four. Recording is unconditional and always
+local-first; a failed upload leaves a usable plan on the cell, retryable from
+the picker's per-plan **Upload** button or `--upload-plan`. Set the setting
+empty to make uploading entirely manual.
+
+`adopt_orphan_plans()` (picker: **Scan for files**, CLI: `--adopt-plans`)
+registers plan files already on disk that the catalog never captured, reading
+each file's real stage from its content and its generation time from the file
+itself so the adopted history stays correctly ordered.
+
+`plan_io.read_plan()` accepts all three historical shapes -- the current
+sibling-context form, the older `{plm_context, plan: {...}}` envelope, and a
+bare results JSON -- so plans written before this convention still load.
 
 ### Thumbnails
 
@@ -734,6 +793,25 @@ python -m viewpoint_generation.catalog.sync --render-thumbnails [--force]
 Controlled by `catalog.render_thumbnails` (and `CATALOG_RENDER_THUMBNAILS`);
 `catalog.mesh_units` sets the units used both to load selected STEP files and
 to render them.
+
+### Working with plans from the command line
+
+```bash
+# every plan recorded for a part, newest first
+python -m viewpoint_generation.catalog.sync --plans ENG_ITEM_ID
+
+# register plan files already on disk that the catalog never captured
+python -m viewpoint_generation.catalog.sync --adopt-plans ENG_ITEM_ID
+
+# record one plan file, honouring the auto-upload stage policy
+python -m viewpoint_generation.catalog.sync --record-plan ENG_ITEM_ID PLAN.json
+
+# push an already-recorded plan to 3DX
+python -m viewpoint_generation.catalog.sync --upload-plan PLAN_ID
+```
+
+`catalog.auto_upload_plan_stages` (and `CATALOG_AUTO_UPLOAD_PLAN_STAGES`,
+default `ordered`) controls which stages upload automatically.
 
 ### Region provenance in the results JSON
 

@@ -155,6 +155,14 @@ class SyncConfig:
     # Units STEP files from this tenant are authored in, used both when loading
     # a selected part and when rendering its thumbnail.
     mesh_units: str = 'mm'
+    # Pipeline stages whose plans are uploaded to 3DX automatically, as a
+    # comma-separated list of plan_io.STAGES names. Every generated plan is
+    # always recorded in the local catalog; this controls only which of them
+    # become Documents on the tenant. The default uploads just the terminal
+    # plan -- the one the cell actually executes -- so a full pipeline run
+    # leaves one document rather than four. Empty disables auto-upload
+    # entirely, leaving the picker's per-plan Upload button as the only path.
+    auto_upload_plan_stages: str = 'ordered'
     # Anomaly score above which an inspection result auto-creates an Issue.
     ncr_threshold: float = 0.8
     # Cell identity stamped into uploaded plan/result envelopes.
@@ -174,6 +182,7 @@ class SyncConfig:
             fetch_thumbnails=_env('CATALOG_FETCH_THUMBNAILS', '1') not in ('0', 'false', 'False'),
             render_thumbnails=_env('CATALOG_RENDER_THUMBNAILS', '1') not in ('0', 'false', 'False'),
             mesh_units=_env('CATALOG_MESH_UNITS', 'mm'),
+            auto_upload_plan_stages=_env('CATALOG_AUTO_UPLOAD_PLAN_STAGES', 'ordered'),
             ncr_threshold=_env_float('CATALOG_NCR_THRESHOLD', 0.8),
             cell_id=_env('CELL_ID', 'alpha'),
         )
@@ -181,6 +190,11 @@ class SyncConfig:
     def maturity_states(self):
         """The maturity filter parsed into an upper-cased list (empty = all)."""
         return [s.strip().upper() for s in self.maturity_filter.split(',') if s.strip()]
+
+    def auto_upload_stages(self):
+        """Plan stages to auto-upload, parsed into a lower-cased list."""
+        return [s.strip().lower()
+                for s in self.auto_upload_plan_stages.split(',') if s.strip()]
 
     def to_dict(self):
         return {
@@ -245,6 +259,12 @@ class SyncConfig:
                 "value": self.mesh_units,
                 "type": "string",
                 "description": "Units STEP files from this tenant are authored in ('m', 'mm', 'cm', 'in')",
+                "control": "text",
+            },
+            "auto_upload_plan_stages": {
+                "value": self.auto_upload_plan_stages,
+                "type": "string",
+                "description": "Comma-separated pipeline stages whose plans upload to 3DX automatically ('segmented,clustered,projected,ordered'; empty = manual only). Every plan is recorded locally regardless",
                 "control": "text",
             },
             "ncr_threshold": {

@@ -218,7 +218,13 @@ def create_app(catalog=None, bridge=None, mesh_units='mm'):
 
     @app.route('/api/select', methods=['POST'])
     def api_select():
-        """Fetch a part's STEP, resolve its plan, and announce the selection."""
+        """Fetch a part's STEP, resolve its plan, and announce the selection.
+
+        An optional `plan_id` loads that exact plan rather than whichever one
+        is current -- including one generated against an earlier CAD revision,
+        which comes back as SELECTED so the pipeline honours the choice and
+        warns. `plan_id: null` explicitly loads the model with no plan.
+        """
         payload = request.get_json(silent=True) or {}
         eng_item_id = payload.get('eng_item_id') or request.form.get('eng_item_id')
         if not eng_item_id:
@@ -233,7 +239,17 @@ def create_app(catalog=None, bridge=None, mesh_units='mm'):
         if step_path is None:
             return jsonify({'success': False, 'message': message}), 409
 
-        plan_status, plan_path = catalog.ensure_plan(eng_item_id)
+        plan_id = payload.get('plan_id')
+        if plan_id:
+            plan_status, plan_path = catalog.select_plan(eng_item_id, plan_id)
+            if plan_status == PlanStatus.NONE:
+                return jsonify({'success': False,
+                                'message': f'Plan is unavailable: {plan_id}.'}), 404
+        elif payload.get('model_only'):
+            plan_status, plan_path = PlanStatus.NONE, ''
+        else:
+            plan_status, plan_path = catalog.ensure_plan(eng_item_id)
+
         published, publish_message = bridge.publish_selection(
             part, step_path, plan_status.value, plan_path,
             units=app.config['MESH_UNITS'])
@@ -292,6 +308,44 @@ def create_app(catalog=None, bridge=None, mesh_units='mm'):
                              if plan and status == PlanStatus.STALE else ''),
             'plan': plan,
         })
+
+    @app.route('/api/parts/<eng_item_id>/plans')
+    def api_part_plans(eng_item_id):
+        """Every plan recorded for a part, newest first.
+
+        This is what fills the picker's plan strip, so it must stay purely
+        local -- no 3DX round trip.
+        """
+        if catalog.db.get_part(eng_item_id) is None:
+            abort(404)
+        plans = catalog.list_plans(eng_item_id)
+        current = next((p['plan_id'] for p in plans if p['is_current']), '')
+        return jsonify({'plans': plans, 'current_plan_id': current,
+                        'total': len(plans)})
+
+    @app.route('/api/parts/<eng_item_id>/plans/adopt', methods=['POST'])
+    def api_adopt_plans(eng_item_id):
+        """Record plan files already on disk that the catalog never captured."""
+        if catalog.db.get_part(eng_item_id) is None:
+            abort(404)
+        adopted, skipped = catalog.adopt_orphan_plans(eng_item_id)
+        return jsonify({
+            'success': True,
+            'adopted': adopted,
+            'skipped': skipped,
+            'message': (f'Adopted {adopted} plan(s).' if adopted
+                        else 'No unrecorded plan files found.'),
+        })
+
+    @app.route('/api/plans/<path:plan_id>/upload', methods=['POST'])
+    def api_upload_plan(plan_id):
+        """Upload one recorded plan to 3DX as a Document."""
+        if catalog.db.get_plan(plan_id) is None:
+            abort(404)
+        doc_id, message = catalog.upload_recorded_plan(plan_id)
+        return jsonify({'success': doc_id is not None,
+                        'plan_doc_id': doc_id or '',
+                        'message': message}), (200 if doc_id else 409)
 
     @app.route('/api/parts/<eng_item_id>/runs')
     def api_part_runs(eng_item_id):

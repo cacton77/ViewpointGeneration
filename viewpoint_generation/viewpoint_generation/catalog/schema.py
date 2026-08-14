@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS plans (
     uploaded_at     TEXT,
     upload_status   TEXT DEFAULT 'local',
     is_current      INTEGER DEFAULT 1,
-    source          TEXT DEFAULT 'local'
+    source          TEXT DEFAULT 'local',
+    stage           TEXT
 )
 """
 
@@ -117,6 +118,7 @@ MIGRATIONS = {
     'plans': (
         ('source', "TEXT DEFAULT 'local'"),
         ('is_current', 'INTEGER DEFAULT 1'),
+        ('stage', 'TEXT'),
     ),
     'inspection_runs': (
         ('plan_id', 'TEXT'),
@@ -390,10 +392,16 @@ class CatalogDB:
         return dict(row) if row else None
 
     def list_plans(self, eng_item_id):
-        """Every plan recorded for a part, newest first."""
+        """Every plan recorded for a part, newest first.
+
+        Two pipeline stages can complete inside the same second, so rowid
+        breaks ties on generated_at -- otherwise the order of a run's own
+        stages is whatever SQLite happens to return.
+        """
         with self._connect() as conn:
             rows = conn.execute(
-                'SELECT * FROM plans WHERE eng_item_id = ? ORDER BY generated_at DESC',
+                'SELECT * FROM plans WHERE eng_item_id = ?'
+                ' ORDER BY generated_at DESC, rowid DESC',
                 (eng_item_id,)).fetchall()
         return [dict(row) for row in rows]
 
@@ -415,8 +423,8 @@ class CatalogDB:
                                       file_path, num_regions, num_clusters,
                                       num_viewpoints, seg_algorithm, traversal_algo,
                                       generated_at, uploaded_at, upload_status,
-                                      is_current, source)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      is_current, source, stage)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(plan_id) DO UPDATE SET
                        plan_doc_id = excluded.plan_doc_id,
                        cestamp = excluded.cestamp,
@@ -429,7 +437,8 @@ class CatalogDB:
                        uploaded_at = excluded.uploaded_at,
                        upload_status = excluded.upload_status,
                        is_current = excluded.is_current,
-                       source = excluded.source""",
+                       source = excluded.source,
+                       stage = excluded.stage""",
                 (plan['plan_id'], plan['eng_item_id'], plan.get('plan_doc_id'),
                  plan.get('cestamp') or '', str(plan['file_path']),
                  plan.get('num_regions'), plan.get('num_clusters'),
@@ -437,15 +446,41 @@ class CatalogDB:
                  plan.get('traversal_algo'), plan.get('generated_at') or utc_now(),
                  plan.get('uploaded_at'), plan.get('upload_status', 'local'),
                  1 if plan.get('is_current', 1) else 0,
-                 plan.get('source', 'local')))
+                 plan.get('source', 'local'), plan.get('stage')))
             conn.commit()
         return plan['plan_id']
+
+    def set_current_plan(self, plan_id):
+        """Make one plan the part's current plan, clearing the flag on its
+        siblings. Used when an operator picks a specific plan in the picker.
+
+        Returns:
+            bool: False when no such plan exists.
+        """
+        with self._connect() as conn:
+            row = conn.execute('SELECT eng_item_id FROM plans WHERE plan_id = ?',
+                               (plan_id,)).fetchone()
+            if row is None:
+                return False
+            conn.execute('UPDATE plans SET is_current = 0 WHERE eng_item_id = ?',
+                         (row['eng_item_id'],))
+            conn.execute('UPDATE plans SET is_current = 1 WHERE plan_id = ?',
+                         (plan_id,))
+            conn.commit()
+        return True
+
+    def delete_plan(self, plan_id):
+        """Remove a plan row. The file on disk is left alone."""
+        with self._connect() as conn:
+            conn.execute('DELETE FROM plans WHERE plan_id = ?', (plan_id,))
+            conn.commit()
 
     def update_plan(self, plan_id, **fields):
         """Update named columns on a plan row."""
         allowed = {'plan_doc_id', 'uploaded_at', 'upload_status', 'is_current',
                    'file_path', 'num_regions', 'num_clusters', 'num_viewpoints',
-                   'seg_algorithm', 'traversal_algo', 'source', 'cestamp'}
+                   'seg_algorithm', 'traversal_algo', 'source', 'cestamp',
+                   'stage'}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return

@@ -38,7 +38,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from viewpoint_generation_interfaces.msg import PartSelected, PartSummary
 from viewpoint_generation_interfaces.msg import SyncResult as SyncResultMsg
 from viewpoint_generation_interfaces.srv import (EnsurePlan, ListParts,
-                                                 SelectPart, SyncNow,
+                                                 RecordPlan, SelectPart, SyncNow,
                                                  UploadPlan, UploadResults)
 
 from viewpoint_generation.catalog.client import DXClient
@@ -122,6 +122,8 @@ class CatalogNode(rclpy.node.Node):
                             self.sync_now_callback, callback_group=services_cb_group)
         self.create_service(EnsurePlan, f'{node_name}/ensure_plan',
                             self.ensure_plan_callback, callback_group=services_cb_group)
+        self.create_service(RecordPlan, f'{node_name}/record_plan',
+                            self.record_plan_callback, callback_group=services_cb_group)
         self.create_service(UploadPlan, f'{node_name}/upload_plan',
                             self.upload_plan_callback, callback_group=services_cb_group)
         self.create_service(UploadResults, f'{node_name}/upload_results',
@@ -413,6 +415,33 @@ class CatalogNode(rclpy.node.Node):
         response.result.message = result.message or ''
         return response
 
+    def record_plan_callback(self, request, response):
+        """Register a plan the pipeline just generated in the local catalog.
+
+        Uploading to 3DX is decided by `auto_upload_plan_stages` unless the
+        caller forces it, so a full pipeline run leaves one document on the
+        tenant rather than one per stage.
+        """
+        plan_id, message = self.catalog.record_plan(
+            request.eng_item_id, request.plan_path,
+            stage=request.stage or None,
+            upload=True if request.force_upload else None)
+
+        response.success = plan_id is not None
+        response.plan_id = plan_id or ''
+        response.message = message
+        if plan_id is None:
+            response.stage = ''
+            response.upload_status = ''
+            self.get_logger().error(f'RecordPlan failed: {message}')
+            return response
+
+        plan = self.catalog.db.get_plan(plan_id) or {}
+        response.stage = plan.get('stage') or ''
+        response.upload_status = plan.get('upload_status') or 'local'
+        self.get_logger().info(f'RecordPlan: {message}')
+        return response
+
     def upload_plan_callback(self, request, response):
         """Wrap a results JSON in a PLM envelope and upload it to 3DX."""
         self.get_logger().info(
@@ -450,10 +479,12 @@ class CatalogNode(rclpy.node.Node):
             PlanStatus.CURRENT: 'Plan matches the current CAD revision.',
             PlanStatus.DOWNLOADED: 'Plan downloaded from 3DX.',
             PlanStatus.UPDATED_FROM_REMOTE: 'A newer plan was downloaded from 3DX.',
+            PlanStatus.SELECTED: ('Plan was chosen explicitly and targets an '
+                                  'earlier CAD revision.'),
             PlanStatus.STALE: ('Plan was generated for an earlier CAD revision; '
                                're-planning is recommended.'),
             PlanStatus.NONE: 'No inspection plan exists for this part.',
-        }[status]
+        }.get(status, '')
         return response
 
 

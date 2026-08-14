@@ -175,6 +175,102 @@ body {
 }
 .detail-actions { display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; }
 
+/* --- inspection plan strip ---------------------------------------------
+   Every plan the pipeline generated for a part, newest first, as a single
+   horizontally scrolling row. A part accumulates one plan per pipeline stage
+   per run, so this list grows without bound -- it must never wrap and push
+   the Load button off screen. */
+
+.plans-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.btn-small {
+  padding: 0.2rem 0.55rem;
+  font-size: 0.78rem;
+}
+
+.plan-strip {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.25rem 0.15rem 0.6rem;
+  scrollbar-width: thin;
+}
+
+.plan-strip::-webkit-scrollbar { height: 8px; }
+.plan-strip::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 4px;
+}
+
+.plan-chip {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  min-width: 8.5rem;
+  padding: 0.45rem 0.6rem;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--nostp);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.plan-chip:hover { border-color: var(--accent); }
+
+.plan-chip.selected {
+  border-color: var(--accent);
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-2));
+}
+
+.plan-chip.missing { opacity: 0.55; }
+
+.plan-chip.stage-segmented { border-left-color: var(--new); }
+.plan-chip.stage-clustered { border-left-color: var(--fetch); }
+.plan-chip.stage-projected { border-left-color: var(--accent); }
+.plan-chip.stage-ordered   { border-left-color: var(--ready); }
+.plan-chip.stale           { border-left-color: var(--stale); }
+
+.chip-stage {
+  font-weight: 600;
+  font-size: 0.82rem;
+  letter-spacing: 0.01em;
+}
+
+.chip-counts { color: var(--muted); font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+.chip-time   { color: var(--muted); font-size: 0.72rem; }
+
+.chip-flag { margin-left: 0.3rem; font-size: 0.75rem; }
+.chip-flag.warn { color: var(--stale); }
+
+.chip-sync {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--nostp);
+}
+
+.chip-sync.sync-synced { color: var(--ready); }
+.chip-sync.sync-failed { color: var(--danger); }
+.chip-sync.sync-uploading { color: var(--fetch); }
+
+.chip-none .chip-stage { color: var(--muted); }
+
+.plan-empty { color: var(--muted); font-size: 0.85rem; align-self: center; }
+.plan-box { margin-bottom: 0.5rem; }
+.warn-text { color: var(--stale); }
+
 table.runs { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 table.runs th, table.runs td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--line); }
 table.runs th { color: var(--muted); font-weight: 600; }

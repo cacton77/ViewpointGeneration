@@ -13,6 +13,7 @@ import open3d.visualization.rendering as rendering
 from matplotlib import colormaps
 from open3d.geometry import PointCloud, TriangleMesh
 
+from viewpoint_generation import plan_io
 from viewpoint_generation.region_growth import *
 from viewpoint_generation.partfield_segmentation import *
 from viewpoint_generation.fov_clustering import *
@@ -31,6 +32,13 @@ class ViewpointGeneration():
     point_cloud_file = None
     point_cloud_units = 'm'
     results_file = None
+
+    # Where plan files are written. Set to the catalog's per-item plan
+    # directory when the loaded mesh came from a 3DX part, so every plan for
+    # that part lands in one place and survives STEP cache invalidation.
+    # None falls back to a '_results' directory beside the mesh, which is what
+    # a hand-loaded mesh with no PLM identity gets.
+    plan_dir = None
 
     mesh = None
     point_cloud = None
@@ -576,12 +584,29 @@ class ViewpointGeneration():
         elif not results_file.endswith('.json'):
             return False, f'Regions file is not a .json file: \'{results_file}\'.'
 
-        with open(results_file, 'r') as f:
-            self.results = json.load(f)
+        # read_plan() accepts the current sibling-context form, the older
+        # {plm_context, plan: {...}} envelope, and a bare results JSON, so a
+        # plan downloaded from 3DX loads the same as one generated here.
+        results, _context, message = plan_io.read_plan(results_file)
+        if results is None:
+            return False, message
 
+        self.results = results
         self.results_file = results_file
 
         return True, f'Regions file set to \'{results_file}\'.'
+
+    def set_plm_context(self, context):
+        """Attach PLM identity to the loaded results so every plan saved from
+        here records which 3DX part and CAD revision it was generated against.
+
+        Must be called *after* the mesh is loaded: set_mesh_file() resets
+        self.results when the mesh identity changes, which would discard it.
+        """
+        if self.results is None:
+            return False, 'No results to attach PLM context to.'
+        self.results['plm_context'] = dict(context or {})
+        return True, 'PLM context attached.'
 
     def get_viewpoint_bounds(self):
         if not self.results:
@@ -746,46 +771,45 @@ class ViewpointGeneration():
             self.results['meshes'][i]['order'] = list(
                 range(len(self.results['meshes'][i]['regions'])))
 
-        self.results_file = self.save_results(self.results)
+        self.results_file = self.save_results(self.results, stage='segmented')
 
         return True, self.results_file
 
-    def save_results(self, results):
+    def save_results(self, results, stage=None):
+        """Write a results dict as a plan file named for its pipeline stage.
+
+        The stage is inferred from the content unless given, and is recorded
+        both in the filename and in the file's own `plm_context`, so a plan is
+        identifiable however it is later moved or renamed.
+
+        Args:
+            results: The results dict to write.
+            stage: Override the inferred stage (one of plan_io.STAGES).
+
+        Returns:
+            str or None: the path written, or None when there is nowhere to
+            write it.
+        """
         # Add Camera Config to results
         results['meshes'][0]['camera_config'] = {
             'fov_diameter': self.fc_config.fov_diameter,
             'dof': self.fc_config.dof,
             'focal_distance': self.vp_config.focal_distance,
         }
-        # Count regions and clusters
-        N_regions = 0
-        N_clusters = 0
-        regions = results.get('meshes', [{}])[0].get('regions', {})
-        for region in regions:
-            N_regions += 1
-            if 'clusters' in region:
-                N_clusters += len(region['clusters'])
 
-        # With no regions yet, write to /tmp to avoid cluttering the data directory
-        if N_regions == 0:
+        summary = plan_io.summarize(results)
+        if summary['num_regions'] == 0:
+            # An empty skeleton is not a plan; keep it out of the plan history
+            # (and out of the catalog directory) entirely.
             results_dir = '/tmp'
         else:
-            results_dir = self._results_dir()
+            results_dir = self.plan_dir or self._results_dir()
             if results_dir is None:
                 return None
 
-        # Build filename
-        results_file = results_dir + '/'
-        if N_regions > 0:
-            results_file += str(N_regions) + '_regions_'
-        if N_clusters > 0:
-            results_file += str(N_clusters) + '_clusters_'
-        results_file += datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + '.json'
-
-        with open(results_file, 'w') as f:
-            json.dump(results, f, indent=4)
-        print(f'Results saved to {results_file}.')
-        return results_file
+        path, message = plan_io.write_plan(results_dir, results, stage=stage)
+        print(message)
+        return path
 
     def _load_region_point_cloud(self, region):
         """Load a region's cached, per-region sampled point cloud (produced
@@ -846,7 +870,7 @@ class ViewpointGeneration():
             self.results['meshes'][0]['regions'][region_id]['order'] = list(
                 range(len(self.results['meshes'][0]['regions'][region_id]['clusters'])))
 
-        self.results_file = self.save_results(self.results)
+        self.results_file = self.save_results(self.results, stage='clustered')
 
         return True, self.results_file
 
@@ -904,7 +928,7 @@ class ViewpointGeneration():
                 # )
 
         # Save the updated regions dictionary with viewpoints
-        self.results_file = self.save_results(self.results)
+        self.results_file = self.save_results(self.results, stage='projected')
 
         return True, self.results_file
 

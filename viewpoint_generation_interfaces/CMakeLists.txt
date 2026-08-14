@@ -40,6 +40,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SelectPart.srv"
   "srv/SyncNow.srv"
   "srv/EnsurePlan.srv"
+  "srv/RecordPlan.srv"
   "srv/UploadPlan.srv"
   "srv/UploadResults.srv"
   "msg/FocusValue.msg"

@@ -27,7 +27,8 @@ from geometry_msgs.msg import PoseStamped, Pose, PointStamped, Point
 from visualization_msgs.msg import Marker
 from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject, ObjectColor
-from viewpoint_generation_interfaces.srv import OptimizeViewpointTraversal
+from viewpoint_generation_interfaces.srv import (OptimizeViewpointTraversal,
+                                                 RecordPlan)
 
 
 def _pose_to_matrix(pose):
@@ -45,6 +46,11 @@ class ViewpointGenerationNode(rclpy.node.Node):
     block_next_param_callback = False
     initialized = False
     mesh = None
+
+    # The 3DX part currently loaded, learned from /catalog/part_selected.
+    # Empty when the operator loaded a mesh by hand: plans still get written,
+    # they just have no PLM record to attach to.
+    selected_eng_item_id = ''
 
     def __init__(self):
         node_name = 'viewpoint_generation'
@@ -219,6 +225,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         self.optimize_traversal_client = self.create_client(
             OptimizeViewpointTraversal, f'{viewpoint_traversal_node_name}/optimize_traversal', callback_group=services_cb_group)
+
+        # Records every generated plan in the 3DX catalog. Called fire-and-forget
+        # so a slow or absent catalog node can never stall the pipeline: plan
+        # files are always written to disk first, and recording is the
+        # bookkeeping that follows.
+        self.record_plan_client = self.create_client(
+            RecordPlan, 'catalog/record_plan', callback_group=services_cb_group)
 
         self.set_data_path(self.get_parameter(
             'settings.data_path').get_parameter_value().string_value)
@@ -426,12 +439,16 @@ class ViewpointGenerationNode(rclpy.node.Node):
         """Load a part chosen in the 3DX catalog into the pipeline.
 
         Sets the mesh from the STEP the catalog cached, and -- when the
-        catalog reports a plan that still matches the part's CAD revision --
-        loads that plan's regions/clusters/viewpoints instead of discarding
-        them, so an already-planned part is ready to inspect without re-running
-        the pipeline. A STALE plan is deliberately NOT loaded: its viewpoints
-        were computed against different geometry, and the operator decides
-        whether to re-plan."""
+        catalog reports a plan that still matches the part's CAD revision, or
+        the operator picked one explicitly -- loads that plan's
+        regions/clusters/viewpoints instead of discarding them, so an
+        already-planned part is ready to inspect without re-running the
+        pipeline.
+
+        A merely STALE plan is deliberately NOT loaded: its viewpoints were
+        computed against different geometry, and the operator decides whether
+        to re-plan. SELECTED is the operator having made exactly that decision,
+        so it loads with a warning."""
         self.get_logger().info(
             f'Catalog selected {msg.title!r} ({msg.part_number} rev {msg.revision}), '
             f'plan status {msg.plan_status}.')
@@ -441,12 +458,14 @@ class ViewpointGenerationNode(rclpy.node.Node):
             return
 
         units = msg.mesh_units or 'mm'
+        self.selected_eng_item_id = msg.eng_item_id or ''
 
         # Load the plan first when it is usable: set_mesh_file() preserves
         # regions/clusters already recorded in self.results for the same
         # file+units, so seeding results from the plan before the mesh is what
         # lets a downloaded plan survive the load.
-        if msg.plan_status == 'CURRENT' and msg.plan_file_path:
+        loadable = ('CURRENT', 'DOWNLOADED', 'UPDATED_FROM_REMOTE', 'SELECTED')
+        if msg.plan_status in loadable and msg.plan_file_path:
             if not self.set_results_file(msg.plan_file_path):
                 self.get_logger().warn(
                     f'Could not load plan {msg.plan_file_path}; '
@@ -457,10 +476,86 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 f'Failed to load selected model: {msg.step_file_path}')
             return
 
-        if msg.plan_status == 'STALE':
+        # Plans generated from here go to the catalog's directory for this
+        # part, and carry its PLM identity. Both must come after
+        # set_mesh_file(), which resets self.results when the mesh changes.
+        self._apply_plm_context(msg)
+
+        if msg.plan_status == 'SELECTED':
+            self.get_logger().warn(
+                f'Loaded a plan for {msg.title!r} that was generated against an '
+                'EARLIER CAD REVISION, because it was selected explicitly. Its '
+                'viewpoints may not match the current geometry -- verify before '
+                'inspecting.')
+        elif msg.plan_status == 'STALE':
             self.get_logger().warn(
                 f'The stored plan for {msg.title!r} was generated for an earlier '
                 'CAD revision. Re-run segmentation before inspecting.')
+
+    def _apply_plm_context(self, msg: PartSelected):
+        """Point plan output at the catalog and stamp the part's identity on it."""
+        if not msg.eng_item_id:
+            self.viewpoint_generation.plan_dir = None
+            return
+        try:
+            from viewpoint_generation.catalog.config import CatalogPaths
+            self.viewpoint_generation.plan_dir = str(
+                CatalogPaths.from_env().plan_dir_for(msg.eng_item_id))
+        except Exception as e:  # noqa: BLE001 - never block loading a part
+            self.get_logger().warn(f'Could not resolve the catalog plan directory: {e}')
+            self.viewpoint_generation.plan_dir = None
+
+        self.viewpoint_generation.set_plm_context({
+            'eng_item_id': msg.eng_item_id,
+            'part_number': msg.part_number,
+            'revision': msg.revision,
+            'cestamp': msg.cestamp,
+            'title': msg.title,
+        })
+
+    def _record_plan(self, plan_path, stage):
+        """Register a generated plan file with the catalog node.
+
+        Fire-and-forget: the plan file is already safely on disk, so a missing
+        or slow catalog node degrades to "not in the database yet" rather than
+        blocking the pipeline service that produced it.
+        """
+        if not plan_path:
+            return
+        if not self.selected_eng_item_id:
+            self.get_logger().debug(
+                'No catalog part is loaded; plan was not recorded in the database.')
+            return
+        if not self.record_plan_client.service_is_ready():
+            self.get_logger().warn(
+                f'Catalog node is not available; the {stage} plan was written to '
+                f'{plan_path} but not recorded in the database.')
+            return
+
+        request = RecordPlan.Request()
+        request.eng_item_id = self.selected_eng_item_id
+        request.plan_path = str(plan_path)
+        request.stage = stage
+        request.force_upload = False
+
+        future = self.record_plan_client.call_async(request)
+        future.add_done_callback(
+            lambda f, stage=stage: self._record_plan_done(f, stage))
+
+    def _record_plan_done(self, future, stage):
+        """Log the outcome of a plan recording."""
+        try:
+            result = future.result()
+        except Exception as e:  # noqa: BLE001 - a failed record must not raise here
+            self.get_logger().warn(f'Could not record the {stage} plan: {e}')
+            return
+        if result.success:
+            self.get_logger().info(
+                f'Recorded {stage} plan {result.plan_id} '
+                f'(3DX: {result.upload_status}).')
+        else:
+            self.get_logger().warn(
+                f'Could not record the {stage} plan: {result.message}')
 
     def update_planning_scene(self):
         if not self.mesh:
@@ -739,6 +834,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 message
             )
             self.set_parameters([results_file_param])
+            self._record_plan(message, 'segmented')
         else:
             self.get_logger().error(f"Region segmentation failed: {message}")
 
@@ -779,6 +875,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 message
             )
             self.set_parameters([results_file_param])
+            self._record_plan(message, 'clustered')
         else:
             self.get_logger().error(f"FOV clustering failed: {message}")
 
@@ -811,6 +908,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 message
             )
             self.set_parameters([results_file_param])
+            self._record_plan(message, 'projected')
         else:
             self.get_logger().error(f"Viewpoint projection failed: {message}")
 
@@ -847,6 +945,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 self.set_parameters([results_file_param])
                 self.get_logger().info(
                     f'New viewpoint dictionary saved at: {new_viewpoint_dict_path}')
+                # The terminal plan -- the one the cell executes. This is the
+                # stage auto-uploaded to 3DX by default.
+                self._record_plan(new_viewpoint_dict_path, 'ordered')
             else:
                 self.get_logger().error(
                     f'Optimization failed: {result.message}')

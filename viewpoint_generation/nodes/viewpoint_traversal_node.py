@@ -1,8 +1,6 @@
 import rclpy
 import rclpy.logging
-import json
-import re
-import datetime
+import os
 import numpy as np
 from rclpy.node import Node
 from moveit.core.robot_state import RobotState
@@ -16,6 +14,7 @@ from geometry_msgs.msg import Pose, PoseStamped
 from moveit_msgs.msg import CollisionObject
 from shape_msgs.msg import SolidPrimitive
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from viewpoint_generation import plan_io
 
 from .tsp_solver import TSPSolver
 from .vrp_solver import VRPSolver, VRPSolution
@@ -205,8 +204,12 @@ class ViewpointTraversalNode(Node):
         primary_algorithm = self.vrp_algorithm if vrp_ran else self.tsp_algorithm
         self.get_logger().info(
             f'Optimizing traversal using \'{primary_algorithm}\' for {request.viewpoint_dict_path}')
-        with open(request.viewpoint_dict_path, 'r') as f:
-            viewpoint_dict = json.load(f)
+        viewpoint_dict, _context, message = plan_io.read_plan(
+            request.viewpoint_dict_path)
+        if viewpoint_dict is None:
+            response.success = False
+            response.message = message
+            return response
 
         viewpoint_dict_optimized = self.tsp(viewpoint_dict)
         self._last_vrp_cost = 0.0
@@ -218,15 +221,16 @@ class ViewpointTraversalNode(Node):
             self.clear_paths = False
             self.set_parameters([rclpy.parameter.Parameter('clear_paths', False)])
 
-        timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        new_viewpoint_dict_path = re.sub(
-            r'(_optimized.*?)?\.json$',
-            f'_optimized{timestamp}.json',
-            request.viewpoint_dict_path
-        )
-
-        with open(new_viewpoint_dict_path, 'w') as f:
-            json.dump(viewpoint_dict_optimized, f, indent=4)
+        # Written beside the plan it optimized, named for the stage it
+        # produces. The plan's own plm_context rides along in the dict, so the
+        # optimized file stays tied to the same 3DX part and CAD revision.
+        new_viewpoint_dict_path, message = plan_io.write_plan(
+            os.path.dirname(request.viewpoint_dict_path),
+            viewpoint_dict_optimized, stage='ordered')
+        if new_viewpoint_dict_path is None:
+            response.success = False
+            response.message = message
+            return response
 
         if vrp_ran:
             # VRP already logged its per-region breakdown inside vrp(); just show totals.

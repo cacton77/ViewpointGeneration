@@ -10,6 +10,10 @@ const state = {
   selectedId: null,
   openId: null,
   busy: new Set(),
+  // Plan chosen in the strip for the open part. '' means "model only";
+  // null means "whichever plan the catalog considers current".
+  chosenPlanId: null,
+  plans: [],
 };
 
 const el = {
@@ -113,6 +117,41 @@ function escapeHtml(value) {
   }[c]));
 }
 
+/* The plan strip shows a lot of timestamps in a little space, so they are
+ * rendered as elapsed time and carry the absolute value as a tooltip. */
+function relativeTime(iso) {
+  if (!iso) return '—';
+  const then = Date.parse(iso.endsWith('Z') || iso.includes('+') ? iso : iso + 'Z');
+  if (Number.isNaN(then)) return iso;
+  const seconds = Math.max(0, (Date.now() - then) / 1000);
+  const scales = [
+    [60, 's'], [3600, 'm', 60], [86400, 'h', 3600], [604800, 'd', 86400],
+  ];
+  for (const [limit, unit, divisor] of scales) {
+    if (seconds < limit) {
+      return divisor ? `${Math.floor(seconds / divisor)}${unit} ago` : 'just now';
+    }
+  }
+  return `${Math.floor(seconds / 604800)}w ago`;
+}
+
+function planCounts(plan) {
+  return [
+    plan.num_regions ? `${plan.num_regions}r` : null,
+    plan.num_clusters ? `${plan.num_clusters}c` : null,
+    plan.num_viewpoints ? `${plan.num_viewpoints}v` : null,
+  ].filter(Boolean).join(' · ') || 'empty';
+}
+
+function syncLabel(plan) {
+  switch (plan.upload_status) {
+    case 'synced': return '3DX';
+    case 'uploading': return 'uploading…';
+    case 'failed': return 'upload failed';
+    default: return 'local';
+  }
+}
+
 function render() {
   const parts = visibleParts();
   el.grid.replaceChildren(...parts.map(card));
@@ -148,7 +187,12 @@ async function loadStatus() {
 }
 
 async function openDetail(engItemId, keepScroll) {
+  const switchingPart = state.openId !== engItemId;
   state.openId = engItemId;
+  if (switchingPart) {
+    state.chosenPlanId = null;
+    state.plans = [];
+  }
   const part = state.parts.find((p) => p.eng_item_id === engItemId);
   if (!part) return;
 
@@ -165,43 +209,28 @@ async function openDetail(engItemId, keepScroll) {
       <dt>Sync</dt><dd>${escapeHtml(part.sync_status)} · last ${escapeHtml(part.last_synced)}</dd>
       <dt>Item id</dt><dd>${escapeHtml(part.eng_item_id)}</dd>
     </dl>
-    <h3>Inspection plan</h3>
-    <div id="plan-box">loading…</div>
+    <div class="plans-head">
+      <h3>Inspection plans</h3>
+      <button class="btn btn-small" id="adopt-btn"
+              title="Record plan files already on disk that the catalog never captured">
+        Scan for files</button>
+    </div>
+    <div id="plan-strip" class="plan-strip">loading…</div>
+    <div id="plan-box" class="plan-box"></div>
     <h3>Inspection history</h3>
     <div id="runs-box">loading…</div>
     <div class="detail-actions">
-      <button class="btn btn-primary" id="select-btn">
-        ${part.step_cached ? 'Load part' : 'Fetch &amp; load'}
-      </button>
+      <button class="btn btn-primary" id="select-btn">Load part</button>
     </div>`;
 
   document.getElementById('select-btn')
     .addEventListener('click', () => selectPart(engItemId));
+  document.getElementById('adopt-btn')
+    .addEventListener('click', () => adoptPlans(engItemId));
 
   if (!keepScroll) el.detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
-  try {
-    const plan = await api(`/api/parts/${encodeURIComponent(engItemId)}/plan`);
-    const box = document.getElementById('plan-box');
-    if (!box) return;
-    if (plan.status === 'NONE') {
-      box.innerHTML = '<em>No plan yet — viewpoint generation runs on selection.</em>';
-    } else {
-      const p = plan.plan || {};
-      box.innerHTML = `
-        <dl>
-          <dt>Status</dt><dd class="plan-${plan.status}">${escapeHtml(plan.status)}
-            ${plan.stale_reason ? '— ' + escapeHtml(plan.stale_reason) : ''}</dd>
-          <dt>File</dt><dd>${escapeHtml(plan.file_path)}</dd>
-          <dt>Regions</dt><dd>${p.num_regions ?? '—'} → ${p.num_clusters ?? '—'} clusters
-            → ${p.num_viewpoints ?? '—'} viewpoints</dd>
-          <dt>Segmentation</dt><dd>${escapeHtml(p.seg_algorithm || '—')}</dd>
-          <dt>Generated</dt><dd>${escapeHtml(p.generated_at || '—')}</dd>
-          <dt>3DX document</dt><dd>${escapeHtml(p.plan_doc_id || 'not uploaded')}
-            (${escapeHtml(p.upload_status || 'local')})</dd>
-        </dl>`;
-    }
-  } catch (e) { /* the panel keeps its loading text */ }
+  await loadPlans(engItemId);
 
   try {
     const data = await api(`/api/parts/${encodeURIComponent(engItemId)}/runs`);
@@ -228,15 +257,151 @@ async function openDetail(engItemId, keepScroll) {
   } catch (e) { /* the panel keeps its loading text */ }
 }
 
+async function loadPlans(engItemId) {
+  try {
+    const data = await api(`/api/parts/${encodeURIComponent(engItemId)}/plans`);
+    state.plans = data.plans;
+    // Default the selection to the catalog's current plan, so the Load button
+    // does the same thing it always did until the operator picks otherwise.
+    if (state.chosenPlanId === null && data.current_plan_id) {
+      state.chosenPlanId = data.current_plan_id;
+    }
+  } catch (e) {
+    state.plans = [];
+  }
+  renderPlanStrip();
+}
+
+function renderPlanStrip() {
+  const strip = document.getElementById('plan-strip');
+  if (!strip) return;
+
+  const chips = [`
+    <button class="plan-chip chip-none ${state.chosenPlanId === '' ? 'selected' : ''}"
+            data-plan-id="" title="Load the model without a plan">
+      <span class="chip-stage">model only</span>
+      <span class="chip-counts">no plan</span>
+      <span class="chip-time">&nbsp;</span>
+    </button>`];
+
+  for (const plan of state.plans) {
+    const classes = [
+      'plan-chip', `stage-${plan.stage}`,
+      plan.plan_id === state.chosenPlanId ? 'selected' : '',
+      plan.available ? '' : 'missing',
+      plan.stale ? 'stale' : '',
+    ].filter(Boolean).join(' ');
+    const flags = [
+      plan.is_current ? '<span class="chip-flag" title="Current plan">★</span>' : '',
+      plan.stale ? '<span class="chip-flag warn" title="Generated against an earlier CAD revision">⚠</span>' : '',
+      plan.available ? '' : '<span class="chip-flag warn" title="File is missing on disk">✕</span>',
+    ].join('');
+    chips.push(`
+      <button class="${classes}" data-plan-id="${escapeHtml(plan.plan_id)}"
+              title="${escapeHtml(plan.file_path)}">
+        <span class="chip-stage">${escapeHtml(plan.stage)}${flags}</span>
+        <span class="chip-counts">${escapeHtml(planCounts(plan))}</span>
+        <span class="chip-time" title="${escapeHtml(plan.generated_at || '')}">
+          ${escapeHtml(relativeTime(plan.generated_at))}</span>
+        <span class="chip-sync sync-${escapeHtml(plan.upload_status || 'local')}">
+          ${escapeHtml(syncLabel(plan))}</span>
+      </button>`);
+  }
+
+  strip.innerHTML = state.plans.length
+    ? chips.join('')
+    : chips.join('') + '<span class="plan-empty">No plans recorded yet — '
+      + 'run the pipeline, or use "Scan for files".</span>';
+
+  strip.querySelectorAll('.plan-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      state.chosenPlanId = chip.dataset.planId;
+      renderPlanStrip();
+    });
+  });
+
+  renderPlanBox();
+}
+
+function renderPlanBox() {
+  const box = document.getElementById('plan-box');
+  if (!box) return;
+
+  const button = document.getElementById('select-btn');
+  const plan = state.plans.find((p) => p.plan_id === state.chosenPlanId);
+
+  if (button) {
+    if (state.chosenPlanId === '') button.textContent = 'Load model only';
+    else if (plan) button.textContent = `Load with ${plan.stage} plan`;
+    else button.textContent = 'Load part';
+  }
+
+  if (!plan) {
+    box.innerHTML = state.chosenPlanId === ''
+      ? '<em>The model will be loaded with no regions or viewpoints.</em>'
+      : '';
+    return;
+  }
+
+  const uploadable = ['local', 'failed'].includes(plan.upload_status);
+  box.innerHTML = `
+    <dl>
+      <dt>File</dt><dd>${escapeHtml(plan.file_path)}</dd>
+      <dt>Stage</dt><dd>${escapeHtml(plan.stage)}
+        ${plan.stale ? '— <span class="warn-text">targets an earlier CAD revision; '
+          + 'loading it is honoured but its viewpoints may not match the geometry</span>' : ''}</dd>
+      <dt>Contents</dt><dd>${plan.num_regions ?? '—'} regions →
+        ${plan.num_clusters ?? '—'} clusters → ${plan.num_viewpoints ?? '—'} viewpoints</dd>
+      <dt>Generated</dt><dd>${escapeHtml(plan.generated_at || '—')}
+        (${escapeHtml(plan.source || 'local')})</dd>
+      <dt>3DX document</dt><dd>${escapeHtml(plan.plan_doc_id || 'not uploaded')}
+        (${escapeHtml(plan.upload_status || 'local')})
+        ${uploadable ? '<button class="btn btn-small" id="upload-plan-btn">Upload</button>' : ''}</dd>
+    </dl>`;
+
+  const uploadButton = document.getElementById('upload-plan-btn');
+  if (uploadButton) {
+    uploadButton.addEventListener('click', () => uploadPlan(plan.plan_id));
+  }
+}
+
+async function uploadPlan(planId) {
+  toast('Uploading plan to 3DEXPERIENCE…');
+  try {
+    const result = await api(`/api/plans/${encodeURIComponent(planId)}/upload`,
+                             { method: 'POST' });
+    toast(result.message, result.success ? 'ok' : 'error');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+  await loadPlans(state.openId);
+}
+
+async function adoptPlans(engItemId) {
+  toast('Scanning for unrecorded plan files…');
+  try {
+    const result = await api(
+      `/api/parts/${encodeURIComponent(engItemId)}/plans/adopt`, { method: 'POST' });
+    toast(result.message, result.adopted ? 'ok' : null);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+  await loadPlans(engItemId);
+  await loadParts();
+}
+
 async function selectPart(engItemId) {
   state.busy.add(engItemId);
   render();
   toast('Preparing part…');
   try {
+    const body = { eng_item_id: engItemId };
+    if (state.chosenPlanId === '') body.model_only = true;
+    else if (state.chosenPlanId) body.plan_id = state.chosenPlanId;
     const result = await api('/api/select', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ eng_item_id: engItemId }),
+      body: JSON.stringify(body),
     });
     state.selectedId = engItemId;
     el.selection.textContent =
