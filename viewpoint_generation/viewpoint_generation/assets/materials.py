@@ -7,13 +7,14 @@ class Materials:
 
     font_size = 13
 
-    scene_background_color = [36/255, 37/255, 39/255, 1.0]
+    scene_background_color = [28/255, 32/255, 39/255, 1.0]
 
     panel_color = gui.Color(25/255, 25/255, 25/255, 0.8)
     panel_color = gui.Color(175/255, 175/255, 175/255, 0.8)
     panel_color = gui.Color(0.5, 0.5, 0.5, 0.8)
     panel_color = gui.Color(36/255, 36/255, 36/255, 0.9)
     panel_color = gui.Color(0.14, 0.14, 0.14, 0.5)
+    panel_color = gui.Color(48/255, 55/255, 67/255, 0.9)
     collapsable_panel_color = gui.Color(0.4, 0.4, 0.4, 1.0)
     tab_control_background_color = gui.Color(0.1, 0.1, 0.1, 0.6)
     tab_control_background_color = gui.Color(36/255, 37/255, 39/255, 0.6)
@@ -83,7 +84,8 @@ class Materials:
     # white when unselected; the selected one matches
     # selected_viewpoint_marker_material's blue so both markers agree on
     # what color means "this is the selected viewpoint."
-    origin_marker_radius = 0.5  # Size in mm (half of 1.0, a quarter of the original 2.0)
+    # Size in mm (half of 1.0, a quarter of the original 2.0)
+    origin_marker_radius = 0.5
 
     origin_marker_material = rendering.MaterialRecord()
     origin_marker_material.shader = "defaultUnlit"
