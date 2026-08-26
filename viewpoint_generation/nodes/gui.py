@@ -44,10 +44,7 @@ class GUIClient():
     MENU_SHOW_MODEL_BB = 13
     MENU_SHOW_MESH = 15
     MENU_SHOW_POINT_CLOUD = 16
-    MENU_SHOW_CURVATURES = 17
-    MENU_SHOW_REGIONS = 18
     MENU_SHOW_NOISE_POINTS = 19
-    MENU_SHOW_CLUSTERS = 20
     MENU_SHOW_VIEWPOINTS = 21
     MENU_SHOW_SETTINGS = 23
     MENU_SHOW_ERRORS = 24
@@ -55,6 +52,7 @@ class GUIClient():
     MENU_SHOW_JOINT_PATH = 39
     MENU_SHOW_UNREACHABLE = 40
     MENU_SHOW_BLIND_SPOTS = 46
+    MENU_SHOW_ALL_REGIONS = 47
     # Region surface mode (exclusive)
     MENU_SURFACE_SOLID = 27
     MENU_SURFACE_CLUSTER = 28
@@ -117,6 +115,12 @@ class GUIClient():
         r = self.window.content_rect
         self.menu_height = 2.5 * em
         self.header_height = 3 * em
+
+        # Last region index received from task_planning's selection parameter.
+        # None until the first value arrives after a results load; see
+        # _on_region_selection_synced for why the first value is not treated
+        # as a user selection.
+        self._synced_region_index = None
 
         self.ros_thread = ROSThread()
         self.ros_thread.start()
@@ -225,11 +229,6 @@ class GUIClient():
                                self.MENU_SHOW_MODEL_BB)
             view_menu.set_checked(self.MENU_SHOW_MODEL_BB,
                                   self.ros_thread.show_model_bounding_box)
-            ground_plane_menu = gui.Menu()
-            ground_plane_menu.add_item("XY", 100)
-            ground_plane_menu.add_item("XZ", 101)
-            ground_plane_menu.add_item("YZ", 102)
-            view_menu.add_menu("Ground Plane", ground_plane_menu)
             view_menu.add_separator()
             # Object display options
             view_menu.add_item("Show Model", self.MENU_SHOW_MESH)
@@ -239,21 +238,10 @@ class GUIClient():
                                self.MENU_SHOW_POINT_CLOUD)
             view_menu.set_checked(self.MENU_SHOW_POINT_CLOUD,
                                   self.ros_thread.show_point_cloud)
-            view_menu.add_item("Show Curvatures",
-                               self.MENU_SHOW_CURVATURES)
-            view_menu.set_checked(self.MENU_SHOW_CURVATURES,
-                                  self.ros_thread.show_curvatures)
-            view_menu.add_item("Show Regions", self.MENU_SHOW_REGIONS)
-            view_menu.set_checked(self.MENU_SHOW_REGIONS,
-                                  self.ros_thread.show_regions)
             view_menu.add_item("Show Noise Points",
                                self.MENU_SHOW_NOISE_POINTS)
             view_menu.set_checked(
                 self.MENU_SHOW_NOISE_POINTS, self.ros_thread.show_noise_points)
-            view_menu.add_item("Show FOV Clusters",
-                               self.MENU_SHOW_CLUSTERS)
-            view_menu.set_checked(
-                self.MENU_SHOW_CLUSTERS, self.ros_thread.show_fov_clusters)
             view_menu.add_item("Show Viewpoints", self.MENU_SHOW_VIEWPOINTS)
             view_menu.set_checked(self.MENU_SHOW_VIEWPOINTS,
                                   self.ros_thread.show_viewpoints)
@@ -270,6 +258,13 @@ class GUIClient():
             view_menu.set_checked(self.MENU_SHOW_BLIND_SPOTS,
                                   self.ros_thread.show_blind_spots)
             view_menu.add_separator()
+            # Overrides the selected-region dimming so the whole part stays
+            # visible; on by default and cleared when the region slider moves.
+            view_menu.add_item("Show All Regions", self.MENU_SHOW_ALL_REGIONS)
+            # Literal rather than self.viz.show_all_regions_flag: init_menu_bar
+            # runs before the Visualizer is constructed. Mirrors that flag's
+            # default; _refresh_view_menu syncs the two from then on.
+            view_menu.set_checked(self.MENU_SHOW_ALL_REGIONS, True)
             # Region surface coloring — exclusive (one at a time).
             surface_menu = gui.Menu()
             surface_menu.add_item("Solid",   self.MENU_SURFACE_SOLID)
@@ -374,12 +369,6 @@ class GUIClient():
         w.set_on_menu_item_activated(
             self.MENU_SHOW_POINT_CLOUD, self._on_menu_show_point_cloud)
         w.set_on_menu_item_activated(
-            self.MENU_SHOW_CURVATURES, self._on_menu_show_curvatures)
-        w.set_on_menu_item_activated(
-            self.MENU_SHOW_REGIONS, self._on_menu_show_regions)
-        w.set_on_menu_item_activated(
-            self.MENU_SHOW_CLUSTERS, self._on_menu_show_fov_clusters)
-        w.set_on_menu_item_activated(
             self.MENU_SHOW_NOISE_POINTS, self._on_menu_show_noise_points)
         w.set_on_menu_item_activated(self.MENU_SHOW_VIEWPOINTS,
                                      self._on_menu_show_viewpoints)
@@ -389,6 +378,8 @@ class GUIClient():
             self.MENU_SHOW_UNREACHABLE, self._on_menu_show_unreachable)
         w.set_on_menu_item_activated(
             self.MENU_SHOW_BLIND_SPOTS, self._on_menu_show_blind_spots)
+        w.set_on_menu_item_activated(
+            self.MENU_SHOW_ALL_REGIONS, self._on_menu_show_all_regions)
         w.set_on_menu_item_activated(
             self.MENU_SURFACE_SOLID,
             lambda: self._on_menu_set_surface_mode(RegionSurfaceMode.SOLID))
@@ -502,9 +493,11 @@ class GUIClient():
         # execution target) stays in sync — the param round-trip would redraw
         # the same selection, so the direct call just avoids the latency.
         if action['type'] == 'region':
+            self._leave_show_all()
             self.viz.select_region(action['region'])
             self.ros_thread.select_region(action['region'])
         elif action['type'] == 'cluster':
+            self._leave_show_all()
             self.viz.select_region(action['region'])
             self.viz.select_cluster(action['cluster'])
             self.ros_thread.select_region(action['region'])
@@ -573,11 +566,7 @@ class GUIClient():
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_POINT_CLOUD, self.viz.show_point_cloud_flag)
         gui.Application.instance.menubar.set_checked(
-            self.MENU_SHOW_CURVATURES, self.viz.show_curvatures_flag)
-        gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_NOISE_POINTS, self.viz.show_noise_points_flag)
-        gui.Application.instance.menubar.set_checked(
-            self.MENU_SHOW_CLUSTERS, self.viz.show_clusters_flag)
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_VIEWPOINTS, self.viz.show_viewpoints_flag)
         gui.Application.instance.menubar.set_checked(
@@ -586,6 +575,11 @@ class GUIClient():
             self.MENU_SHOW_UNREACHABLE, self.viz.show_unreachable_flag)
         gui.Application.instance.menubar.set_checked(
             self.MENU_SHOW_BLIND_SPOTS, self.viz.show_blind_spots_flag)
+        gui.Application.instance.menubar.set_checked(
+            self.MENU_SHOW_ALL_REGIONS, self.viz.show_all_regions_flag)
+        # Region Surface / Viewpoint Overlay checkmarks live on the same menu
+        # and drift for the same reason, so refresh them together.
+        self._refresh_render_mode_menu()
 
     def _on_menu_show_axes(self):
         show = not gui.Application.instance.menubar.is_checked(
@@ -617,22 +611,10 @@ class GUIClient():
         self.viz.show_point_cloud(show)
         self._refresh_view_menu()
 
-    def _on_menu_show_curvatures(self):
+    def _on_menu_show_all_regions(self):
         show = not gui.Application.instance.menubar.is_checked(
-            self.MENU_SHOW_CURVATURES)
-        self.viz.show_curvatures(show)
-        self._refresh_view_menu()
-
-    def _on_menu_show_regions(self):
-        show = not gui.Application.instance.menubar.is_checked(
-            self.MENU_SHOW_REGIONS)
-        self.viz.show_regions(show)
-        self._refresh_view_menu()
-
-    def _on_menu_show_fov_clusters(self):
-        show = not gui.Application.instance.menubar.is_checked(
-            self.MENU_SHOW_CLUSTERS)
-        self.viz.show_fov_clusters(show)
+            self.MENU_SHOW_ALL_REGIONS)
+        self.viz.show_all_regions(show)
         self._refresh_view_menu()
 
     def _on_menu_show_viewpoints(self):
@@ -1343,7 +1325,7 @@ class GUIClient():
 
             elif 'regions.algorithm' in param_name.lower():
                 widget = gui.Combobox()
-                algorithms = ['region_growth', 'partfield']
+                algorithms = ['region_growth', 'partfield', 'brep']
                 for algorithm in algorithms:
                     widget.add_item(algorithm)
                 widget.selected_index = algorithms.index(param_value)
@@ -1715,6 +1697,10 @@ class GUIClient():
 
     def visualize_results(self, file_path):
         print(f"Visualizing results from: {file_path}")
+        # visualize_results resets the visualizer to the show-all view, so drop
+        # the selection baseline with it: the next synced value belongs to the
+        # newly loaded plan and must not count as a user selection.
+        self._synced_region_index = None
         self.viz.visualize_results(file_path)
 
         # Point task_planning at the same results file so its planning/execution
@@ -1736,6 +1722,35 @@ class GUIClient():
 
     def select_mesh(self, mesh_idx):
         self.viz.select_mesh(mesh_idx)
+
+    def _leave_show_all(self):
+        """Drop out of the show-all view for an explicit user selection.
+
+        Picking a region in the file tree is unambiguous intent, unlike the
+        parameter sync, so it leaves show-all even when the chosen index
+        happens to match the current one.
+        """
+        if self.viz.show_all_regions_flag:
+            self.viz.show_all_regions(False)
+            self._refresh_view_menu()
+
+    def _on_region_selection_synced(self, region_index):
+        """Apply a region selection pushed by task_planning's parameter.
+
+        The first value seen after a results load only establishes the
+        baseline: task_planning always clamps its selection to a valid index,
+        so loading a plan writes back region 0 and would otherwise look like
+        the user had picked region 0 and immediately dim the rest of the part.
+        Any later change is a real slider move, which drops out of the
+        show-all view so the selection dimming becomes visible.
+        """
+        if (self._synced_region_index is not None
+                and region_index != self._synced_region_index
+                and self.viz.show_all_regions_flag):
+            self.viz.show_all_regions(False)
+            self._refresh_view_menu()
+        self._synced_region_index = region_index
+        self.select_region(region_index)
 
     def select_region(self, region_number):
         self.viz.select_region(region_number)
@@ -1940,7 +1955,7 @@ class GUIClient():
                             elif node_name == self.ros_thread.task_planning_node_name and param_name == 'navigation.selected_mesh':
                                 self.select_mesh(param_value)
                             elif node_name == self.ros_thread.task_planning_node_name and param_name == 'navigation.selected_region':
-                                self.select_region(param_value)
+                                self._on_region_selection_synced(param_value)
                             elif node_name == self.ros_thread.task_planning_node_name and param_name == 'navigation.selected_viewpoint':
                                 self.select_cluster(param_value)
                             elif node_name == self.ros_thread.task_planning_node_name and param_name == 'navigation.selected_traversal_algorithm':

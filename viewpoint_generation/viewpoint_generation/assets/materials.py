@@ -62,7 +62,6 @@ class Materials:
     selected_point_cloud_material.point_size = 7.0
     selected_point_cloud_material.base_color = [0.0, 1.0, 0.0, 1.0]
 
-    curvature_colormap = 'plasma'
     regions_colormap = 'BuPu'
     regions_colormap = 'cubehelix'
     regions_colormap = 'rainbow'
