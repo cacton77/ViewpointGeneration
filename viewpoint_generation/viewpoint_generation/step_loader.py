@@ -23,6 +23,13 @@ renumbers the triangle array. `tri_to_brep` and every `BRepFace.triangle_indices
 are recomputed from the post-merge geometry rather than carried over, so the
 indices in `StepLoadResult` always address the mesh actually returned.
 
+**Units.** OpenCascade converts every STEP file into its working length unit
+(millimetres) on read, whatever unit the file itself declares, so the file's
+units are never the caller's to choose. `load_step()` pins that working unit,
+converts to metres, and interprets tessellation tolerances in metres too. A
+STEP-loaded mesh is therefore always in metres; `mesh_utils.mesh_file_units()`
+is how callers that apply their own unit scale learn this.
+
 The OCP (`cadquery-ocp`) bindings are imported lazily by `load_step()` so that
 importing this module -- which `viewpoint_generation.py` does unconditionally --
 never hard-depends on OpenCascade being installed.
@@ -43,7 +50,13 @@ logger = logging.getLogger(__name__)
 # an inspectable part, so it can never weld genuinely distinct geometry.
 MERGE_TOLERANCE = 1e-8
 
-_UNIT_SCALE = {'m': 1.0, 'cm': 0.01, 'mm': 0.001, 'in': 0.0254}
+# OpenCascade's working length unit for STEP import, pinned in load_step(),
+# and the factor from it to metres.
+OCC_LENGTH_UNIT = 'MM'
+OCC_TO_M = 0.001
+
+# What every STEP-loaded mesh is expressed in.
+STEP_MESH_UNITS = 'm'
 
 
 @dataclass
@@ -55,9 +68,8 @@ class TessellationConfig:
     CAD-vs-scan comparison, where the mesh is the reference geometry.
     """
 
-    # Maximum chord deviation from the true surface. Interpreted in model
-    # units when `relative` is False, and as a fraction of each edge's size
-    # when True.
+    # Maximum chord deviation from the true surface. In metres when
+    # `relative` is False, and as a fraction of each edge's size when True.
     linear_deflection: float = 0.0005
     # Maximum angular deviation between adjacent facet normals (radians).
     angular_deflection: float = 0.3
@@ -69,7 +81,7 @@ class TessellationConfig:
             "linear_deflection": {
                 "value": self.linear_deflection,
                 "type": "float",
-                "description": "Maximum chord deviation of the tessellation from the true B-rep surface (model units)",
+                "description": "Maximum chord deviation of the tessellation from the true B-rep surface (m, or a fraction of edge size when relative)",
                 "control": "slider",
                 "range": [0.00001, 0.01],
             },
@@ -83,7 +95,7 @@ class TessellationConfig:
             "relative": {
                 "value": self.relative,
                 "type": "boolean",
-                "description": "Scale linear deflection with shape size instead of using absolute model units",
+                "description": "Scale linear deflection with shape size instead of using an absolute distance in metres",
                 "control": "toggle",
             },
         }
@@ -111,7 +123,7 @@ class StepLoadResult:
     face_adjacency: dict                 # face_id -> set of edge-sharing face_ids
     tri_to_brep: np.ndarray              # triangle index -> B-rep face id
     source_file: str
-    units: str
+    units: str                           # always STEP_MESH_UNITS
 
     def face_count(self):
         """Number of B-rep faces that produced geometry."""
@@ -123,11 +135,6 @@ class StepLoadResult:
         for face in self.brep_faces:
             counts[face.surface_type] = counts.get(face.surface_type, 0) + 1
         return counts
-
-
-def _unit_scale(units):
-    """The factor converting the given units to meters."""
-    return _UNIT_SCALE.get(units, 1.0)
 
 
 def _classify_surface(geom_type, geom_abs):
@@ -177,13 +184,24 @@ def _import_occ():
         from OCP.GProp import GProp_GProps
         from OCP import GeomAbs
         from OCP.IFSelect import IFSelect_RetDone
+        from OCP.Interface import Interface_Static
         from OCP.STEPControl import STEPControl_Reader
         from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED
         from OCP.TopExp import TopExp, TopExp_Explorer
         from OCP.TopLoc import TopLoc_Location
         from OCP.TopoDS import TopoDS
-        from OCP.TopTools import (TopTools_IndexedDataMapOfShapeListOfShape,
-                                  TopTools_IndexedMapOfShape)
+        try:
+            from OCP.TopTools import (
+                TopTools_IndexedDataMapOfShapeListOfShape,
+                TopTools_IndexedMapOfShape)
+        except ImportError:
+            # OCP 8 (OCCT 8) dropped the TopTools typedef names; the same
+            # template instantiations live in OCP.collections.
+            from OCP.collections import (
+                IndexedDataMap_TopoDS_Shape_List_TopoDS_Shape_TopTools_ShapeMapHasher  # noqa: E501
+                as TopTools_IndexedDataMapOfShapeListOfShape,
+                IndexedMap_TopoDS_Shape_TopTools_ShapeMapHasher
+                as TopTools_IndexedMapOfShape)
     except ImportError as e:
         raise ImportError(
             'STEP loading requires the OpenCascade Python bindings (OCP). '
@@ -198,6 +216,7 @@ def _import_occ():
         'GProp_GProps': GProp_GProps,
         'GeomAbs': GeomAbs,
         'IFSelect_RetDone': IFSelect_RetDone,
+        'Interface_Static': Interface_Static,
         'STEPControl_Reader': STEPControl_Reader,
         'TopAbs_EDGE': TopAbs_EDGE,
         'TopAbs_FACE': TopAbs_FACE,
@@ -206,6 +225,9 @@ def _import_occ():
         'TopExp_Explorer': TopExp_Explorer,
         'TopLoc_Location': TopLoc_Location,
         'TopoDS': TopoDS,
+        # OCCT 8 turned TopoDS into a namespace of free functions, so OCP 8
+        # exposes TopoDS.Face where OCP 7 had the static TopoDS.Face_s.
+        'TopoDS_Face': getattr(TopoDS, 'Face_s', None) or TopoDS.Face,
         'TopTools_IndexedDataMapOfShapeListOfShape':
             TopTools_IndexedDataMapOfShapeListOfShape,
         'TopTools_IndexedMapOfShape': TopTools_IndexedMapOfShape,
@@ -258,17 +280,20 @@ def _build_brep_adjacency(shape, occ, shape_map, index_to_face_id):
     return adjacency
 
 
-def load_step(filepath, units='m', tess_config=None):
+def load_step(filepath, units=None, tess_config=None):
     """Load a STEP file, tessellate its B-rep, and preserve face topology.
 
     Args:
         filepath: Path to the .stp/.step file.
-        units: Units the STEP file is authored in ('m', 'mm', 'cm', 'in').
+        units: Ignored; kept so existing callers keep working. A STEP file
+            declares its own units and OpenCascade converts them on read, so
+            no caller-supplied unit can be right or wrong (see module docs).
         tess_config: A `TessellationConfig`; defaults are used when omitted.
+            Its `linear_deflection` is in metres unless `relative` is set.
 
     Returns:
         StepLoadResult: The tessellated mesh plus its B-rep metadata, with all
-        lengths converted to meters.
+        lengths in metres whatever the file declares.
 
     Raises:
         ImportError: OpenCascade (OCP) is not installed.
@@ -280,8 +305,16 @@ def load_step(filepath, units='m', tess_config=None):
         tess_config = TessellationConfig()
     filepath = str(filepath)
 
+    if units not in (None, 'm', 'mm'):
+        logger.debug('load_step(units=%r) ignored: STEP files declare '
+                     'their own units.', units)
+
     # --- 1. Read the STEP file ---
     reader = occ['STEPControl_Reader']()
+    # Pin OpenCascade's working unit (the reader's construction registers the
+    # parameter) so the mm -> m factor below can't silently drift if anything
+    # else in the process changes it.
+    occ['Interface_Static'].SetCVal_s('xstep.cad.unit', OCC_LENGTH_UNIT)
     status = reader.ReadFile(filepath)
     if status != occ['IFSelect_RetDone']:
         raise IOError(f'Failed to read STEP file: {filepath} (status={status})')
@@ -289,9 +322,13 @@ def load_step(filepath, units='m', tess_config=None):
     shape = reader.OneShape()
 
     # --- 2. Tessellate the whole shape ---
+    # The shape is in OpenCascade's millimetres; an absolute deflection is
+    # configured in metres.
+    deflection = (tess_config.linear_deflection if tess_config.relative
+                  else tess_config.linear_deflection / OCC_TO_M)
     occ['BRepMesh_IncrementalMesh'](
         shape,
-        tess_config.linear_deflection,
+        deflection,
         tess_config.relative,
         tess_config.angular_deflection,
         True,   # parallel
@@ -312,7 +349,7 @@ def load_step(filepath, units='m', tess_config=None):
 
     explorer = occ['TopExp_Explorer'](shape, occ['TopAbs_FACE'])
     while explorer.More():
-        face = occ['TopoDS'].Face_s(explorer.Current())
+        face = occ['TopoDS_Face'](explorer.Current())
         location = occ['TopLoc_Location']()
         triangulation = occ['BRep_Tool'].Triangulation_s(face, location)
         if triangulation is None:
@@ -403,9 +440,8 @@ def load_step(filepath, units='m', tess_config=None):
     mesh.vertices = o3d.utility.Vector3dVector(vertices)
     mesh.triangles = o3d.utility.Vector3iVector(triangles)
 
-    scale = _unit_scale(units)
-    if scale != 1.0:
-        mesh.scale(scale, center=(0, 0, 0))
+    scale = OCC_TO_M
+    mesh.scale(scale, center=(0, 0, 0))
 
     # --- 5. Weld the per-face vertex pools together ---
     # Without this, adjacent B-rep faces share no vertex indices and
@@ -454,7 +490,7 @@ def load_step(filepath, units='m', tess_config=None):
         face_adjacency=face_adjacency,
         tri_to_brep=tri_to_brep,
         source_file=filepath,
-        units=units,
+        units=STEP_MESH_UNITS,
     )
 
 
@@ -483,7 +519,7 @@ def _remap_tri_to_brep(pre_centroids, pre_tri_to_brep, post_centroids):
     matched to its pre-merge twin by nearest centroid.
 
     Args:
-        pre_centroids: Centroids of the pre-merge triangles, in model units.
+        pre_centroids: Centroids of the pre-merge triangles, in metres.
         pre_tri_to_brep: Face id of each pre-merge triangle.
         post_centroids: Centroids of the surviving triangles.
 
@@ -511,7 +547,7 @@ def _remap_tri_to_brep(pre_centroids, pre_tri_to_brep, post_centroids):
     return remapped
 
 
-def load_step_mesh(filepath, units='m', tess_config=None):
+def load_step_mesh(filepath, units=None, tess_config=None):
     """Load a STEP file and return only its Open3D mesh.
 
     Convenience wrapper for callers that want the geometry without the

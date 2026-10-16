@@ -15,10 +15,31 @@ _STEP_CACHE = {}
 _STEP_CACHE_LIMIT = 4
 
 STEP_EXTENSIONS = ('.stp', '.step')
+# STEP meshes come back from the loader in metres whatever the file declares
+# (see step_loader's module docs); mirrors step_loader.STEP_MESH_UNITS, which
+# is not imported here so this module never pulls in OpenCascade.
+STEP_MESH_UNITS = 'm'
+
+
+def mesh_file_units(file_path: str, units: str) -> str:
+    """The units a model file's geometry is really in, given the configured ones.
+
+    For tessellated formats that is whatever the caller configured, since those
+    files carry no units. A STEP file declares its own, and OpenCascade converts
+    them on read, so its geometry is always in `STEP_MESH_UNITS` and the
+    configured value is ignored. Callers that scale what `read_mesh_file()`
+    returns must scale by this, not by the configured units.
+    """
+    if os.path.splitext(file_path or '')[1].lower() in STEP_EXTENSIONS:
+        return STEP_MESH_UNITS
+    return units
 
 
 def read_mesh_file(file_path: str):
     """Read any supported model file into an Open3D mesh, in the file's own units.
+
+    For a STEP file "its own units" are always metres; scale by
+    `mesh_file_units()` rather than the configured units.
 
     Open3D reads tessellated formats (STL/OBJ/PLY/OFF) but cannot parse STEP,
     which it fails on silently by returning an empty mesh -- so callers that go
@@ -27,8 +48,7 @@ def read_mesh_file(file_path: str):
     through PythonOCC instead.
 
     The returned geometry is *unscaled*, matching what `read_triangle_mesh`
-    would give: the caller applies its own unit conversion. (The STEP loader is
-    asked for metres purely because that is its identity scale factor.)
+    would give: the caller applies its own unit conversion.
 
     Args:
         file_path: Path to an .stl/.obj/.ply/.off/.stp/.step file.
@@ -47,7 +67,7 @@ def read_mesh_file(file_path: str):
         cached = _STEP_CACHE.get(key)
         if cached is None:
             from viewpoint_generation.step_loader import load_step_mesh
-            mesh, error = load_step_mesh(file_path, units='m')
+            mesh, error = load_step_mesh(file_path)
             if mesh is None:
                 return None, error
             if len(_STEP_CACHE) >= _STEP_CACHE_LIMIT:

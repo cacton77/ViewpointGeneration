@@ -152,8 +152,9 @@ class SyncConfig:
     # the only source of meaningful thumbnails on tenants that publish no
     # per-object preview image.
     render_thumbnails: bool = True
-    # Units STEP files from this tenant are authored in, used both when loading
-    # a selected part and when rendering its thumbnail.
+    # Units announced with a part selection. Catalog parts are STEP files,
+    # which declare their own units, so the loader ignores this for them;
+    # it only matters for a hand-placed non-STEP model.
     mesh_units: str = 'mm'
     # Pipeline stages whose plans are uploaded to 3DX automatically, as a
     # comma-separated list of plan_io.STAGES names. Every generated plan is
@@ -258,7 +259,7 @@ class SyncConfig:
             "mesh_units": {
                 "value": self.mesh_units,
                 "type": "string",
-                "description": "Units STEP files from this tenant are authored in ('m', 'mm', 'cm', 'in')",
+                "description": "Units announced with a selection ('m', 'mm', 'cm', 'in'); ignored for STEP files, which declare their own",
                 "control": "text",
             },
             "auto_upload_plan_stages": {
@@ -291,11 +292,11 @@ class CatalogPaths:
     host mount declared in docker-compose.yaml.
     """
 
-    db_path: Path = Path('/workspaces/shared_ws/catalog/catalog.db')
-    step_dir: Path = Path('/workspaces/shared_ws/catalog/steps')
-    thumb_dir: Path = Path('/workspaces/shared_ws/catalog/thumbnails')
-    plan_dir: Path = Path('/workspaces/shared_ws/catalog/plans')
-    result_dir: Path = Path('/workspaces/shared_ws/catalog/results')
+    db_path: Path = Path('/catalog/catalog.db')
+    step_dir: Path = Path('/catalog/steps')
+    thumb_dir: Path = Path('/catalog/thumbnails')
+    plan_dir: Path = Path('/catalog/plans')
+    result_dir: Path = Path('/catalog/results')
 
     @classmethod
     def from_env(cls):
@@ -304,7 +305,7 @@ class CatalogPaths:
         CATALOG_ROOT sets every unset path at once; the individual variables
         win when both are present.
         """
-        root = _env('CATALOG_ROOT', '/workspaces/shared_ws/catalog')
+        root = _env('CATALOG_ROOT', '/catalog')
         return cls(
             db_path=Path(_env('CATALOG_DB_PATH', f'{root}/catalog.db')),
             step_dir=Path(_env('CATALOG_STEP_DIR', f'{root}/steps')),
@@ -350,7 +351,7 @@ class CatalogPaths:
         """Map a cache path recorded in the database onto this environment.
 
         The same `catalog.db` is read from two different mount points -- the
-        host (`./catalog`) and the container (`/workspaces/shared_ws/catalog`)
+        host (`./catalog`) and the container (`/catalog`)
         -- so an absolute path written by one is meaningless to the other.
         Cache locations are deterministic, so the canonical path for the
         current environment is authoritative whenever the file is actually

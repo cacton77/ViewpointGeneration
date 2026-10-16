@@ -12,6 +12,9 @@ def generate_launch_description():
     declared_arguments = [
         DeclareLaunchArgument("cell", default_value="false"),
         DeclareLaunchArgument("sim", default_value="false"),
+        DeclareLaunchArgument("dual_arm", default_value="false",
+                              description="Add the second UR5e carrying the Zivid 2+ MR60 "
+                              "(cell beta only)."),
         DeclareLaunchArgument("object", default_value="new.yaml",
                               description="Configuration file for viewpoint generation."),
         DeclareLaunchArgument("data_path", default_value="/data/ViewpointGenerationData",
@@ -91,6 +94,7 @@ def generate_launch_description():
             "use_fake_hardware": LaunchConfiguration("sim"),
             "rviz_config": LaunchConfiguration("rviz_config"),
             "launch_control": LaunchConfiguration("launch_control"),
+            "dual_arm": LaunchConfiguration("dual_arm"),
         }.items(),
         condition=IfCondition(cell_enabled)
     )
@@ -136,7 +140,8 @@ def generate_launch_description():
         ]),
         launch_arguments={
             "controller_config_file": LaunchConfiguration("controller"),
-            "admittance_config_file": LaunchConfiguration("admittance_config_file")
+            "admittance_config_file": LaunchConfiguration("admittance_config_file"),
+            "dual_arm": LaunchConfiguration("dual_arm"),
         }.items(),
         condition=IfCondition(cell_enabled)
     )

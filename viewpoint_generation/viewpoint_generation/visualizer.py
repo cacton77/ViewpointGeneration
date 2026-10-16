@@ -15,7 +15,7 @@ import open3d.visualization.gui as gui
 from matplotlib import colormaps
 
 from viewpoint_generation.assets.materials import Materials
-from viewpoint_generation.mesh_utils import read_mesh_file, submesh_from_faces
+from viewpoint_generation.mesh_utils import mesh_file_units, read_mesh_file, submesh_from_faces
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -881,6 +881,8 @@ class Visualizer:
                 return None
 
             self.mesh_name  = file_path.rsplit('/', 1)[-1].rsplit('.', 1)[0]
+            # A STEP file's geometry is in metres whatever was configured.
+            mesh_units = mesh_file_units(file_path, mesh_units)
             self.mesh_units = mesh_units
 
             scale_map = {'mm': 1.0, 'cm': 10.0, 'm': 1000.0,
@@ -1005,7 +1007,9 @@ class Visualizer:
 
         for mesh_idx, mesh_entry in enumerate(results_dict.get('meshes', [])):
             mesh_file  = mesh_entry.get('file', '')
-            mesh_units = mesh_entry.get('units', 'mm')
+            # STEP geometry is in metres whatever the JSON says; results
+            # written before the loader's unit fix recorded 'mm' for STEP.
+            mesh_units = mesh_file_units(mesh_file, mesh_entry.get('units', 'mm'))
             mesh_name  = f"mesh_{mesh_idx}"
 
             mesh = None

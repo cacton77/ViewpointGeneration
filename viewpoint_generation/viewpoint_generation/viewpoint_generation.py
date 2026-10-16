@@ -18,7 +18,7 @@ from viewpoint_generation.region_growth import *
 from viewpoint_generation.partfield_segmentation import *
 from viewpoint_generation.fov_clustering import *
 from viewpoint_generation.viewpoint_projection import *
-from viewpoint_generation.mesh_utils import submesh_from_faces
+from viewpoint_generation.mesh_utils import mesh_file_units, submesh_from_faces
 from viewpoint_generation.brep_segmentation import (
     BRepSegmentation, BRepSegmentationConfig)
 from viewpoint_generation.step_loader import (
@@ -186,7 +186,12 @@ class ViewpointGeneration():
         return vertices, triangles
 
     def set_mesh_file(self, mesh_file, units):
-        """Set the mesh file and its units."""
+        """Set the mesh file and its units.
+
+        STEP files declare their own units, so for them `units` is replaced
+        by the units the STEP loader actually produces (metres); that is also
+        what the results JSON records for the mesh."""
+        units = mesh_file_units(mesh_file, units)
 
         # Check if the new mesh file and units are the same as the current ones
         if mesh_file == self.mesh_file and units == self.mesh_units:
@@ -271,7 +276,6 @@ class ViewpointGeneration():
         try:
             self.step_data = load_step(
                 self.mesh_file,
-                units=self.mesh_units,
                 tess_config=self.tessellation_config,
             )
         except Exception as e:

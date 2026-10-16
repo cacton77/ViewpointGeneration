@@ -50,7 +50,7 @@ must not fail a whole catalog sync.
 ## Cache paths are environment-relative
 
 `catalog.db` is read from both the host (`./catalog`) and the container
-(`/workspaces/shared_ws/catalog`), so absolute paths stored in it are not
+(`/catalog`), so absolute paths stored in it are not
 portable between the two. Resolve cached STEP/thumbnail paths through
 `CatalogSync.resolved_step_path()` / `resolved_thumb_path()` (which prefer the
 canonical location for the current environment) rather than trusting the stored
@@ -62,7 +62,9 @@ Never call `o3d.io.read_triangle_mesh()` on a path that could be a model the
 operator selected. It cannot parse STEP and signals that failure by returning
 an *empty mesh* rather than raising, so the caller silently displays nothing.
 Use `mesh_utils.read_mesh_file()`, which dispatches on the extension and
-returns `(mesh, error)` in the file's own units. The exceptions are fixed
+returns `(mesh, error)` in the file's own units. Scale the result by
+`mesh_utils.mesh_file_units(path, configured_units)`, not by the configured
+units: for a STEP file it is always `'m'`. The exceptions are fixed
 package assets that are always STL (e.g. `planning_volume.stl`).
 
 ## STEP loading invariants
@@ -74,6 +76,14 @@ If you touch `step_loader.py`, preserve these:
   across a face boundary.
 - `tri_to_brep` and `BRepFace.triangle_indices` must be rebuilt **after** the
   weld, because welding renumbers and can drop triangles.
+- STEP geometry is always returned in metres. OpenCascade converts every STEP
+  to its working unit (mm, pinned via `xstep.cad.unit`) whatever the file
+  declares, so a caller-supplied unit can never be right or wrong for STEP;
+  `load_step()` ignores its `units` argument. Absolute tessellation
+  deflections are configured in metres and converted to OCC's mm.
+- Keep the OCP 7/8 import fallbacks in `_import_occ()`: OCP 8 moved the
+  TopTools collection typedefs to `OCP.collections` and renamed
+  `TopoDS.Face_s` to `TopoDS.Face`.
 - B-rep face identity must come from OCC's own shape map, not Python `id()` or
   `hash()`: OCP returns a fresh wrapper object per access, so Python identity
   differs between two handles to the same face.

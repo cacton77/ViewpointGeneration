@@ -363,6 +363,11 @@ ros2 launch viewpoint_generation bringup.launch.py \
 Additional arguments:
 - `cell` -- Inspection cell configuration (`alpha` or `beta`)
 - `sim` -- Use fake/simulated hardware
+- `dual_arm` -- Add the second UR5e carrying the Zivid 2+ MR60 (cell `beta` only; default
+  `false`). Forwarded to `inspection_cell_moveit_config/launch/inspection_cell.launch.py`
+  and to `inspection_control/launch/admittance_control.launch.py`. The latter adds an
+  admittance controller for that arm, and lets the joystick's arm-switch button (10, right
+  stick click) move teleop between the two arms.
 - `catalog` -- Launch the 3DEXPERIENCE catalog node (default: `true`). Like the
   Foxglove bridge it is not gated on `cell`: browsing the catalog and caching
   STEP files is useful with or without cell hardware. It serves whatever is
@@ -376,8 +381,9 @@ Additional arguments:
 - `catalog_sync_on_startup` -- Run a full sync at bringup (default: `false`; a
   full pass over a broad `DX_BOOKMARK_SCOPE` takes minutes, and the periodic
   timer and the picker's Sync button cover it)
-- `catalog_mesh_units` -- Units used to load STEP files selected from the
-  catalog (default: `mm`)
+- `catalog_mesh_units` -- Units announced with a catalog selection (default:
+  `mm`). Ignored for STEP files, which declare their own units (see
+  [STEP ingest](#step-ingest)); it only matters for a hand-placed non-STEP model
 - `headless_mode` -- Run without the Open3D GUI (`gui_node`); starts rqt instead
   (default: false). Forwarded to `viewpoint_generation.launch.py`. Use on hosts with
   no X display.
@@ -620,8 +626,23 @@ baked-in `model.pose.*` transform; it is no longer read.
 
 STEP files load natively, producing the same `o3d.geometry.TriangleMesh` the
 STL/OBJ path produces plus a sidecar of B-rep topology. `_load_scaled_mesh()`
-dispatches on the file extension, so `set_mesh_file("part.stp", "mm")` is all
+dispatches on the file extension, so `set_mesh_file("part.stp", ...)` is all
 that is required and every downstream stage is unchanged.
+
+**Units are not configurable for STEP.** A STEP file declares its own length
+unit, and OpenCascade converts every file to its working unit (millimetres) on
+read, so the loader always returns metres and ignores the units argument.
+`set_mesh_file()` records `m` for a STEP mesh, so the results JSON does too.
+Code that scales what `mesh_utils.read_mesh_file()` returns must use
+`mesh_utils.mesh_file_units(path, units)`, which is `m` for STEP. The
+visualizer does this, so older results files that recorded `mm` for a STEP
+mesh still display at the right size.
+
+> Before this was fixed (2026-10-16) the loader treated its `units` argument as
+> the file's unit, so a STEP was only sized correctly when loaded as `mm` (the
+> catalog's default), and 1000× too large otherwise. Tessellation deflection was
+> applied in millimetres, so the default `0.0005` meant 0.5 µm rather than
+> 0.5 mm.
 
 `step_loader.load_step()` returns a `StepLoadResult`:
 
@@ -631,7 +652,7 @@ that is required and every downstream stage is unchanged.
 | `brep_faces` | One `BRepFace` per face: surface type, triangle indices, area, exact centroid and normal |
 | `face_adjacency` | `face_id -> {face_id}` from shared B-rep edges (exact CAD topology) |
 | `tri_to_brep` | Triangle index -> B-rep face id |
-| `source_file`, `units` | Provenance |
+| `source_file`, `units` | Provenance; `units` is always `m` |
 
 Surface types are classified from the analytical surface: `plane`, `cylinder`,
 `cone`, `sphere`, `torus`, `bezier`, `bspline`, `revolution`, `extrusion`,
@@ -647,12 +668,17 @@ every `BRepFace.triangle_indices` from the surviving triangles, because welding
 renumbers (and can drop degenerate) triangles.
 
 Tessellation quality is exposed as ROS parameters under
-`model.mesh.tessellation.` (`linear_deflection`, `angular_deflection`,
-`relative`) and applies on the next model load.
+`model.mesh.tessellation.` (`linear_deflection` in metres, or a fraction of
+edge size when `relative` is set; `angular_deflection` in radians; `relative`)
+and applies on the next model load.
+
+The loader works with `cadquery-ocp` 7.x and 8.x. OCP 8 moved the TopTools
+collection classes to `OCP.collections` and renamed `TopoDS.Face_s` to
+`TopoDS.Face`; `_import_occ()` falls back to the OCP 8 names.
 
 **Everything that reads a model file must go through
 `mesh_utils.read_mesh_file()`**, which dispatches on the extension and returns
-the geometry in the file's own units. `o3d.io.read_triangle_mesh()` cannot
+the geometry in the file's own units (metres for STEP; see above). `o3d.io.read_triangle_mesh()` cannot
 parse STEP and fails *silently* by returning an empty mesh, so any code path
 calling it directly renders nothing at all for a STEP-loaded part — which is
 exactly how the visualizer first went blank. Tessellated STEP meshes are cached
