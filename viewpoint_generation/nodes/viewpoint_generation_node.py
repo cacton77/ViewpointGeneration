@@ -8,6 +8,7 @@ import open3d as o3d
 from rclpy.duration import Duration
 from rclpy.action import ActionServer
 from viewpoint_generation import plan_io
+from viewpoint_generation.mesh_utils import mesh_file_units
 from viewpoint_generation.viewpoint_generation import ViewpointGeneration
 from rcl_interfaces.msg import (
     SetParametersResult, ParameterDescriptor,
@@ -495,7 +496,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     f'Could not load plan {msg.plan_file_path}; '
                     'continuing with the model only.')
 
-        if not self.set_mesh_file(msg.geometry_path, units):
+        # Re-selecting the part that is already loaded (to load another of its
+        # plans, say) leaves the model as it is: "already set" is success,
+        # not a failed load, so the context and warnings below still apply.
+        already_loaded = (
+            msg.geometry_path == self.viewpoint_generation.mesh_file
+            and mesh_file_units(msg.geometry_path, units) == self.viewpoint_generation.mesh_units)
+        if not already_loaded and not self.set_mesh_file(msg.geometry_path, units):
             self.get_logger().error(
                 f'Failed to load selected model: {msg.geometry_path}')
             return
