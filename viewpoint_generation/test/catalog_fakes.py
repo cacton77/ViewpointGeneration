@@ -9,8 +9,8 @@ import copy
 from pathlib import Path
 
 from viewpoint_generation import plan_io
-from viewpoint_generation.catalog.client import DXClient
-from viewpoint_generation.catalog.config import DXConfig
+from viewpoint_generation.catalog.backends.dx3.client import DXClient
+from viewpoint_generation.catalog.backends.dx3.config import DXConfig
 
 
 def make_item(item_id, cestamp='c1', revision='A.1', space='Test Space',
@@ -112,13 +112,16 @@ class FakeDXClient:
     def list_related_documents(self, eng_item_id, title_prefix=None):
         return []
 
-    def upload_inspection_plan(self, eng_item_id, plan_path, title, collab_space=None):
+    def upload_inspection_plan(self, eng_item_id, plan_path, title, collab_space=None,
+                               link_to_item=True):
         self.uploads.append({'eng_item_id': eng_item_id, 'path': str(plan_path),
-                             'title': title, 'collab_space': collab_space})
+                             'title': title, 'collab_space': collab_space,
+                             'link_to_item': link_to_item})
         doc_id = f'DOC{len(self.uploads)}'
         return doc_id, f'Uploaded inspection plan as document {doc_id}.'
 
-    def upload_result_bundle(self, eng_item_id, bundle_path, title, collab_space=None):
+    def upload_result_bundle(self, eng_item_id, bundle_path, title, collab_space=None,
+                             link_to_item=True):
         self.result_uploads.append({'eng_item_id': eng_item_id, 'bundle': str(bundle_path),
                                     'title': title})
         doc_id = f'RES{len(self.result_uploads)}'

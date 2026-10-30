@@ -1,22 +1,19 @@
-"""3DEXPERIENCE parts catalog subsystem.
+"""PLM parts catalog: a local index of parts held in PLM systems.
 
-Keeps a local SQLite index of engineering items published on a 3DEXPERIENCE
-(ENOVIA) tenant, caches their STEP files and thumbnails on disk, and exchanges
-inspection plans and results with the PLM record.
+Keeps a SQLite index of the parts each configured backend reports, caches
+their STEP files and thumbnails, and exchanges inspection plans and results
+with the PLM record.
 
-Modules:
-    config  -- environment-driven connection/sync/path configuration
-    schema  -- SQLite table definitions and the CatalogDB access layer
-    client  -- authenticated REST session against the 3DX tenant (DXClient)
-    sync    -- catalog synchronization daemon (CatalogSync)
-    jms     -- optional event-driven sync via a JMS/STOMP bridge
+Layout (the shape the code will have as the standalone `plm_bridge` package):
 
-Import from the submodules directly, e.g.::
+    core/       -- Catalog (reconciliation, plans, runs), CatalogDB, paths,
+                   CoreConfig, the plan contract. Imports only backends.base.
+    backends/   -- the PLMBackend protocol (base), the registry, a fake, and
+                   dx3/ (3DEXPERIENCE: client, config, backend, JMS events)
+    factory     -- builds a Catalog from the environment via the registry
+    cli         -- `python -m viewpoint_generation.catalog.cli`
+    thumbnails  -- local preview rendering (through cad, the loader shim)
+    ros_node    -- the ROS 2 node (services, topics, the picker)
 
-    from viewpoint_generation.catalog.sync import CatalogSync
-
-Nothing is re-exported here on purpose: `sync` doubles as the
-`python -m viewpoint_generation.catalog.sync` CLI entry point, and importing it
-from this package's `__init__` would load the module twice under runpy.
+Import from the submodules directly; nothing is re-exported here.
 """
-

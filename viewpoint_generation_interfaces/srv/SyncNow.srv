@@ -1,3 +1,4 @@
+string backend           # '' = every backend
 bool full                # true = full reconcile, false = incremental pass
 ---
-SyncResult result
+SyncResult[] results

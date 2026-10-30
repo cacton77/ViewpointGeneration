@@ -991,11 +991,12 @@ class DXClient:
         return entries[0].get('id'), f'Revised document {doc_id}.'
 
     def upload_inspection_plan(self, eng_item_id, plan_path, title,
-                               collab_space=None):
+                               collab_space=None, link_to_item=True):
         """Upload an inspection plan JSON and attach it to its EngItem.
 
         Orchestrates the whole sequence: create the Document, run the FCS
-        check-in, then relate it to the engineering item.
+        check-in, then (unless `link_to_item` is False) relate it to the
+        engineering item.
 
         Returns:
             tuple: (doc_id, message); doc_id is None on failure.
@@ -1013,14 +1014,15 @@ class DXClient:
             return None, (f'Created document {doc_id} but the file check-in '
                           f'failed: {upload_message}')
 
-        attached, attach_message = self.attach_document_to_item(doc_id, eng_item_id)
-        if not attached:
-            return doc_id, (f'Uploaded plan as {doc_id}, but attaching it to '
-                            f'{eng_item_id} failed: {attach_message}')
+        if link_to_item:
+            attached, attach_message = self.attach_document_to_item(doc_id, eng_item_id)
+            if not attached:
+                return doc_id, (f'Uploaded plan as {doc_id}, but attaching it to '
+                                f'{eng_item_id} failed: {attach_message}')
         return doc_id, f'Uploaded inspection plan as document {doc_id}.'
 
     def upload_result_bundle(self, eng_item_id, bundle_path, title,
-                             collab_space=None):
+                             collab_space=None, link_to_item=True):
         """Upload an inspection result bundle as a single Document.
 
         Every file in the bundle directory is checked in against one Document,
@@ -1053,9 +1055,10 @@ class DXClient:
             if not success:
                 failures.append(f'{path.name}: {upload_message}')
 
-        attached, attach_message = self.attach_document_to_item(doc_id, eng_item_id)
-        if not attached:
-            failures.append(attach_message)
+        if link_to_item:
+            attached, attach_message = self.attach_document_to_item(doc_id, eng_item_id)
+            if not attached:
+                failures.append(attach_message)
 
         if failures:
             return doc_id, (f'Uploaded result bundle as {doc_id} with '

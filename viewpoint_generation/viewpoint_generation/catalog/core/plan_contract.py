@@ -31,23 +31,26 @@ logger = logging.getLogger(__name__)
 def build_context(part, cell_id='', generated_by=''):
     """The PLM context the catalog publishes with a part selection.
 
+    Plan schema 3.0 keys. The producer adds `stage`, `generated_at` and
+    `software_version` and changes nothing else.
+
     Args:
-        part: A catalog `parts` row (or any mapping with its fields).
+        part: A catalog `parts` row.
         cell_id: This cell's identifier.
-        generated_by: The PLM account the catalog acts as.
+        generated_by: The account the part's backend acts as.
 
     Returns:
-        dict: the context block, without the producer's own keys.
+        dict: the context block.
     """
     part = part or {}
     return {
-        'eng_item_id': part.get('eng_item_id'),
+        'backend': part.get('backend'),
+        'part_id': part.get('part_id'),
         'part_number': part.get('part_number'),
         'revision': part.get('revision'),
-        'cestamp': part.get('cestamp'),
-        'collab_space': part.get('collab_space'),
+        'change_token': part.get('change_token'),
+        'container': part.get('container'),
         'title': part.get('title'),
-        'plan_doc_id': None,
         'cell_id': cell_id,
         'generated_by': generated_by,
     }
@@ -56,6 +59,14 @@ def build_context(part, cell_id='', generated_by=''):
 def context_json(part, cell_id='', generated_by=''):
     """`build_context()` serialized for `PartSelected.plm_context_json`."""
     return json.dumps(build_context(part, cell_id, generated_by), sort_keys=True)
+
+
+def token_of(context):
+    """The change token a plan context names, in any schema version.
+
+    Schema 2.0 contexts (written before backends existed) call it `cestamp`.
+    """
+    return (context or {}).get('change_token') or (context or {}).get('cestamp') or ''
 
 
 def read_context(path):

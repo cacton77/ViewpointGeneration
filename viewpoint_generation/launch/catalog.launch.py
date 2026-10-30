@@ -1,8 +1,10 @@
-"""Launch the 3DEXPERIENCE parts catalog node, which also serves the part picker UI.
+"""Launch the PLM parts catalog node, which also serves the part picker UI.
 
-The catalog node needs the DX_* environment variables (supplied by
-docker-compose from the host `.env`); it starts and serves whatever is already
-cached even when they are absent, logging a warning instead of failing.
+The node hosts the backends named by `plm_backends` (default: the
+`PLM_BACKENDS` environment variable, else `dx3`). The dx3 backend needs the
+DX_* environment variables (supplied by docker-compose from the host `.env`);
+the node starts and serves whatever is already cached even when they are
+absent, logging a warning instead of failing.
 
     ros2 launch viewpoint_generation catalog.launch.py
     ros2 launch viewpoint_generation catalog.launch.py picker:=false
@@ -10,13 +12,18 @@ cached even when they are absent, logging a warning instead of failing.
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
 
     declared_arguments = [
+        DeclareLaunchArgument(
+            'plm_backends',
+            default_value=EnvironmentVariable('PLM_BACKENDS', default_value='dx3'),
+            description="Comma-separated PLM backends to host (e.g. 'dx3')."
+        ),
         DeclareLaunchArgument(
             'sync_interval',
             default_value='300',
@@ -60,6 +67,7 @@ def generate_launch_description():
     # Empty launch arguments must not clobber the environment-derived defaults,
     # so scope/space are passed through only when the operator sets them.
     catalog_parameters = [{
+        'catalog.backends': LaunchConfiguration('plm_backends'),
         'catalog.sync_interval': LaunchConfiguration('sync_interval'),
         'catalog.sync_on_startup': LaunchConfiguration('sync_on_startup'),
         'catalog.mesh_units': LaunchConfiguration('mesh_units'),

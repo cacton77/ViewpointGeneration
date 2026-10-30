@@ -1,14 +1,15 @@
-# One catalogued engineering item, as shown in the part picker.
-string eng_item_id        # 3DX object id (hex)
+# One catalogued part, as shown in the part picker.
+string backend
+string part_id
 string title
 string part_number
 string revision
-string maturity           # IN_WORK, RELEASED, OBSOLETE, ...
-string collab_space
+string maturity           # IN_WORK, RELEASED, ... (empty when the backend has none)
+string container          # collaborative space, folder, ...
 string sync_status        # new | synced | modified | archived
-bool step_cached          # STEP file is present locally
-bool step_available       # 3DX reports a STEP derived output
-string step_path          # local path, empty when not cached
+bool geometry_cached      # STEP is present locally
+bool geometry_available   # the backend can produce STEP
+string geometry_path      # local path, empty when not cached
 string thumbnail_path     # local path, empty when not cached
-string plan_status        # CURRENT | DOWNLOADED | UPDATED_FROM_REMOTE | STALE | NONE
+string plan_status        # CURRENT | DOWNLOADED | UPDATED_FROM_REMOTE | SELECTED | STALE | NONE
 string last_synced        # ISO-8601 UTC

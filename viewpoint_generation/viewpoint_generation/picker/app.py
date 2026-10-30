@@ -1,17 +1,19 @@
-"""Flask part picker UI for the 3DEXPERIENCE catalog.
+"""Flask part picker UI for the PLM parts catalog.
 
-Serves a card grid of catalogued parts with thumbnails, cache state, and plan
-state, and turns a click into the full selection flow: fetch the STEP, resolve
-the inspection plan, and announce the part so the viewpoint generation node
-loads it.
+Serves a card grid of catalogued parts -- labelled by the backend they come
+from -- with thumbnails, cache state, and plan state, and turns a click into
+the full selection flow: fetch the STEP, resolve the inspection plan, and
+announce the part so the plan producer loads it.
+
+Parts are addressed by their `storage_key` in URLs: a backend's own part_id
+is opaque and may contain characters a URL path should not.
 
 **How this talks to ROS: it does not.** The catalog node runs the picker in its
-own process (`catalog.picker_enabled`) and hands `create_app()` three
-callbacks -- `on_select` to announce a selection on `/catalog/part_selected`,
-`on_sync` to run a sync under the node's sync lock, and `on_adopt` to have the
-plan producer describe plan files found on disk. The picker imports no ROS
-message types. Without callbacks it still works completely for browsing and
-caching; it reports that selections were not announced.
+own process and hands `create_app()` three callbacks -- `on_select` to
+announce a selection, `on_sync` to run a sync under the node's sync lock, and
+`on_adopt` to have the plan producer describe plan files found on disk. The
+picker imports no ROS message types. Without callbacks it still works for
+browsing and caching, and says that selections were not announced.
 
 Run standalone (no ROS), e.g. for UI work:
 
@@ -25,10 +27,10 @@ import threading
 
 from flask import Flask, abort, jsonify, render_template, request, send_file
 
-from viewpoint_generation.catalog.client import DXClient
-from viewpoint_generation.catalog.config import CatalogPaths, DXConfig, SyncConfig
-from viewpoint_generation.catalog.sync import (CatalogSync, PlanStatus,
-                                               describe_with_command)
+from viewpoint_generation.catalog.backends.base import Capability
+from viewpoint_generation.catalog.cli import describe_with_command
+from viewpoint_generation.catalog.core.catalog import PlanStatus
+from viewpoint_generation.catalog.factory import build_catalog
 
 logger = logging.getLogger(__name__)
 
@@ -36,21 +38,16 @@ logger = logging.getLogger(__name__)
 def card_state(part, catalog):
     """Classify a part into the picker's card state.
 
-    Args:
-        part: A catalog row.
-        catalog: The `CatalogSync`, used to resolve cache paths against this
-            process's mount point.
-
     Returns:
         tuple: (key, label) where key drives the CSS class.
     """
     if part.get('sync_status') == 'archived':
         return 'archived', 'Archived'
-    if catalog.resolved_step_path(part) is not None:
-        if part.get('step_cestamp') and part['step_cestamp'] != part.get('cestamp'):
+    if catalog.resolved_geometry_path(part) is not None:
+        if part.get('geometry_token') and part['geometry_token'] != part.get('change_token'):
             return 'stale', 'Stale'
         return 'ready', 'Ready'
-    if part.get('step_available'):
+    if part.get('geometry_available'):
         return 'fetch', 'Fetch'
     if part.get('sync_status') == 'new':
         return 'new', 'New'
@@ -61,50 +58,54 @@ def create_app(catalog=None, on_select=None, on_sync=None, on_adopt=None):
     """Build the Flask application.
 
     Args:
-        catalog: A `CatalogSync`; one is constructed from the environment
-            when omitted.
-        on_select: Callable taking the selection dict from
-            `CatalogSync.select()` and returning (published, message). None
-            means selections are not announced anywhere.
-        on_sync: Callable taking `full` and returning (SyncResult or None,
-            message). None runs the sync directly in the request thread.
-        on_adopt: Callable taking an eng_item_id and returning (adopted,
-            skipped, message). None asks the producer's describe command
-            (`describe_with_command`).
+        catalog: A `Catalog`; built from the environment when omitted.
+        on_select: Callable taking the selection dict from `Catalog.select()`
+            and returning (published, message). None: not announced anywhere.
+        on_sync: Callable taking `full` and returning (list of SyncResult,
+            message). None runs the sync in the request thread.
+        on_adopt: Callable taking (backend, part_id) and returning (adopted,
+            skipped, message). None asks the producer's describe command.
 
     Returns:
         Flask: The configured application.
     """
     if catalog is None:
-        paths = CatalogPaths.from_env()
-        catalog = CatalogSync(DXClient(DXConfig.from_env()), paths.db_path,
-                              SyncConfig.from_env(), paths)
+        catalog, _errors = build_catalog()
     sync_lock = threading.Lock()
 
     app = Flask(__name__)
     app.config['CATALOG'] = catalog
 
+    def part_or_404(key):
+        part = catalog.db.get_part_by_key(key)
+        if part is None:
+            abort(404)
+        return part
+
     def part_payload(part):
         """Serialize one catalog row for the front end."""
         state, label = card_state(part, catalog)
-        # Local-only: the grid renders every part, and a 3DX round trip per
-        # card would stall the UI. The detail panel does the remote check.
-        plan_status, plan_path = catalog.ensure_plan(part['eng_item_id'],
+        # Local-only: the grid renders every part, and a remote round trip
+        # per card would stall the UI. The detail panel does the remote check.
+        plan_status, plan_path = catalog.ensure_plan(part['backend'], part['part_id'],
                                                      check_remote=False)
         return {
-            'eng_item_id': part['eng_item_id'],
+            'key': part['storage_key'],
+            'backend': part['backend'],
+            'part_id': part['part_id'],
             'title': part.get('title') or '(untitled)',
             'part_number': part.get('part_number') or '',
             'revision': part.get('revision') or '',
             'maturity': part.get('maturity') or '',
-            'collab_space': part.get('collab_space') or '',
+            'container': part.get('container') or '',
             'description': part.get('description') or '',
             'sync_status': part.get('sync_status') or '',
             'state': state,
             'state_label': label,
-            'step_cached': catalog.resolved_step_path(part) is not None,
-            'step_available': bool(part.get('step_available')),
+            'geometry_cached': catalog.resolved_geometry_path(part) is not None,
+            'geometry_available': bool(part.get('geometry_available')),
             'has_thumbnail': catalog.resolved_thumb_path(part) is not None,
+            'can_upload': catalog.has(part['backend'], Capability.ATTACH),
             'plan_status': plan_status.value,
             'plan_file_path': plan_path or '',
             'last_synced': part.get('last_synced') or '',
@@ -117,44 +118,46 @@ def create_app(catalog=None, on_select=None, on_sync=None, on_adopt=None):
 
     @app.route('/api/parts')
     def api_parts():
-        """The catalog as JSON, honouring search and maturity filters."""
+        """The catalog as JSON, honouring search, maturity and backend filters."""
         parts = catalog.db.list_parts(
             search=request.args.get('search') or None,
             maturity=request.args.get('maturity') or None,
-            collab_space=catalog.config.collab_space_filter or None,
+            backend=request.args.get('backend') or None,
             include_archived=request.args.get('archived') == '1')
         return jsonify({'parts': [part_payload(part) for part in parts],
                         'total': len(parts)})
 
     @app.route('/api/status')
     def api_status():
-        """Catalog counts, sync state, and the last sync's outcome."""
+        """Catalog counts, sync state, backends, and the last syncs' outcomes."""
         status = catalog.status()
         status['ros'] = on_select is not None
-        status['configured'] = catalog.client.config.is_configured()[0]
+        status['configured'] = any(b['configured'] for b in status['backends'])
         return jsonify(status)
 
     @app.route('/api/select', methods=['POST'])
     def api_select():
         """Fetch a part's STEP, resolve its plan, and announce the selection.
 
-        An optional `plan_id` loads that exact plan rather than whichever one
-        is current -- including one generated against an earlier CAD revision,
-        which comes back as SELECTED so the pipeline honours the choice and
-        warns. `plan_id: null` explicitly loads the model with no plan.
+        The body names the part by `key` (its storage_key) or by `backend` and
+        `part_id`. An optional `plan_id` loads that exact plan -- including one
+        generated against an earlier change token, which comes back SELECTED
+        so the pipeline honours the choice and warns. `model_only` loads the
+        geometry with no plan.
         """
         payload = request.get_json(silent=True) or {}
-        eng_item_id = payload.get('eng_item_id') or request.form.get('eng_item_id')
-        if not eng_item_id:
-            return jsonify({'success': False, 'message': 'eng_item_id is required.'}), 400
-
-        part = catalog.db.get_part(eng_item_id)
+        part = None
+        if payload.get('key'):
+            part = catalog.db.get_part_by_key(payload['key'])
+        elif payload.get('part_id'):
+            part = catalog.db.get_part(payload.get('backend', ''), payload['part_id'])
+        else:
+            return jsonify({'success': False, 'message': 'key or part_id is required.'}), 400
         if part is None:
-            return jsonify({'success': False,
-                            'message': f'Unknown part: {eng_item_id}.'}), 404
+            return jsonify({'success': False, 'message': 'Unknown part.'}), 404
 
         selection, message = catalog.select(
-            eng_item_id, plan_id=payload.get('plan_id'),
+            part['backend'], part['part_id'], plan_id=payload.get('plan_id'),
             model_only=bool(payload.get('model_only')))
         if selection is None:
             status = 404 if message.startswith('Plan is unavailable') else 409
@@ -168,9 +171,11 @@ def create_app(catalog=None, on_select=None, on_sync=None, on_adopt=None):
 
         return jsonify({
             'success': True,
-            'eng_item_id': eng_item_id,
+            'key': part['storage_key'],
+            'backend': part['backend'],
+            'part_id': part['part_id'],
             'title': part.get('title'),
-            'step_file_path': selection['step_path'],
+            'geometry_path': selection['geometry_path'],
             'plan_status': selection['plan_status'].value,
             'plan_file_path': selection['plan_path'],
             'plan_dir': selection['plan_dir'],
@@ -180,109 +185,93 @@ def create_app(catalog=None, on_select=None, on_sync=None, on_adopt=None):
 
     @app.route('/api/sync', methods=['POST'])
     def api_sync():
-        """Run a catalog sync and report what changed."""
+        """Run a catalog sync and report what changed, per backend."""
         payload = request.get_json(silent=True) or {}
         full = bool(payload.get('full', True))
+        backend = payload.get('backend') or None
         if on_sync is not None:
-            result, message = on_sync(full)
-            if result is None:
-                return jsonify({'success': False, 'message': message}), 409
-            return jsonify({'success': result.success, **result.to_dict()})
-
-        configured, message = catalog.client.config.is_configured()
-        if not configured:
+            results, message = on_sync(full, backend)
+        else:
+            if not sync_lock.acquire(blocking=False) or catalog.syncing:
+                return jsonify({'success': False,
+                                'message': 'A sync is already running.'}), 409
+            try:
+                run = catalog.run_full_sync if full else catalog.run_incremental_sync
+                results = run(backend)
+            finally:
+                sync_lock.release()
+            message = '; '.join(f'{r.backend}: {r.message}' for r in results)
+        if not results:
             return jsonify({'success': False, 'message': message}), 409
-        if not sync_lock.acquire(blocking=False) or catalog.syncing:
-            return jsonify({'success': False,
-                            'message': 'A sync is already running.'}), 409
-        try:
-            result = (catalog.run_full_sync() if full
-                      else catalog.run_incremental_sync())
-        finally:
-            sync_lock.release()
-        return jsonify({'success': result.success, **result.to_dict()})
+        totals = {field: sum(getattr(r, field) for r in results)
+                  for field in ('added', 'modified', 'unchanged', 'archived', 'errors')}
+        return jsonify({'success': all(r.success for r in results), 'message': message,
+                        'results': [r.to_dict() for r in results], **totals})
 
-    @app.route('/thumb/<eng_item_id>')
-    def thumb(eng_item_id):
+    @app.route('/thumb/<key>')
+    def thumb(key):
         """Serve a cached thumbnail image."""
-        part = catalog.db.get_part(eng_item_id)
-        if part is None:
-            abort(404)
-        path = catalog.resolved_thumb_path(part)
+        path = catalog.resolved_thumb_path(part_or_404(key))
         if path is None:
             abort(404)
         return send_file(str(path), mimetype='image/png')
 
-    @app.route('/api/parts/<eng_item_id>/plan')
-    def api_part_plan(eng_item_id):
+    @app.route('/api/parts/<key>/plan')
+    def api_part_plan(key):
         """Plan status and summary for one part."""
-        part = catalog.db.get_part(eng_item_id)
-        if part is None:
-            abort(404)
-        status, path = catalog.ensure_plan(eng_item_id)
-        plan = catalog.db.get_current_plan(eng_item_id)
+        part = part_or_404(key)
+        status, path = catalog.ensure_plan(part['backend'], part['part_id'])
+        plan = catalog.db.get_current_plan(part['backend'], part['part_id'])
         return jsonify({
-            'eng_item_id': eng_item_id,
+            'key': key,
             'status': status.value,
             'file_path': path or '',
-            'stale_reason': ('Plan targets CAD cestamp '
-                             f"{plan['cestamp']}, current is {part.get('cestamp')}."
+            'stale_reason': ('Plan targets change token '
+                             f"{plan['change_token']}, current is {part.get('change_token')}."
                              if plan and status == PlanStatus.STALE else ''),
             'plan': plan,
         })
 
-    @app.route('/api/parts/<eng_item_id>/plans')
-    def api_part_plans(eng_item_id):
-        """Every plan recorded for a part, newest first.
-
-        This is what fills the picker's plan strip, so it must stay purely
-        local -- no 3DX round trip.
-        """
-        if catalog.db.get_part(eng_item_id) is None:
-            abort(404)
-        plans = catalog.list_plans(eng_item_id)
+    @app.route('/api/parts/<key>/plans')
+    def api_part_plans(key):
+        """Every plan recorded for a part, newest first (purely local)."""
+        part = part_or_404(key)
+        plans = catalog.list_plans(part['backend'], part['part_id'])
         current = next((p['plan_id'] for p in plans if p['is_current']), '')
-        return jsonify({'plans': plans, 'current_plan_id': current,
-                        'total': len(plans)})
+        return jsonify({'plans': plans, 'current_plan_id': current, 'total': len(plans),
+                        'can_upload': catalog.has(part['backend'], Capability.ATTACH)})
 
-    @app.route('/api/parts/<eng_item_id>/plans/adopt', methods=['POST'])
-    def api_adopt_plans(eng_item_id):
-        """Record plan files already on disk that the catalog never captured.
+    @app.route('/api/parts/<key>/plans/adopt', methods=['POST'])
+    def api_adopt_plans(key):
+        """Record plan files on disk that the catalog never captured.
 
         The catalog only lists the files; the plan producer describes them.
         """
-        if catalog.db.get_part(eng_item_id) is None:
-            abort(404)
+        part = part_or_404(key)
         if on_adopt is not None:
-            adopted, skipped, message = on_adopt(eng_item_id)
+            adopted, skipped, message = on_adopt(part['backend'], part['part_id'])
         else:
             adopted, skipped = catalog.adopt_orphan_plans(
-                eng_item_id, describe=describe_with_command)
+                part['backend'], part['part_id'], describe=describe_with_command)
             message = (f'Adopted {adopted} plan(s).' if adopted
                        else 'No unrecorded plan files found.')
-        return jsonify({
-            'success': True,
-            'adopted': adopted,
-            'skipped': skipped,
-            'message': message,
-        })
+        return jsonify({'success': True, 'adopted': adopted, 'skipped': skipped,
+                        'message': message})
 
     @app.route('/api/plans/<path:plan_id>/upload', methods=['POST'])
     def api_upload_plan(plan_id):
-        """Upload one recorded plan to 3DX as a Document."""
+        """Upload one recorded plan through its part's backend."""
         if catalog.db.get_plan(plan_id) is None:
             abort(404)
-        doc_id, message = catalog.upload_recorded_plan(plan_id)
-        return jsonify({'success': doc_id is not None,
-                        'plan_doc_id': doc_id or '',
-                        'message': message}), (200 if doc_id else 409)
+        ref, message = catalog.upload_recorded_plan(plan_id)
+        return jsonify({'success': ref is not None, 'remote_ref': ref or '',
+                        'message': message}), (200 if ref else 409)
 
-    @app.route('/api/parts/<eng_item_id>/runs')
-    def api_part_runs(eng_item_id):
+    @app.route('/api/parts/<key>/runs')
+    def api_part_runs(key):
         """Inspection history for one part."""
-        if catalog.db.get_part(eng_item_id) is None:
-            abort(404)
-        return jsonify({'runs': catalog.db.list_runs(eng_item_id)})
+        part = part_or_404(key)
+        return jsonify({'runs': catalog.db.list_runs(part['backend'], part['part_id'])})
 
     return app
 
@@ -295,7 +284,7 @@ def main(args=None):
     """
     parser = argparse.ArgumentParser(
         prog='viewpoint_generation.picker.app',
-        description='Part picker UI for the 3DEXPERIENCE catalog (standalone, no ROS).')
+        description='Part picker UI for the PLM parts catalog (standalone, no ROS).')
     parser.add_argument('--port', type=int,
                         default=int(os.environ.get('PICKER_PORT', '5050')),
                         help='Port to listen on (default: $PICKER_PORT or 5050).')
@@ -306,20 +295,15 @@ def main(args=None):
 
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s %(levelname)-7s %(name)s: %(message)s')
-
-    paths = CatalogPaths.from_env()
-    success, message = paths.ensure()
-    if not success:
-        logger.error(message)
-        return 1
-    catalog = CatalogSync(DXClient(DXConfig.from_env()), paths.db_path,
-                          SyncConfig.from_env(), paths)
+    catalog, _errors = build_catalog()
     app = create_app(catalog)
-
     logger.info('Part picker listening on http://%s:%d', parsed.host, parsed.port)
-    # threaded so a slow STEP fetch cannot block the whole UI.
-    app.run(host=parsed.host, port=parsed.port, debug=parsed.debug,
-            threaded=True, use_reloader=False)
+    try:
+        # threaded so a slow STEP fetch cannot block the whole UI.
+        app.run(host=parsed.host, port=parsed.port, debug=parsed.debug,
+                threaded=True, use_reloader=False)
+    finally:
+        catalog.close()
     return 0
 
 

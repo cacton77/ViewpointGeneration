@@ -1,4 +1,5 @@
-# Outcome of one catalog synchronization pass.
+# Outcome of one catalog synchronization pass over one backend.
+string backend
 bool success
 int32 added
 int32 modified

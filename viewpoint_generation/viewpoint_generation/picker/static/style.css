@@ -313,3 +313,13 @@ table.runs th { color: var(--muted); font-weight: 600; }
     --danger: #c92a2a;
   }
 }
+
+/* Which PLM backend a part comes from. */
+.backend-tag {
+  margin-left: 0.4em;
+  padding: 0 0.35em;
+  border-radius: 3px;
+  font-size: 0.75em;
+  opacity: 0.75;
+  border: 1px solid currentColor;
+}

@@ -16,14 +16,25 @@ When making changes to this package (adding/removing/modifying modules, ROS inte
 Algorithm and subsystem configuration lives in dataclasses exposing a
 `to_dict()` that returns `{field: {value, type, description, control, range}}`.
 The ROS nodes auto-declare parameters from it (`_auto_declare_parameters` in
-`viewpoint_generation_node.py`, `_declare_sync_parameters` in
-`catalog/ros_node.py`), so **adding a field to the dataclass and its
-`to_dict()` is sufficient** -- no node changes are needed. Follow this for any
-new config class.
+`viewpoint_generation_node.py`, `_declare_from` in `catalog/ros_node.py` for
+`CoreConfig` and each backend's settings), so **adding a field to the
+dataclass and its `to_dict()` is sufficient** -- no node changes are needed.
+Follow this for any new config class.
 
-`DXConfig` is the deliberate exception: it holds a password and must never be
-exposed as a ROS parameter or written into a results file. Keep it without a
-`to_dict()`, and use `redacted()` when logging it.
+Credential-bearing config (`DXConfig` in `catalog/backends/dx3/config.py`, and
+every future backend's credentials) is the deliberate exception: it must never
+be exposed as a ROS parameter or written into a plan, result or log. Keep it
+without a `to_dict()`, and use `redacted()` when logging it.
+
+## Catalog structure
+
+The catalog core (`catalog/core/`) talks to PLM systems only through
+`catalog/backends/base.py` and must never import a concrete backend; the
+registry and `catalog/factory.py` wire them together. The core never opens a
+plan file to learn about it (see `catalog/core/plan_contract.py`). A
+backend's `part_id` is never used as a file path component; use the
+`storage_key`. The catalog is being extracted to the `plm_bridge` repository
+(see `PLM_BRIDGE_STATUS.md`).
 
 ## 3DX client: tenant API surface varies
 
@@ -32,7 +43,7 @@ platform releases. Before assuming an endpoint exists, check
 `docs/3dx_integration/TENANT_API_FINDINGS.md` in the `inspection-docker` repo,
 which records what this tenant actually exposes and what it does not.
 
-Two behaviours to keep in mind when touching `catalog/client.py`:
+Two behaviours to keep in mind when touching `catalog/backends/dx3/client.py`:
 
 - **HTTP 200 does not mean the write happened.** Several endpoints accept a
   request with the wrong method or shape, return 200, and do nothing (the
@@ -51,10 +62,11 @@ must not fail a whole catalog sync.
 
 `catalog.db` is read from both the host (`./catalog`) and the container
 (`/catalog`), so absolute paths stored in it are not
-portable between the two. Resolve cached STEP/thumbnail paths through
-`CatalogSync.resolved_step_path()` / `resolved_thumb_path()` (which prefer the
-canonical location for the current environment) rather than trusting the stored
-column directly.
+portable between the two. Resolve cached STEP/thumbnail/plan paths through
+`Catalog.resolved_geometry_path()` / `resolved_thumb_path()` /
+`resolved_plan_path()` (which prefer the canonical location for the current
+environment, then the legacy layout) rather than trusting the stored column
+directly.
 
 ## Reading model files
 

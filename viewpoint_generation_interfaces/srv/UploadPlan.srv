@@ -1,6 +1,5 @@
-string eng_item_id
-string results_json_path   # ViewpointGeneration results JSON to wrap and upload
+string plan_id           # a recorded plan (see RecordPlan)
 ---
 bool success
-string plan_doc_id
+string remote_ref        # id of the remote attachment, e.g. a 3DX Document
 string message

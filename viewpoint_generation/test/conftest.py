@@ -1,7 +1,9 @@
-"""Shared fixtures for the catalog characterization tests.
+"""Shared fixtures for the catalog tests.
 
-Nothing here touches the network or ROS: the fake client keeps an in-memory
-tenant, and every catalog lives under pytest's tmp_path.
+Nothing here touches the network or ROS. `catalog` is the multi-backend core
+hosting one dx3 backend whose REST client is `FakeDXClient`, an in-memory
+tenant, so the 3DX scoping and paging behaviour stays pinned. Every catalog
+lives under pytest's tmp_path.
 """
 
 from pathlib import Path
@@ -10,8 +12,11 @@ import pytest
 
 from catalog_fakes import FakeDXClient, results_for
 from viewpoint_generation import plan_io
-from viewpoint_generation.catalog.config import CatalogPaths, SyncConfig
-from viewpoint_generation.catalog.sync import CatalogSync
+from viewpoint_generation.catalog.backends.dx3.backend import DX3Backend
+from viewpoint_generation.catalog.backends.dx3.config import DX3Settings
+from viewpoint_generation.catalog.core.catalog import Catalog
+from viewpoint_generation.catalog.core.config import CoreConfig
+from viewpoint_generation.catalog.core.paths import CatalogPaths
 
 
 @pytest.fixture
@@ -21,22 +26,37 @@ def fake_client():
 
 @pytest.fixture
 def catalog_paths(tmp_path):
-    root = tmp_path / 'catalog'
-    return CatalogPaths(db_path=root / 'catalog.db', step_dir=root / 'steps',
-                        thumb_dir=root / 'thumbnails', plan_dir=root / 'plans',
-                        result_dir=root / 'results')
+    return CatalogPaths.from_env(tmp_path / 'catalog')
 
 
 @pytest.fixture
-def sync_config():
-    return SyncConfig(sync_interval=0, bookmark_scope='*', use_bookmark_scope=True,
-                      page_size=100, max_items=1000, fetch_thumbnails=True,
-                      render_thumbnails=False, auto_upload_plan_stages='ordered')
+def core_config(tmp_path):
+    return CoreConfig(backends='dx3', sync_interval=0, render_thumbnails=False,
+                      auto_upload_plan_stages='ordered', root=str(tmp_path / 'catalog'))
 
 
 @pytest.fixture
-def catalog(fake_client, catalog_paths, sync_config):
-    return CatalogSync(fake_client, catalog_paths.db_path, sync_config, catalog_paths)
+def dx3_settings():
+    return DX3Settings(bookmark_scope='*', use_bookmark_scope=True, page_size=100,
+                       max_items=1000, fetch_thumbnails=True, document_links=False)
+
+
+@pytest.fixture
+def dx3(fake_client, dx3_settings):
+    return DX3Backend(fake_client.config, dx3_settings, client=fake_client)
+
+
+@pytest.fixture
+def catalog(dx3, core_config, catalog_paths):
+    return Catalog({'dx3': dx3}, core_config, catalog_paths)
+
+
+@pytest.fixture
+def plan_dir():
+    """The directory the catalog hands the producer for a dx3 part's plans."""
+    def _plan_dir(catalog, part_id, backend='dx3'):
+        return catalog.plan_dir_for(catalog.db.get_part(backend, part_id))
+    return _plan_dir
 
 
 @pytest.fixture
@@ -53,10 +73,10 @@ def write_plan_file():
 @pytest.fixture
 def record():
     """Record a plan the way the VG node does: describe it, then RecordPlan."""
-    def _record(catalog, eng_item_id, path, **kwargs):
+    def _record(catalog, part_id, path, backend='dx3', **kwargs):
         description = plan_io.describe_plan(path)
         return catalog.record_plan(
-            eng_item_id, path, stage=description['stage'],
+            backend, part_id, path, stage=description['stage'],
             stage_rank=description['stage_rank'],
             summary_json=description['summary_json'],
             summary_text=description['summary_text'],

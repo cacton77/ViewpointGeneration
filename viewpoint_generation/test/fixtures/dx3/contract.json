@@ -1,0 +1,301 @@
+{
+ "attachment_content": "{\"contract_test\": true}\n",
+ "attachment_ref": "00000000000000000000000000000010",
+ "attachment_title": "TEST_PLM_BRIDGE_CONTRACT_PLAN",
+ "change_tokens": {
+  "00000000000000000000000000000002": "00000000000000000000000000000008",
+  "00000000000000000000000000000003": "00000000000000000000000000000009",
+  "00000000000000000000000000000004": "0000000000000000000000000000000A",
+  "00000000000000000000000000000005": "0000000000000000000000000000000B",
+  "00000000000000000000000000000006": "0000000000000000000000000000000C",
+  "00000000000000000000000000000007": "0000000000000000000000000000000B"
+ },
+ "interactions": [
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"name\":\"BMR_3516044052\",\"title\":\"Inspection Parts\",\"id\":\"00000000000000000000000000000001\",\"type\":\"Workspace\",\"modified\":\"08\\/26\\/2026 03:54:00 PM\",\"created\":\"08\\/12\\/2026 04:55:03 PM\",\"revision\":\"1\",\"state\":\"Create\",\"owner\":\"tester\",\"organization\":\"Test Org\",\"collabspace\":\"Test Space\"}],\"nlsLabel\":{\"id\":\"Id\",\"type\":\"Type\",\"modified\":\"Modification Date\",\"created\":\"Creation Date\",\"revision\":\"Revision\",\"state\":\"State\",\"owner\":\"Owner\"}}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dsbks/dsbks:Bookmark/search?%24searchStr=Inspection+Parts&%24mask=dskern%3AMask.Default&%24top=50&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"id\":\"00000000000000000000000000000001\",\"name\":\"BMR_3516044052\",\"items\":{\"member\":[{\"referencedObject\":{\"referencedType\":\"internal\",\"relativePath\":\"\\/resources\\/v1\\/modeler\\/dseng\\/dseng:EngItem\\/00000000000000000000000000000002\",\"source\":\"https:\\/\\/host1.example.invalid\\/enovia\",\"identifier\":\"00000000000000000000000000000002\",\"type\":\"VPMReference\"}}, {\"referencedObject\":{\"referencedType\":\"internal\",\"relativePath\":\"\\/resources\\/v1\\/modeler\\/dseng\\/dseng:EngItem\\/00000000000000000000000000000003\",\"source\":\"https:\\/\\/host1.example.invalid\\/enovia\",\"identifier\":\"00000000000000000000000000000003\",\"type\":\"VPMReference\"}}, {\"referencedObject\":{\"referencedType\":\"internal\",\"relativePath\":\"\\/resources\\/v1\\/modeler\\/dseng\\/dseng:EngItem\\/00000000000000000000000000000004\",\"source\":\"https:\\/\\/host1.example.invalid\\/enovia\",\"identifier\":\"00000000000000000000000000000004\",\"type\":\"VPMReference\"}}, {\"referencedObject\":{\"referencedType\":\"internal\",\"relativePath\":\"\\/resources\\/v1\\/modeler\\/dseng\\/dseng:EngItem\\/00000000000000000000000000000005\",\"source\":\"https:\\/\\/host1.example.invalid\\/enovia\",\"identifier\":\"00000000000000000000000000000005\",\"type\":\"VPMReference\"}}, {\"referencedObject\":{\"referencedType\":\"internal\",\"relativePath\":\"\\/resources\\/v1\\/modeler\\/dseng\\/dseng:EngItem\\/00000000000000000000000000000006\",\"source\":\"https:\\/\\/host1.example.invalid\\/enovia\",\"identifier\":\"00000000000000000000000000000006\",\"type\":\"VPMReference\"}}, {\"referencedObject\":{\"referencedType\":\"internal\",\"relativePath\":\"\\/resources\\/v1\\/modeler\\/dseng\\/dseng:EngItem\\/00000000000000000000000000000007\",\"source\":\"https:\\/\\/host1.example.invalid\\/enovia\",\"identifier\":\"00000000000000000000000000000007\",\"type\":\"VPMReference\"}}],\"totalItems\":6}}],\"nlsLabel\":{\"id\":\"Id\",\"name\":\"Name\"}}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dsbks/dsbks:Bookmark/00000000000000000000000000000001?%24mask=dsbks%3ABksMask.Items&%24top=1000&%24skip=0&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"id\":\"00000000000000000000000000000001\",\"name\":\"BMR_3516044052\",\"bookmarks\":{\"member\":[],\"totalItems\":0}}],\"nlsLabel\":{\"id\":\"Id\",\"name\":\"Name\"}}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dsbks/dsbks:Bookmark/00000000000000000000000000000001?%24mask=dsbks%3ABksMask.Bookmarks&%24top=1000&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"name\":\"prd-R0000000000000-00221681\",\"title\":\"Test\",\"description\":\"\",\"id\":\"00000000000000000000000000000002\",\"type\":\"VPMReference\",\"modified\":\"8\\/5\\/2026 5:50:16 PM\",\"created\":\"8\\/5\\/2026 5:43:15 PM\",\"revision\":\"A.1\",\"state\":\"IN_WORK\",\"owner\":\"tester\",\"organization\":\"Test Org\",\"collabspace\":\"Test Space\",\"cestamp\":\"00000000000000000000000000000008\"}],\"nlsLabel\":{\"id\":\"Id\",\"type\":\"Type\",\"modified\":\"Modification Date\",\"created\":\"Creation Date\",\"revision\":\"Revision\",\"state\":\"State\",\"owner\":\"Owner\"}}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000002?%24mask=dskern%3AMask.Default&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"name\":\"prd-R0000000000000-00221675\",\"title\":\"MagPi\",\"description\":\"\",\"id\":\"00000000000000000000000000000003\",\"type\":\"VPMReference\",\"modified\":\"8\\/6\\/2026 4:51:35 PM\",\"created\":\"8\\/4\\/2026 12:02:18 AM\",\"revision\":\"A.1\",\"state\":\"IN_WORK\",\"owner\":\"tester\",\"organization\":\"Test Org\",\"collabspace\":\"Test Space\",\"cestamp\":\"00000000000000000000000000000009\"}],\"nlsLabel\":{\"id\":\"Id\",\"type\":\"Type\",\"modified\":\"Modification Date\",\"created\":\"Creation Date\",\"revision\":\"Revision\",\"state\":\"State\",\"owner\":\"Owner\"}}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000003?%24mask=dskern%3AMask.Default&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"name\":\"prd-R0000000000000-00221678\",\"title\":\"Center Bracket\",\"description\":\"\",\"id\":\"00000000000000000000000000000004\",\"type\":\"VPMReference\",\"modified\":\"8\\/6\\/2026 4:51:26 PM\",\"created\":\"8\\/4\\/2026 10:44:56 PM\",\"revision\":\"A.1\",\"state\":\"IN_WORK\",\"owner\":\"tester\",\"organization\":\"Test Org\",\"collabspace\":\"Test Space\",\"cestamp\":\"0000000000000000000000000000000A\"}],\"nlsLabel\":{\"id\":\"Id\",\"type\":\"Type\",\"modified\":\"Modification Date\",\"created\":\"Creation Date\",\"revision\":\"Revision\",\"state\":\"State\",\"owner\":\"Owner\"}}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000004?%24mask=dskern%3AMask.Default&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"name\":\"prd-R0000000000000-00221679\",\"title\":\"Stepper Case\",\"description\":\"\",\"id\":\"00000000000000000000000000000005\",\"type\":\"VPMReference\",\"modified\":\"8\\/5\\/2026 3:25:55 PM\",\"created\":\"8\\/5\\/2026 3:25:50 PM\",\"revision\":\"A.1\",\"state\":\"IN_WORK\",\"owner\":\"tester\",\"organization\":\"Test Org\",\"collabspace\":\"Test Space\",\"cestamp\":\"0000000000000000000000000000000B\"}],\"nlsLabel\":{\"id\":\"Id\",\"type\":\"Type\",\"modified\":\"Modification Date\",\"created\":\"Creation Date\",\"revision\":\"Revision\",\"state\":\"State\",\"owner\":\"Owner\"}}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000005?%24mask=dskern%3AMask.Default&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"name\":\"prd-R0000000000000-00221676\",\"title\":\"Pi Camera + Lens\",\"description\":\"\",\"id\":\"00000000000000000000000000000006\",\"type\":\"VPMReference\",\"modified\":\"8\\/4\\/2026 2:04:52 AM\",\"created\":\"8\\/4\\/2026 2:04:46 AM\",\"revision\":\"A.1\",\"state\":\"IN_WORK\",\"owner\":\"tester\",\"organization\":\"Test Org\",\"collabspace\":\"Test Space\",\"cestamp\":\"0000000000000000000000000000000C\"}],\"nlsLabel\":{\"id\":\"Id\",\"type\":\"Type\",\"modified\":\"Modification Date\",\"created\":\"Creation Date\",\"revision\":\"Revision\",\"state\":\"State\",\"owner\":\"Owner\"}}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000006?%24mask=dskern%3AMask.Default&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"name\":\"prd-R0000000000000-00221680\",\"title\":\"Center Case\",\"description\":\"\",\"id\":\"00000000000000000000000000000007\",\"type\":\"VPMReference\",\"modified\":\"8\\/5\\/2026 3:25:55 PM\",\"created\":\"8\\/5\\/2026 3:25:50 PM\",\"revision\":\"A.1\",\"state\":\"IN_WORK\",\"owner\":\"tester\",\"organization\":\"Test Org\",\"collabspace\":\"Test Space\",\"cestamp\":\"0000000000000000000000000000000B\"}],\"nlsLabel\":{\"id\":\"Id\",\"type\":\"Type\",\"modified\":\"Modification Date\",\"created\":\"Creation Date\",\"revision\":\"Revision\",\"state\":\"State\",\"owner\":\"Owner\"}}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000007?%24mask=dskern%3AMask.Default&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"name\":\"BMR_3516044052\",\"title\":\"Inspection Parts\",\"id\":\"00000000000000000000000000000001\",\"type\":\"Workspace\",\"modified\":\"08\\/26\\/2026 03:54:00 PM\",\"created\":\"08\\/12\\/2026 04:55:03 PM\",\"revision\":\"1\",\"state\":\"Create\",\"owner\":\"tester\",\"organization\":\"Test Org\",\"collabspace\":\"Test Space\"}],\"nlsLabel\":{\"id\":\"Id\",\"type\":\"Type\",\"modified\":\"Modification Date\",\"created\":\"Creation Date\",\"revision\":\"Revision\",\"state\":\"State\",\"owner\":\"Owner\"}}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dsbks/dsbks:Bookmark/search?%24searchStr=Inspection+Parts&%24mask=dskern%3AMask.Default&%24top=50&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"derivedOutputs\":{\"id\":\"00000000000000000000000000000002\",\"referencedObject\":{\"source\":\"3DSpace\",\"type\":\"VPMReference\",\"id\":\"00000000000000000000000000000002\",\"relativePath\":\"resources\\/v1\\/modeler\\/dsxcad\\/dsxcad:Part\\/00000000000000000000000000000002\"},\"derivedOutputfiles\":[{\"id\":\"STEP_AP214_cd02cfb6_43ac_6a7cb5ce_12e5a_Test.step\",\"isSync\":true,\"converterName\":\"sldprtToSTEP_AP214\",\"checksum\":\"9a7c3cf4767cf7373c40e5d36e4be937\",\"format\":\"STEP_AP214\",\"synchroStamp\":\"{MD5}1442499fddbb4ecaa690c8d71bb01ba7\",\"filename\":\"cd02cfb6_43ac_6a7cb5ce_12e5a_Test.step\",\"isExternal\":false,\"downloadable\":true,\"streamAttributes\":{\"title\":\"Test_prd-R0000000000000-00221681_A.1.step\",\"streamId\":\"STEP_AP214\"},\"filesize\":18045}]}}]}",
+   "content_type": "application/json",
+   "method": "POST",
+   "request_json": "{\"referencedObject\": [{\"id\": \"00000000000000000000000000000002\", \"type\": \"VPMReference\", \"source\": \"https://space.example.invalid/enovia\", \"relativePath\": \"/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000002\"}]}",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dsdo/dsdo:DerivedOutputs/Locate?%24mask=dsmvdo%3ADerivedOutputsMask.AllDetails&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"derivedOutputs\":{\"id\":\"00000000000000000000000000000002\",\"referencedObject\":{\"source\":\"3DSpace\",\"type\":\"VPMReference\",\"id\":\"00000000000000000000000000000002\",\"relativePath\":\"resources\\/v1\\/modeler\\/dsxcad\\/dsxcad:Part\\/00000000000000000000000000000002\"},\"derivedOutputfiles\":[{\"id\":\"STEP_AP214_cd02cfb6_43ac_6a7cb5ce_12e5a_Test.step\",\"isSync\":true,\"format\":\"STEP_AP214\",\"checksum\":\"9a7c3cf4767cf7373c40e5d36e4be937\",\"converterName\":\"sldprtToSTEP_AP214\",\"synchroStamp\":\"{MD5}1442499fddbb4ecaa690c8d71bb01ba7\",\"filename\":\"cd02cfb6_43ac_6a7cb5ce_12e5a_Test.step\",\"isExternal\":false,\"downloadable\":true,\"streamAttributes\":{\"title\":\"Test_prd-R0000000000000-00221681_A.1.step\",\"streamId\":\"STEP_AP214\"},\"filesize\":18045}]}}]}",
+   "content_type": "application/json",
+   "method": "POST",
+   "request_json": "{\"referencedObject\": [{\"id\": \"00000000000000000000000000000002\", \"type\": \"VPMReference\", \"source\": \"https://space.example.invalid/enovia\", \"relativePath\": \"/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000002\"}]}",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dsdo/dsdo:DerivedOutputs/Locate?%24mask=dsmvdo%3ADerivedOutputsMask.AllDetails&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"status\":500,\"message\":\"Error in Get Derived Output Info\"}",
+   "content_type": "application/json",
+   "method": "POST",
+   "request_json": "{\"referencedObject\": [{\"id\": \"00000000000000000000000000000003\", \"type\": \"VPMReference\", \"source\": \"https://space.example.invalid/enovia\", \"relativePath\": \"/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000003\"}]}",
+   "status": 500,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dsdo/dsdo:DerivedOutputs/Locate?%24mask=dsmvdo%3ADerivedOutputsMask.AllDetails&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"name\":\"prd-R0000000000000-00221681\",\"title\":\"Test\",\"description\":\"\",\"id\":\"00000000000000000000000000000002\",\"type\":\"VPMReference\",\"modified\":\"8\\/5\\/2026 5:50:16 PM\",\"created\":\"8\\/5\\/2026 5:43:15 PM\",\"revision\":\"A.1\",\"state\":\"IN_WORK\",\"owner\":\"tester\",\"organization\":\"Test Org\",\"collabspace\":\"Test Space\",\"cestamp\":\"00000000000000000000000000000008\"}],\"nlsLabel\":{\"id\":\"Id\",\"type\":\"Type\",\"modified\":\"Modification Date\",\"created\":\"Creation Date\",\"revision\":\"Revision\",\"state\":\"State\",\"owner\":\"Owner\"}}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000002?%24mask=dskern%3AMask.Default&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"status\":404,\"message\":\"URI not Found.\"}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 404,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dseng/dseng:EngItem/0000000000000000000000000000000D?%24mask=dskern%3AMask.Default&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"totalItems\":1,\"member\":[{\"derivedOutputs\":{\"id\":\"00000000000000000000000000000002\",\"referencedObject\":{\"source\":\"3DSpace\",\"type\":\"VPMReference\",\"id\":\"00000000000000000000000000000002\",\"relativePath\":\"resources\\/v1\\/modeler\\/dsxcad\\/dsxcad:Part\\/00000000000000000000000000000002\"},\"derivedOutputfiles\":[{\"id\":\"STEP_AP214_cd02cfb6_43ac_6a7cb5ce_12e5a_Test.step\",\"isSync\":true,\"checksum\":\"9a7c3cf4767cf7373c40e5d36e4be937\",\"format\":\"STEP_AP214\",\"synchroStamp\":\"{MD5}1442499fddbb4ecaa690c8d71bb01ba7\",\"converterName\":\"sldprtToSTEP_AP214\",\"filename\":\"cd02cfb6_43ac_6a7cb5ce_12e5a_Test.step\",\"isExternal\":false,\"downloadable\":true,\"streamAttributes\":{\"streamId\":\"STEP_AP214\",\"title\":\"Test_prd-R0000000000000-00221681_A.1.step\"},\"filesize\":18045}]}}]}",
+   "content_type": "application/json",
+   "method": "POST",
+   "request_json": "{\"referencedObject\": [{\"id\": \"00000000000000000000000000000002\", \"type\": \"VPMReference\", \"source\": \"https://space.example.invalid/enovia\", \"relativePath\": \"/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000002\"}]}",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dsdo/dsdo:DerivedOutputs/Locate?%24mask=dsmvdo%3ADerivedOutputsMask.AllDetails&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"success\":true,\"statusCode\":200,\"data\":{\"doid\":\"00000000000000000000000000000002\",\"dataelements\":{\"ticket\":\"TICKET-1\",\"ticketURL\":\"https:\\/\\/host2.example.invalid\\/fcs\\/servlet\\/fcs\\/checkout\",\"filename\":\"cd02cfb6_43ac_6a7cb5ce_12e5a_Test.step\"}}}",
+   "content_type": "application/json",
+   "method": "POST",
+   "request_json": "{}",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dsdo/dsdo:DerivedOutputs/00000000000000000000000000000002/dsdo:DerivedOutputFiles/STEP_AP214_cd02cfb6_43ac_6a7cb5ce_12e5a_Test.step/DownloadTicket?tenant=R0000000000000"
+  },
+  {
+   "binary": true,
+   "body": "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('replay placeholder'),'2;1');\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n",
+   "content_type": "application/octet-stream",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://host2.example.invalid/fcs/servlet/fcs/checkout?__fcs__jobTicket=TICKET-1"
+  },
+  {
+   "binary": false,
+   "body": "{\"status\":500,\"message\":\"Error in Get Derived Output Info\"}",
+   "content_type": "application/json",
+   "method": "POST",
+   "request_json": "{\"referencedObject\": [{\"id\": \"00000000000000000000000000000003\", \"type\": \"VPMReference\", \"source\": \"https://space.example.invalid/enovia\", \"relativePath\": \"/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000003\"}]}",
+   "status": 500,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dsdo/dsdo:DerivedOutputs/Locate?%24mask=dsmvdo%3ADerivedOutputsMask.AllDetails&tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"success\":true,\"statusCode\":200,\"csrf\": {\"name\": \"ENO_CSRF_TOKEN\", \"value\": \"CSRF-REDACTED\"},\"items\":1,\"data\":[{\"id\":\"00000000000000000000000000000002\",\"type\":\"VPMReference\",\"identifier\":\"00000000000000000000000000000002\",\"source\":\"https://space.example.invalid:443/enovia\",\"relativePath\":\"/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000002\",\"i3dx\":\"i3dx:Physical!b:00000000000000000000000000000002\",\"cestamp\":\"00000000000000000000000000000008\",\"dataelements\":{\"name\":\"prd-R0000000000000-00221681\",\"policy\":\"VPLM_SMB_Definition\",\"state\":\"IN_WORK\",\"stateNLS\":\"In Work\",\"typeNLS\":\"Physical Product\",\"revision\":\"A.1\",\"isLatestRevision\":\"TRUE\",\"title\":\"\",\"proxyurl\":\"\",\"description\":\"\",\"collabspace\":\"Test Space\",\"collabSpaceTitle\":\"Test Space\",\"originated\":\"2026-08-05T17:43:15.000Z\",\"modified\":\"2026-08-05T17:50:16.000Z\",\"comments\":\"\",\"hasDownloadAccess\":\"TRUE\",\"hasReviseAccess\":\"FALSE\",\"hasModifyAccess\":\"TRUE\",\"hasDeleteAccess\":\"TRUE\",\"reservedby\":\"\",\"secondaryTitle\":\"Test\",\"typeicon\":\"https://space.example.invalid:443/enovia/snresources/images/icons/small/I_VPMNavProduct.png\",\"image\":\"https://space.example.invalid:443/enovia/snresources/images/icons/large/I_VPMNavProduct108x144.png\"},\"relateddata\":{\"ownerInfo\":[{\"id\":\"0000000000000000000000000000000E\",\"type\":\"Person\",\"i3dx\":\"i3dx:OrganizationStructure!b:0000000000000000000000000000000E\",\"cestamp\":\"0000000000000000000000000000000F\",\"dataelements\":{\"name\":\"tester\",\"firstname\":\"Test User\",\"lastname\":\"Test User\"},\"children\":[]}],\"reservedInfo\":[{\"children\":[]}],\"originatorInfo\":[{\"children\":[]}],\"files\":[]},\"children\":[]}],\"masks\":[],\"definitions\":[]}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/documents/00000000000000000000000000000002?tenant=R0000000000000"
+  },
+  {
+   "binary": true,
+   "body": "",
+   "content_type": "image/png",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid:443/enovia/snresources/images/icons/large/I_VPMNavProduct108x144.png?tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"success\":true,\"statusCode\":200,\"csrf\": {\"name\": \"ENO_CSRF_TOKEN\", \"value\": \"CSRF-REDACTED\"},\"items\":1,\"data\":[{\"id\":\"00000000000000000000000000000010\",\"type\":\"Document\",\"identifier\":\"00000000000000000000000000000010\",\"source\":\"https://space.example.invalid:443/enovia\",\"relativePath\":\"/resources/v1/modeler/documents/00000000000000000000000000000010\",\"i3dx\":\"i3dx:Document!b:00000000000000000000000000000010\",\"cestamp\":\"00000000000000000000000000000011\",\"dataelements\":{\"name\":\"DOC--R0000000000000-0000934\",\"policy\":\"Document Release\",\"state\":\"IN_WORK\",\"stateNLS\":\"In Work\",\"typeNLS\":\"Document\",\"revision\":\"A\",\"isLatestRevision\":\"TRUE\",\"title\":\"TEST_PLM_BRIDGE_CONTRACT_PLAN\",\"proxyurl\":\"\",\"description\":\"ViewpointGeneration inspection plan\",\"collabspace\":\"Test Space\",\"collabSpaceTitle\":\"Test Space\",\"originated\":\"2026-10-30T22:00:39.000Z\",\"modified\":\"2026-10-30T22:00:39.000Z\",\"comments\":\"\",\"hasDownloadAccess\":\"TRUE\",\"hasReviseAccess\":\"TRUE\",\"hasModifyAccess\":\"TRUE\",\"hasDeleteAccess\":\"TRUE\",\"reservedby\":\"\",\"secondaryTitle\":\"\",\"typeicon\":\"https://space.example.invalid:443/enovia/snresources/images/icons/small/I_CDM_Document.png\",\"image\":\"https://space.example.invalid:443/enovia/snresources/images/icons/large/I_CDM_Document108x144.png\"},\"relateddata\":{\"ownerInfo\":[{\"id\":\"0000000000000000000000000000000E\",\"type\":\"Person\",\"i3dx\":\"i3dx:OrganizationStructure!b:0000000000000000000000000000000E\",\"cestamp\":\"0000000000000000000000000000000F\",\"dataelements\":{\"name\":\"tester\",\"firstname\":\"Test User\",\"lastname\":\"Test User\"},\"children\":[]}],\"reservedInfo\":[{\"children\":[]}],\"originatorInfo\":[{\"id\":\"0000000000000000000000000000000E\",\"type\":\"Person\",\"i3dx\":\"i3dx:OrganizationStructure!b:0000000000000000000000000000000E\",\"cestamp\":\"0000000000000000000000000000000F\",\"dataelements\":{\"name\":\"tester\",\"firstname\":\"Test User\",\"lastname\":\"Test User\"},\"children\":[]}],\"files\":[]},\"children\":[]}],\"masks\":[],\"definitions\":[]}",
+   "content_type": "application/json",
+   "method": "POST",
+   "request_json": "{\"data\": [{\"type\": \"Document\", \"dataelements\": {\"title\": \"TEST_PLM_BRIDGE_CONTRACT_PLAN\", \"description\": \"ViewpointGeneration inspection plan\", \"collabspace\": \"Test Space\"}}]}",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/documents?tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"success\":true,\"statusCode\":200,\"csrf\": {\"name\": \"ENO_CSRF_TOKEN\", \"value\": \"CSRF-REDACTED\"},\"items\":1,\"data\":[{\"dataelements\":{\"ticketURL\":\"https://host2.example.invalid/fcs/servlet/fcs/checkin\",\"ticketparamname\":\"__fcs__jobTicket\",\"ticket\":\"TICKET-3\"},\"children\":[]}],\"masks\":[],\"definitions\":[]}",
+   "content_type": "application/json",
+   "method": "PUT",
+   "request_json": "{\"data\": [{\"dataelements\": {\"numberOfFiles\": \"1\"}}]}",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/documents/00000000000000000000000000000010/files/CheckinTicket?tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "RECEIPT-4",
+   "content_type": "text/plain",
+   "method": "POST",
+   "request_json": "",
+   "status": 200,
+   "synthetic": "FCS upload was sent outside the recorded session; response synthesized from the receipt the recorded check-in completion carried.",
+   "url": "https://host2.example.invalid/fcs/servlet/fcs/checkin"
+  },
+  {
+   "binary": false,
+   "body": "{\"success\":true,\"statusCode\":200,\"csrf\": {\"name\": \"ENO_CSRF_TOKEN\", \"value\": \"CSRF-REDACTED\"},\"items\":1,\"data\":[{\"id\":\"00000000000000000000000000000012\",\"type\":\"Document\",\"identifier\":\"00000000000000000000000000000012\",\"source\":\"https://space.example.invalid:443/enovia\",\"relativePath\":\"/resources/v1/modeler/documents/00000000000000000000000000000012\",\"i3dx\":\"i3dx:Document!b:00000000000000000000000000000012\",\"relId\":\"00000000000000000000000000000013\",\"cestamp\":\"00000000000000000000000000000014\",\"dataelements\":{\"title\":\"contract_plan.json\",\"name\":\"16aece7e-71af-45a7-8421-d4e89cdbf99d\",\"comments\":\"\",\"fileCategory\":\"\",\"locker\":\"\",\"fileType\":\" \",\"dimension\":\"\",\"length\":\"0.0\",\"revision\":\"1\",\"originated\":\"2026-10-30T22:00:39.000Z\",\"modified\":\"2026-10-30T22:00:39.000Z\",\"fileSize\":\"24\",\"fileChecksum\":\"{MD5}025f84f8bff1cdf243c4a69a2570eab8\",\"format\":\"generic\",\"image\":\"https://space.example.invalid:443/enovia/snresources/images/icons/large/I_CDM_Document108x144.png\"},\"relateddata\":{\"ownerInfo\":[{\"id\":\"0000000000000000000000000000000E\",\"type\":\"Person\",\"i3dx\":\"i3dx:OrganizationStructure!b:0000000000000000000000000000000E\",\"cestamp\":\"0000000000000000000000000000000F\",\"dataelements\":{\"name\":\"tester\",\"firstname\":\"Test User\",\"lastname\":\"Test User\"},\"children\":[]}],\"lockerInfo\":[{\"children\":[]}]},\"children\":[]}],\"masks\":[],\"definitions\":[]}",
+   "content_type": "application/json",
+   "method": "POST",
+   "request_json": "{\"data\": [{\"dataelements\": {\"title\": \"contract_plan.json\", \"receipt\": \"RECEIPT-4\"}}]}",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/documents/00000000000000000000000000000010/files?tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"success\":true,\"statusCode\":200,\"csrf\": {\"name\": \"ENO_CSRF_TOKEN\", \"value\": \"CSRF-REDACTED\"},\"items\":1,\"data\":[{\"id\":\"00000000000000000000000000000012\",\"type\":\"Document\",\"identifier\":\"00000000000000000000000000000012\",\"source\":\"https://space.example.invalid:443/enovia\",\"relativePath\":\"/resources/v1/modeler/documents/00000000000000000000000000000012\",\"i3dx\":\"i3dx:Document!b:00000000000000000000000000000012\",\"relId\":\"00000000000000000000000000000013\",\"cestamp\":\"00000000000000000000000000000014\",\"dataelements\":{\"title\":\"contract_plan.json\",\"name\":\"16aece7e-71af-45a7-8421-d4e89cdbf99d\",\"comments\":\"\",\"fileCategory\":\"\",\"locker\":\"\",\"fileType\":\" \",\"dimension\":\"\",\"length\":\"0.0\",\"revision\":\"1\",\"originated\":\"2026-10-30T22:00:39.000Z\",\"modified\":\"2026-10-30T22:00:40.000Z\",\"fileSize\":\"24\",\"fileChecksum\":\"{MD5}025f84f8bff1cdf243c4a69a2570eab8\",\"format\":\"generic\",\"image\":\"https://space.example.invalid:443/enovia/snresources/images/icons/large/I_CDM_Document108x144.png\"},\"relateddata\":{\"ownerInfo\":[{\"id\":\"0000000000000000000000000000000E\",\"type\":\"Person\",\"i3dx\":\"i3dx:OrganizationStructure!b:0000000000000000000000000000000E\",\"cestamp\":\"0000000000000000000000000000000F\",\"dataelements\":{\"name\":\"tester\",\"firstname\":\"Test User\",\"lastname\":\"Test User\"},\"children\":[]}],\"lockerInfo\":[{\"children\":[]}]},\"children\":[]}],\"masks\":[],\"definitions\":[]}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/documents/00000000000000000000000000000010/files?tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"success\":true,\"statusCode\":200,\"csrf\": {\"name\": \"ENO_CSRF_TOKEN\", \"value\": \"CSRF-REDACTED\"},\"items\":1,\"data\":[{\"id\":\"00000000000000000000000000000010\",\"dataelements\":{\"ticketURL\":\"https://host2.example.invalid/fcs/servlet/fcs/checkout?__fcs__jobTicket=TICKET-5\",\"fileName\":\"contract_plan.json\"},\"children\":[]}],\"masks\":[],\"definitions\":[]}",
+   "content_type": "application/json",
+   "method": "PUT",
+   "request_json": "{\"data\": [{\"id\": \"00000000000000000000000000000012\"}]}",
+   "status": 200,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/documents/00000000000000000000000000000010/files/DownloadTicket?tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "{\"contract_test\": true}\n",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 200,
+   "url": "https://host2.example.invalid/fcs/servlet/fcs/checkout?__fcs__jobTicket=TICKET-5"
+  },
+  {
+   "binary": false,
+   "body": "{\"status\":404,\"message\":\"URI not Found.\"}",
+   "content_type": "application/json",
+   "method": "GET",
+   "request_json": "",
+   "status": 404,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/dseng/dseng:EngItem/00000000000000000000000000000002/dseng:SpecificationDocument?tenant=R0000000000000"
+  },
+  {
+   "binary": false,
+   "body": "",
+   "content_type": "",
+   "method": "GET",
+   "request_json": "",
+   "status": 404,
+   "url": "https://space.example.invalid/enovia/resources/v1/modeler/documents/00000000000000000000000000000002/relateddata?tenant=R0000000000000"
+  }
+ ],
+ "notes": "Recorded by record_contract.py against a live tenant; sanitized at record time. Object ids are consistent fakes.",
+ "parts": [
+  "00000000000000000000000000000002",
+  "00000000000000000000000000000003",
+  "00000000000000000000000000000004",
+  "00000000000000000000000000000005",
+  "00000000000000000000000000000006",
+  "00000000000000000000000000000007"
+ ],
+ "recorded_at": "2026-10-30T22:00:40Z",
+ "scope": "Inspection Parts",
+ "space_url": "https://space.example.invalid/enovia",
+ "unknown": "0000000000000000000000000000000D",
+ "with_geometry": "00000000000000000000000000000002",
+ "without_geometry": "00000000000000000000000000000003"
+}

@@ -8,16 +8,17 @@ Framework (EIF) relays the events to an external broker -- RabbitMQ or ActiveMQ
 
 The payoff is latency. Polling on `CATALOG_SYNC_INTERVAL` means a part added to
 the catalog in 3DX shows up in the picker minutes later, and each poll
-re-enumerates the whole scope. An event names the object that changed, so
-`sync_single_item()` touches exactly one row.
+re-enumerates the whole scope. An event names the object that changed; the
+listener hands that id to the `on_change` callback the catalog core gave the
+backend's `subscribe()`, which re-reads exactly one part.
 
 This is strictly an optimization: when `DX_JMS_BROKER_URL` is unset, or the
 broker is unreachable, the catalog node keeps its polling timer and loses
 nothing but freshness. `JMSEventListener.start()` reports whether it connected
 so the caller can decide which mode it is in.
 
-Broker-side configuration needed in production is documented in
-`docs/3dx_integration/README_3dx_integration.md`.
+Broker-side configuration needed in production is documented in the dx3
+backend docs.
 """
 
 import json
@@ -44,16 +45,17 @@ class JMSEventListener:
 
     Args:
         broker_url: STOMP URL, e.g. `stomp://user:pass@broker:61613`.
-        catalog_sync: The `CatalogSync` to drive.
+        on_change: Callable taking the id of an engineering item that changed
+            (including one that gained a derived output).
         topics: Optional mapping of event name -> broker destination,
             overriding DEFAULT_TOPICS.
         on_event: Optional callable invoked as `on_event(event_name, body)`
             after each handled event, used by the picker's live updates.
     """
 
-    def __init__(self, broker_url, catalog_sync, topics=None, on_event=None):
+    def __init__(self, broker_url, on_change, topics=None, on_event=None):
         self.broker_url = broker_url
-        self.catalog = catalog_sync
+        self.on_change = on_change
         self.topics = dict(topics or DEFAULT_TOPICS)
         self.on_event = on_event
         self.connection = None
@@ -217,34 +219,26 @@ class JMSEventListener:
         return handled, message
 
     def _dispatch(self, event, object_id, payload):
-        """Route one event to the catalog action it implies."""
-        if event in ('engitem.modified', 'bookmark.content.added'):
-            if not object_id:
-                return False, 'Event carried no object id.'
-            return self.catalog.sync_single_item(object_id)
+        """Route one event to the part it concerns.
 
-        if event == 'maturity.changed':
+        Every handled event becomes one `on_change(part_id)`: the catalog
+        re-reads that part, which covers modification, a maturity change
+        (the core's maturity filter archives a part that left the scope), a
+        bookmark addition, and a newly published derived output.
+        """
+        if event in ('engitem.modified', 'bookmark.content.added', 'maturity.changed'):
             if not object_id:
                 return False, 'Event carried no object id.'
-            new_state = (payload.get('newState') or payload.get('state') or '').upper()
-            states = self.catalog.config.maturity_states()
-            if states and new_state and new_state not in states:
-                # The part left the configured maturity scope; reconciling it
-                # marks it archived rather than leaving a stale row behind.
-                return self.catalog.sync_single_item(object_id)
-            return self.catalog.sync_single_item(object_id)
+            self.on_change(object_id)
+            return True, f'Re-read {object_id}.'
 
         if event == 'derivedoutput.created':
             parent_id = (payload.get('parentId') or payload.get('parentObjectId')
                          or object_id)
             if not parent_id:
                 return False, 'Derived-output event carried no parent id.'
-            if self.catalog.db.get_part(parent_id) is None:
-                return False, f'{parent_id} is not in the catalog; ignoring.'
-            self.catalog.db.set_step_available(parent_id, True)
-            self.catalog.db.log_sync('derived_output', parent_id,
-                                     payload.get('format', ''))
-            return True, f'Marked {parent_id} as having a derived output.'
+            self.on_change(parent_id)
+            return True, f'Re-read {parent_id} after a new derived output.'
 
         return False, f'No handler for event {event!r}.'
 

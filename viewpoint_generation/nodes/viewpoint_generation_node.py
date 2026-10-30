@@ -49,11 +49,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
     initialized = False
     mesh = None
 
-    # The 3DX part currently loaded, learned from /catalog/part_selected.
-    # Empty when the operator loaded a mesh by hand: plans still get written,
-    # they just have no PLM record to attach to. `selected_step_path` is what
-    # detects that a different mesh has been loaded over the selection.
-    selected_eng_item_id = ''
+    # The catalog part currently loaded, learned from /catalog/part_selected:
+    # its PLM backend and that backend's part id. Empty when the operator
+    # loaded a mesh by hand: plans still get written, they just have no PLM
+    # record to attach to. `selected_step_path` is what detects that a
+    # different mesh has been loaded over the selection.
+    selected_backend = ''
+    selected_part_id = ''
     selected_step_path = ''
 
     def __init__(self):
@@ -192,7 +194,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self._filtered_pose_cb,
             10)
 
-        # Part selections from the 3DX catalog node. Matches the publisher's
+        # Part selections from the PLM catalog node. Matches the publisher's
         # transient-local QoS so a selection made before this node started is
         # still delivered on subscribe.
         self.create_subscription(
@@ -230,7 +232,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.optimize_traversal_client = self.create_client(
             OptimizeViewpointTraversal, f'{viewpoint_traversal_node_name}/optimize_traversal', callback_group=services_cb_group)
 
-        # Records every generated plan in the 3DX catalog. Called fire-and-forget
+        # Records every generated plan in the PLM catalog. Called fire-and-forget
         # so a slow or absent catalog node can never stall the pipeline: plan
         # files are always written to disk first, and recording is the
         # bookkeeping that follows.
@@ -454,7 +456,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.viewpoint_generation.set_placement(_pose_to_matrix(msg.pose))
 
     def _part_selected_cb(self, msg: PartSelected):
-        """Load a part chosen in the 3DX catalog into the pipeline.
+        """Load a part chosen in the PLM catalog into the pipeline.
 
         Sets the mesh from the STEP the catalog cached, and -- when the
         catalog reports a plan that still matches the part's CAD revision, or
@@ -471,15 +473,16 @@ class ViewpointGenerationNode(rclpy.node.Node):
             f'Catalog selected {msg.title!r} ({msg.part_number} rev {msg.revision}), '
             f'plan status {msg.plan_status}.')
 
-        if not msg.step_file_path:
+        if not msg.geometry_path:
             self.get_logger().warn('Part selection carried no model file; ignoring.')
             return
 
         units = msg.mesh_units or 'mm'
         # Recorded before set_mesh_file() so its "mesh replaced outside the
         # catalog" guard recognises this load as the selection itself.
-        self.selected_eng_item_id = msg.eng_item_id or ''
-        self.selected_step_path = msg.step_file_path
+        self.selected_backend = msg.backend or ''
+        self.selected_part_id = msg.part_id or ''
+        self.selected_step_path = msg.geometry_path
 
         # Load the plan first when it is usable: set_mesh_file() preserves
         # regions/clusters already recorded in self.results for the same
@@ -492,9 +495,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     f'Could not load plan {msg.plan_file_path}; '
                     'continuing with the model only.')
 
-        if not self.set_mesh_file(msg.step_file_path, units):
+        if not self.set_mesh_file(msg.geometry_path, units):
             self.get_logger().error(
-                f'Failed to load selected model: {msg.step_file_path}')
+                f'Failed to load selected model: {msg.geometry_path}')
             return
 
         # Plans generated from here go to the catalog's directory for this
@@ -516,12 +519,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
     def _clear_plm_context(self):
         """Drop the catalog association, so plans stop being attributed to a
         part that is no longer loaded."""
-        if not self.selected_eng_item_id:
+        if not self.selected_part_id:
             return
         self.get_logger().info(
             'Mesh replaced outside the catalog; plans will no longer be recorded '
-            f'against {self.selected_eng_item_id}.')
-        self.selected_eng_item_id = ''
+            f'against {self.selected_backend}/{self.selected_part_id}.')
+        self.selected_backend = ''
+        self.selected_part_id = ''
         self.selected_step_path = ''
         self.viewpoint_generation.plan_dir = None
 
@@ -532,7 +536,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         directory and authors the `plm_context` block; plan_io adds only the
         stage, generation time and software version when a plan is written.
         """
-        if not msg.eng_item_id:
+        if not msg.part_id:
             self.viewpoint_generation.plan_dir = None
             return
         self.viewpoint_generation.plan_dir = msg.plan_dir or None
@@ -549,10 +553,11 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 self.get_logger().warn(f'Ignoring malformed plm_context_json: {e}')
         if not isinstance(context, dict) or not context:
             context = {
-                'eng_item_id': msg.eng_item_id,
+                'backend': msg.backend,
+                'part_id': msg.part_id,
                 'part_number': msg.part_number,
                 'revision': msg.revision,
-                'cestamp': msg.cestamp,
+                'change_token': msg.change_token,
                 'title': msg.title,
             }
         self.viewpoint_generation.set_plm_context(context)
@@ -566,7 +571,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         """
         if not plan_path:
             return
-        if not self.selected_eng_item_id:
+        if not self.selected_part_id:
             self.get_logger().debug(
                 'No catalog part is loaded; plan was not recorded in the database.')
             return
@@ -580,7 +585,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # never opens the file itself.
         description = plan_io.describe_plan(plan_path)
         request = RecordPlan.Request()
-        request.eng_item_id = self.selected_eng_item_id
+        request.backend = self.selected_backend
+        request.part_id = self.selected_part_id
         request.plan_path = str(plan_path)
         request.stage = stage
         request.force_upload = False
@@ -621,7 +627,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
         if result.success:
             self.get_logger().info(
                 f'Recorded {stage} plan {result.plan_id} '
-                f'(3DX: {result.upload_status}).')
+                f'(upload: {result.upload_status}).')
         else:
             self.get_logger().warn(
                 f'Could not record the {stage} plan: {result.message}')
@@ -1015,7 +1021,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 self.get_logger().info(
                     f'New viewpoint dictionary saved at: {new_viewpoint_dict_path}')
                 # The terminal plan -- the one the cell executes. This is the
-                # stage auto-uploaded to 3DX by default.
+                # stage auto-uploaded to the PLM by default.
                 self._record_plan(new_viewpoint_dict_path, 'ordered')
             else:
                 self.get_logger().error(

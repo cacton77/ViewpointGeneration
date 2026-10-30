@@ -2,7 +2,8 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.substitutions import (EnvironmentVariable, LaunchConfiguration,
+                                  PathJoinSubstitution, PythonExpression)
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterFile
@@ -41,7 +42,7 @@ def generate_launch_description():
                               description="Run without the Open3D GUI (gui_node). Use on hosts "
                               "with no X display; an rqt GUI is started instead."),
         DeclareLaunchArgument("catalog", default_value="true",
-                              description="Launch the 3DEXPERIENCE parts catalog node. It serves "
+                              description="Launch the PLM parts catalog node. It serves "
                               "whatever is already cached even without DX_* credentials, so it is "
                               "safe to leave on."),
         DeclareLaunchArgument("picker", default_value="true",
@@ -56,6 +57,9 @@ def generate_launch_description():
                               description="Run a full catalog sync when the system starts. Off by "
                               "default because a full pass over a broad DX_BOOKMARK_SCOPE takes "
                               "minutes; the periodic timer and the picker's Sync button cover it."),
+        DeclareLaunchArgument("plm_backends",
+                              default_value=EnvironmentVariable("PLM_BACKENDS", default_value="dx3"),
+                              description="Comma-separated PLM backends the catalog hosts."),
         DeclareLaunchArgument("catalog_mesh_units", default_value="mm",
                               description="Units used to load STEP files selected from the catalog."),
     ]
@@ -194,6 +198,7 @@ def generate_launch_description():
             "mesh_units": LaunchConfiguration("catalog_mesh_units"),
             "picker": LaunchConfiguration("picker"),
             "picker_port": LaunchConfiguration("picker_port"),
+            "plm_backends": LaunchConfiguration("plm_backends"),
         }.items(),
         condition=IfCondition(LaunchConfiguration("catalog"))
     )

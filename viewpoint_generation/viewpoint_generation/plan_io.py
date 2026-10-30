@@ -9,8 +9,9 @@ right.
 never wrapping it::
 
     {
-      "schema_version": "2.0",
-      "plm_context": {"eng_item_id": ..., "cestamp": ..., "stage": ...},
+      "schema_version": "3.0",
+      "plm_context": {"backend": ..., "part_id": ..., "change_token": ...,
+                      "stage": ..., "generated_at": ..., "software_version": ...},
       "summary":     {"num_regions": 12, "num_clusters": 75, ...},
       "meshes":      [ ... ]
     }
@@ -24,7 +25,9 @@ the traversal node round-trips the whole dict -- the optimized file inherits
 its part linkage for free.
 
 `read_plan()` still accepts the 1.0 envelope so plans uploaded before this
-convention existed continue to load.
+convention existed continue to load, and 2.0 files (whose context names the
+3DX `eng_item_id` and `cestamp`) are read with their context mapped onto the
+3.0 keys: `part_id`, `change_token`, and `backend: dx3`.
 
 **PLM context.** The `plm_context` block is authored by the parts catalog and
 handed over with each part selection (`PartSelected.plm_context_json`); this
@@ -47,7 +50,10 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = '2.0'
+SCHEMA_VERSION = '3.0'
+
+# Schema 2.0 contexts predate PLM backends; every one of them came from 3DX.
+LEGACY_CONTEXT_BACKEND = 'dx3'
 
 #: Pipeline stages, in the order they are produced. Later stages supersede
 #: earlier ones for the same part.
@@ -197,12 +203,28 @@ def _utc_iso(timestamp=None):
     return moment.strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
+def normalize_context(context):
+    """A plan's `plm_context` with schema 2.0 keys mapped onto 3.0.
+
+    2.0 contexts name `eng_item_id` and `cestamp`; they gain `part_id`,
+    `change_token` and `backend: dx3`. The original keys are kept.
+    """
+    context = dict(context or {})
+    if context.get('eng_item_id') and not context.get('part_id'):
+        context['part_id'] = context['eng_item_id']
+        context.setdefault('backend', LEGACY_CONTEXT_BACKEND)
+    if context.get('cestamp') and not context.get('change_token'):
+        context['change_token'] = context['cestamp']
+    return context
+
+
 def read_plan(path):
     """Load a plan file into a results dict.
 
-    Accepts all three shapes seen in the wild: the 2.0 sibling form, the 1.0
-    `{plm_context, plan}` envelope, and a bare `{'meshes': [...]}` results
-    JSON written before either existed.
+    Accepts every shape seen in the wild: the 3.0 and 2.0 sibling forms, the
+    1.0 `{plm_context, plan}` envelope, and a bare `{'meshes': [...]}` results
+    JSON written before any of them. The returned context always carries the
+    3.0 keys (see `normalize_context`).
 
     Returns:
         tuple: (dict or None, dict, str) the results payload, its plm_context,
@@ -217,18 +239,20 @@ def read_plan(path):
     if not isinstance(data, dict):
         return None, {}, f'Unrecognized plan file structure: {path}'
 
-    # 2.0: context sits beside meshes, so the file *is* the results dict.
+    # 2.0/3.0: context sits beside meshes, so the file *is* the results dict.
     if 'meshes' in data:
+        if data.get('plm_context'):
+            data['plm_context'] = normalize_context(data['plm_context'])
         return data, data.get('plm_context') or {}, 'Plan loaded.'
 
     # 1.0: the results dict is wrapped under 'plan'.
     if 'plan' in data and isinstance(data.get('plan'), dict):
         payload = data['plan']
-        context = dict(data.get('plm_context') or {})
+        context = normalize_context(data.get('plm_context'))
         if 'stage' not in context:
             context['stage'] = infer_stage(payload)
         # Carry the context onto the unwrapped payload so a plan read from a
-        # 1.0 envelope and re-saved comes back out in 2.0 form.
+        # 1.0 envelope and re-saved comes back out in the current form.
         payload.setdefault('plm_context', context)
         payload.setdefault('schema_version', SCHEMA_VERSION)
         return payload, context, 'Plan loaded from a 1.0 envelope.'
@@ -382,7 +406,7 @@ def describe_plan(path):
         'stage_rank': stage_rank(stage),
         'summary_json': json.dumps(summary, sort_keys=True),
         'summary_text': describe(summary),
-        'change_token': context.get('change_token') or context.get('cestamp') or '',
+        'change_token': context.get('change_token') or '',
         'generated_at': context.get('generated_at') or mtime,
     })
     return description

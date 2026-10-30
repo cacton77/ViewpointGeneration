@@ -44,6 +44,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/UploadPlan.srv"
   "srv/UploadResults.srv"
   "srv/DescribePlans.srv"
+  "srv/ListBackends.srv"
   "msg/FocusValue.msg"
   "msg/AutofocusData.msg"
   "msg/OrientationControlData.msg"
@@ -51,6 +52,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PartSelected.msg"
   "msg/SyncResult.msg"
   "msg/PlanDescription.msg"
+  "msg/BackendInfo.msg"
   DEPENDENCIES geometry_msgs sensor_msgs
 )
 

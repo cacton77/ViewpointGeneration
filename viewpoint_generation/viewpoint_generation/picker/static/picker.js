@@ -74,12 +74,12 @@ function visibleParts() {
 function card(part) {
   const node = document.createElement('article');
   node.className = 'card';
-  if (part.eng_item_id === state.selectedId) node.classList.add('selected');
-  if (state.busy.has(part.eng_item_id)) node.classList.add('busy');
-  node.dataset.id = part.eng_item_id;
+  if (part.key === state.selectedId) node.classList.add('selected');
+  if (state.busy.has(part.key)) node.classList.add('busy');
+  node.dataset.id = part.key;
 
   const thumb = part.has_thumbnail
-    ? `<img src="/thumb/${encodeURIComponent(part.eng_item_id)}" alt="" loading="lazy">`
+    ? `<img src="/thumb/${encodeURIComponent(part.key)}" alt="" loading="lazy">`
     : '<span class="placeholder">▣</span>';
 
   const rev = part.revision ? `${part.revision}` : '';
@@ -89,7 +89,8 @@ function card(part) {
     <div class="thumb">${thumb}</div>
     <div class="card-body">
       <span class="card-title" title="${escapeHtml(part.title)}">${escapeHtml(part.title)}</span>
-      <span class="card-meta">${escapeHtml(part.part_number || '')}</span>
+      <span class="card-meta">${escapeHtml(part.part_number || '')}
+        <span class="backend-tag" title="PLM backend">${escapeHtml(part.backend)}</span></span>
       <span class="card-meta">${escapeHtml(rev)} ${escapeHtml(maturity)}</span>
       <div class="card-states">
         <span class="state state-${part.state}">${escapeHtml(part.state_label)}</span>
@@ -97,7 +98,7 @@ function card(part) {
       </div>
     </div>`;
 
-  node.addEventListener('click', () => openDetail(part.eng_item_id));
+  node.addEventListener('click', () => openDetail(part.key));
   return node;
 }
 
@@ -142,7 +143,7 @@ function planCounts(plan) {
 
 function syncLabel(plan) {
   switch (plan.upload_status) {
-    case 'synced': return '3DX';
+    case 'synced': return 'uploaded';
     case 'uploading': return 'uploading…';
     case 'failed': return 'upload failed';
     default: return 'local';
@@ -155,7 +156,7 @@ function render() {
   el.empty.classList.toggle('hidden', parts.length > 0);
   el.statusLine.textContent =
     `${parts.length} of ${state.parts.length} parts · `
-    + `${state.parts.filter((p) => p.step_cached).length} ready`;
+    + `${state.parts.filter((p) => p.geometry_cached).length} ready`;
 }
 
 async function loadParts() {
@@ -174,7 +175,7 @@ async function loadStatus() {
       ? 'Selections are published on /catalog/part_selected'
       : 'ROS is not running; selections cache the STEP but are not announced';
     if (!status.configured) {
-      toast('3DX credentials are not configured; only cached parts are available.',
+      toast('No PLM backend is configured; only cached parts are available.',
             'error');
     }
   } catch (e) {
@@ -183,14 +184,14 @@ async function loadStatus() {
   }
 }
 
-async function openDetail(engItemId, keepScroll) {
-  const switchingPart = state.openId !== engItemId;
-  state.openId = engItemId;
+async function openDetail(partKey, keepScroll) {
+  const switchingPart = state.openId !== partKey;
+  state.openId = partKey;
   if (switchingPart) {
     state.chosenPlanId = null;
     state.plans = [];
   }
-  const part = state.parts.find((p) => p.eng_item_id === engItemId);
+  const part = state.parts.find((p) => p.key === partKey);
   if (!part) return;
 
   el.detail.classList.remove('hidden');
@@ -198,13 +199,16 @@ async function openDetail(engItemId, keepScroll) {
     <h2>${escapeHtml(part.title)}</h2>
     <div class="card-meta">${escapeHtml(part.part_number)} · rev ${escapeHtml(part.revision)}
       · ${escapeHtml((part.maturity || '').replace('_', ' '))}
-      · ${escapeHtml(part.collab_space)}</div>
+      · ${escapeHtml(part.container)} · ${escapeHtml(part.backend)}</div>
     <h3>Model</h3>
     <dl>
-      <dt>STEP</dt><dd>${part.step_cached ? 'cached locally' :
-        (part.step_available ? 'available on 3DX, not downloaded' : 'none published')}</dd>
+      <dt>STEP</dt><dd>${part.geometry_cached ? 'cached locally' :
+        (part.geometry_available ? `available on ${escapeHtml(part.backend)}, not downloaded`
+          : 'none published')}</dd>
       <dt>Sync</dt><dd>${escapeHtml(part.sync_status)} · last ${escapeHtml(part.last_synced)}</dd>
-      <dt>Item id</dt><dd>${escapeHtml(part.eng_item_id)}</dd>
+      <dt>Part id</dt><dd>${escapeHtml(part.part_id)} (${escapeHtml(part.backend)})</dd>
+      ${part.can_upload ? '' : '<dt>Uploads</dt><dd>this backend does not store files '
+        + 'remotely; plans stay on this cell</dd>'}
     </dl>
     <div class="plans-head">
       <h3>Inspection plans</h3>
@@ -221,16 +225,16 @@ async function openDetail(engItemId, keepScroll) {
     </div>`;
 
   document.getElementById('select-btn')
-    .addEventListener('click', () => selectPart(engItemId));
+    .addEventListener('click', () => selectPart(partKey));
   document.getElementById('adopt-btn')
-    .addEventListener('click', () => adoptPlans(engItemId));
+    .addEventListener('click', () => adoptPlans(partKey));
 
   if (!keepScroll) el.detail.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
-  await loadPlans(engItemId);
+  await loadPlans(partKey);
 
   try {
-    const data = await api(`/api/parts/${encodeURIComponent(engItemId)}/runs`);
+    const data = await api(`/api/parts/${encodeURIComponent(partKey)}/runs`);
     const box = document.getElementById('runs-box');
     if (!box) return;
     if (!data.runs.length) {
@@ -254,9 +258,9 @@ async function openDetail(engItemId, keepScroll) {
   } catch (e) { /* the panel keeps its loading text */ }
 }
 
-async function loadPlans(engItemId) {
+async function loadPlans(partKey) {
   try {
-    const data = await api(`/api/parts/${encodeURIComponent(engItemId)}/plans`);
+    const data = await api(`/api/parts/${encodeURIComponent(partKey)}/plans`);
     state.plans = data.plans;
     // Default the selection to the catalog's current plan, so the Load button
     // does the same thing it always did until the operator picks otherwise.
@@ -340,7 +344,8 @@ function renderPlanBox() {
     return;
   }
 
-  const uploadable = ['local', 'failed'].includes(plan.upload_status);
+  const openPart = state.parts.find((p) => p.key === state.openId) || {};
+  const uploadable = openPart.can_upload && ['local', 'failed'].includes(plan.upload_status);
   box.innerHTML = `
     <dl>
       <dt>File</dt><dd>${escapeHtml(plan.file_path)}</dd>
@@ -350,7 +355,7 @@ function renderPlanBox() {
       <dt>Contents</dt><dd>${escapeHtml(plan.summary_text || '—')}</dd>
       <dt>Generated</dt><dd>${escapeHtml(plan.generated_at || '—')}
         (${escapeHtml(plan.source || 'local')})</dd>
-      <dt>3DX document</dt><dd>${escapeHtml(plan.plan_doc_id || 'not uploaded')}
+      <dt>Remote copy</dt><dd>${escapeHtml(plan.remote_ref || 'not uploaded')}
         (${escapeHtml(plan.upload_status || 'local')})
         ${uploadable ? '<button class="btn btn-small" id="upload-plan-btn">Upload</button>' : ''}</dd>
     </dl>`;
@@ -362,7 +367,7 @@ function renderPlanBox() {
 }
 
 async function uploadPlan(planId) {
-  toast('Uploading plan to 3DEXPERIENCE…');
+  toast('Uploading plan…');
   try {
     const result = await api(`/api/plans/${encodeURIComponent(planId)}/upload`,
                              { method: 'POST' });
@@ -373,25 +378,25 @@ async function uploadPlan(planId) {
   await loadPlans(state.openId);
 }
 
-async function adoptPlans(engItemId) {
+async function adoptPlans(partKey) {
   toast('Scanning for unrecorded plan files…');
   try {
     const result = await api(
-      `/api/parts/${encodeURIComponent(engItemId)}/plans/adopt`, { method: 'POST' });
+      `/api/parts/${encodeURIComponent(partKey)}/plans/adopt`, { method: 'POST' });
     toast(result.message, result.adopted ? 'ok' : null);
   } catch (e) {
     toast(e.message, 'error');
   }
-  await loadPlans(engItemId);
+  await loadPlans(partKey);
   await loadParts();
 }
 
-async function selectPart(engItemId) {
-  state.busy.add(engItemId);
+async function selectPart(partKey) {
+  state.busy.add(partKey);
   render();
   toast('Preparing part…');
   try {
-    const body = { eng_item_id: engItemId };
+    const body = { key: partKey };
     if (state.chosenPlanId === '') body.model_only = true;
     else if (state.chosenPlanId) body.plan_id = state.chosenPlanId;
     const result = await api('/api/select', {
@@ -399,7 +404,7 @@ async function selectPart(engItemId) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    state.selectedId = engItemId;
+    state.selectedId = partKey;
     el.selection.textContent =
       `Selected: ${result.title} — plan ${result.plan_status}`
       + (result.published ? '' : ' (not announced: ROS offline)');
@@ -408,7 +413,7 @@ async function selectPart(engItemId) {
   } catch (e) {
     toast(e.message, 'error');
   } finally {
-    state.busy.delete(engItemId);
+    state.busy.delete(partKey);
     render();
   }
 }

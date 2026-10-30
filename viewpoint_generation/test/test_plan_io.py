@@ -46,7 +46,7 @@ def test_write_and_read_each_stage(tmp_path):
         assert path is not None, message
         assert os.path.basename(path).startswith(stage + '_')
         results, context, _ = plan_io.read_plan(path)
-        assert results['schema_version'] == plan_io.SCHEMA_VERSION == '2.0'
+        assert results['schema_version'] == plan_io.SCHEMA_VERSION == '3.0'
         assert context['stage'] == stage
         assert results['summary']['num_regions'] == 2
         assert 'meshes' in results
@@ -59,7 +59,7 @@ def test_write_plan_never_overwrites_within_one_second(tmp_path):
     assert second.endswith('-2.json')
 
 
-def test_read_schema_2_0_sibling_form(tmp_path):
+def test_read_schema_2_0_maps_onto_3_0_keys(tmp_path):
     data = results_for('clustered')
     data.update({'schema_version': '2.0',
                  'plm_context': {'eng_item_id': 'E1', 'cestamp': 'c9', 'stage': 'clustered'}})
@@ -67,8 +67,20 @@ def test_read_schema_2_0_sibling_form(tmp_path):
     path.write_text(json.dumps(data))
     results, context, message = plan_io.read_plan(path)
     assert message == 'Plan loaded.'
-    assert context == {'eng_item_id': 'E1', 'cestamp': 'c9', 'stage': 'clustered'}
+    assert (context['backend'], context['part_id'], context['change_token']) == (
+        'dx3', 'E1', 'c9')
+    assert (context['eng_item_id'], context['cestamp']) == ('E1', 'c9')
     assert results['meshes'][0]['regions']
+    assert plan_io.describe_plan(path)['change_token'] == 'c9'
+
+
+def test_read_schema_3_0_context_untouched(tmp_path):
+    data = results_for('ordered')
+    context = {'backend': 'other', 'part_id': 'doc/w/e/p', 'change_token': 't1'}
+    data.update({'schema_version': '3.0', 'plm_context': context})
+    path = tmp_path / 'plan.json'
+    path.write_text(json.dumps(data))
+    assert plan_io.read_plan(path)[1] == context
 
 
 def test_read_1_0_envelope_unwraps_and_infers_stage(tmp_path):
@@ -78,10 +90,10 @@ def test_read_1_0_envelope_unwraps_and_infers_stage(tmp_path):
     results, context, message = plan_io.read_plan(path)
     assert 'envelope' in message
     assert context['stage'] == 'projected'
-    assert context['eng_item_id'] == 'E1'
-    # The unwrapped payload carries its context so a re-save comes out in 2.0 form.
-    assert results['plm_context']['eng_item_id'] == 'E1'
-    assert results['schema_version'] == '2.0'
+    assert (context['eng_item_id'], context['part_id'], context['backend']) == ('E1', 'E1', 'dx3')
+    # The unwrapped payload carries its context so a re-save comes out current.
+    assert results['plm_context']['part_id'] == 'E1'
+    assert results['schema_version'] == '3.0'
 
 
 def test_read_bare_results_json(tmp_path):
@@ -102,7 +114,8 @@ def test_read_rejects_garbage(tmp_path):
 
 
 def test_stamp_adds_only_producer_keys_to_the_catalog_context(tmp_path):
-    catalog_context = {'eng_item_id': 'E1', 'cestamp': 'c1', 'cell_id': 'alpha'}
+    catalog_context = {'backend': 'dx3', 'part_id': 'E1', 'change_token': 'c1',
+                       'cell_id': 'alpha'}
     results = results_for('clustered')
     results['plm_context'] = dict(catalog_context)
     path, _ = plan_io.write_plan(tmp_path, results)
@@ -115,7 +128,7 @@ def test_stamp_adds_only_producer_keys_to_the_catalog_context(tmp_path):
 
 def test_describe_plan_is_the_describeplans_contract(tmp_path):
     results = results_for('projected', regions=3, clusters_per_region=1)
-    results['plm_context'] = {'eng_item_id': 'E1', 'cestamp': 'c7'}
+    results['plm_context'] = {'backend': 'dx3', 'part_id': 'E1', 'change_token': 'c7'}
     path, _ = plan_io.write_plan(tmp_path, results)
     description = plan_io.describe_plan(path)
     assert description['valid']
