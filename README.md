@@ -61,7 +61,7 @@ viewpoint_generation/
 A companion package, `viewpoint_generation_interfaces/`, defines the ROS 2 message, service, and action interfaces.
 
 The PLM parts catalog, the part picker and the STEP loader live in the
-[plm_bridge](https://github.com/cacton77/plm_bridge) repository (private):
+[plm_bridge](https://github.com/cacton77/plm_bridge) repository (public, BSD-3-Clause):
 this package depends on its `plm_interfaces` (part selection, plan recording)
 and `cad_loader` (STEP and mesh loading) packages, and its bringup starts the
 `plm_bridge` node when that is installed.
