@@ -24,13 +24,15 @@ and were not touched.
 
 | Repository | Branch | Commit |
 |---|---|---|
-| plm_bridge | `main` | `30679a0` README stub |
-| ViewpointGeneration | `plm-bridge` | this commit (see `git log -1`) |
+| plm_bridge | `main` | see `git log -1` there (REPORT.md, QUESTIONS.md) |
+| ViewpointGeneration | `plm-bridge` | this commit (see `git log -1`); Phase 1 = `88445ad` |
 | inspection-docker | `plm-bridge` | `68bfdbd` (no changes yet) |
 
 ## Current phase
 
-**Phase 0 (baseline and characterization tests): working.**
+**Phase 2 (backend abstraction): working.** Phases 0 and 1 are done: tests
+pass, and the live 3DX smoke checklist passes. Results are in `REPORT.md` in the
+new repository; open questions are in `QUESTIONS.md` there.
 
 Scope change from Colin (2026-10-30): 3DX only. No Onshape backend and no
 Onshape references in the new package for now; Phase 3 is deferred.
