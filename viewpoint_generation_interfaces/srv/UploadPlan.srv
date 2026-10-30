@@ -1,5 +1,0 @@
-string plan_id           # a recorded plan (see RecordPlan)
----
-bool success
-string remote_ref        # id of the remote attachment, e.g. a 3DX Document
-string message

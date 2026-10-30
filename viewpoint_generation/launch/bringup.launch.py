@@ -1,5 +1,8 @@
+import os
+
+from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (EnvironmentVariable, LaunchConfiguration,
@@ -42,7 +45,7 @@ def generate_launch_description():
                               description="Run without the Open3D GUI (gui_node). Use on hosts "
                               "with no X display; an rqt GUI is started instead."),
         DeclareLaunchArgument("catalog", default_value="true",
-                              description="Launch the PLM parts catalog node. It serves "
+                              description="Launch the PLM parts catalog node (plm_bridge_ros). It serves "
                               "whatever is already cached even without DX_* credentials, so it is "
                               "safe to leave on."),
         DeclareLaunchArgument("picker", default_value="true",
@@ -181,27 +184,35 @@ def generate_launch_description():
         }.items()
     )
 
-    # 3DEXPERIENCE parts catalog + picker UI. Always-on (not gated on cell),
-    # like the Foxglove bridge: browsing the catalog and caching STEP files is
-    # useful with or without cell hardware attached.
-    catalog_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource([
-            PathJoinSubstitution([
-                FindPackageShare("viewpoint_generation"),
-                "launch",
-                "catalog.launch.py"
-            ])
-        ]),
-        launch_arguments={
-            "sync_interval": LaunchConfiguration("catalog_sync_interval"),
-            "sync_on_startup": LaunchConfiguration("catalog_sync_on_startup"),
-            "mesh_units": LaunchConfiguration("catalog_mesh_units"),
-            "picker": LaunchConfiguration("picker"),
-            "picker_port": LaunchConfiguration("picker_port"),
-            "plm_backends": LaunchConfiguration("plm_backends"),
-        }.items(),
-        condition=IfCondition(LaunchConfiguration("catalog"))
-    )
+    # PLM parts catalog + picker UI (the plm_bridge repository). Always-on
+    # (not gated on cell), like the Foxglove bridge: browsing the catalog and
+    # caching STEP files is useful with or without cell hardware attached.
+    try:
+        plm_bridge_share = get_package_share_directory("plm_bridge_ros")
+    except PackageNotFoundError:
+        plm_bridge_share = None
+    if plm_bridge_share is not None:
+        catalog_launch = IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(plm_bridge_share, "launch", "plm_bridge.launch.py")),
+            launch_arguments={
+                "sync_interval": LaunchConfiguration("catalog_sync_interval"),
+                "sync_on_startup": LaunchConfiguration("catalog_sync_on_startup"),
+                "mesh_units": LaunchConfiguration("catalog_mesh_units"),
+                "picker": LaunchConfiguration("picker"),
+                "picker_port": LaunchConfiguration("picker_port"),
+                "plm_backends": LaunchConfiguration("plm_backends"),
+                # This package's node describes plan files the catalog finds.
+                "describe_plans_service": "viewpoint_generation/describe_plans",
+            }.items(),
+            condition=IfCondition(LaunchConfiguration("catalog"))
+        )
+    else:
+        catalog_launch = LogInfo(
+            msg="catalog:=true, but the plm_bridge_ros package is not installed, so the "
+                "parts catalog and picker are not running. Add the plm_bridge repository "
+                "to the workspace (see the README), or pass catalog:=false.",
+            condition=IfCondition(LaunchConfiguration("catalog")))
 
     return LaunchDescription(declared_arguments + [
         control_moveit_launch,

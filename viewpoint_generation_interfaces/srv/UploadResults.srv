@@ -1,5 +1,0 @@
-string run_id
----
-bool success
-string remote_ref        # id of the remote attachment holding the bundle
-string message

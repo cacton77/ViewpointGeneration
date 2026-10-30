@@ -1,5 +1,0 @@
-# Served by the plan producer. The catalog lists plan files it finds on disk
-# but never opens them; it asks the producer to describe them instead.
-string[] paths
----
-PlanDescription[] plans

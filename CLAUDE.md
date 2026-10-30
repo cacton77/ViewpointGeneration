@@ -16,86 +16,42 @@ When making changes to this package (adding/removing/modifying modules, ROS inte
 Algorithm and subsystem configuration lives in dataclasses exposing a
 `to_dict()` that returns `{field: {value, type, description, control, range}}`.
 The ROS nodes auto-declare parameters from it (`_auto_declare_parameters` in
-`viewpoint_generation_node.py`, `_declare_from` in `catalog/ros_node.py` for
-`CoreConfig` and each backend's settings), so **adding a field to the
-dataclass and its `to_dict()` is sufficient** -- no node changes are needed.
-Follow this for any new config class.
+`viewpoint_generation_node.py`), so **adding a field to the dataclass and its
+`to_dict()` is sufficient** -- no node changes are needed. Follow this for any
+new config class.
 
-Credential-bearing config (`DXConfig` in `catalog/backends/dx3/config.py`, and
-every future backend's credentials) is the deliberate exception: it must never
-be exposed as a ROS parameter or written into a plan, result or log. Keep it
-without a `to_dict()`, and use `redacted()` when logging it.
+## The PLM catalog lives in plm_bridge
 
-## Catalog structure
+The parts catalog, part picker, 3DEXPERIENCE client and STEP loader moved to
+the plm_bridge repository (packages `plm_bridge`, `plm_bridge_ros`,
+`plm_interfaces`, `cad_loader`); its `CLAUDE.md` holds their rules (secrets,
+the 3DX client's traps, cache paths, STEP invariants). This package's side of
+the contract:
 
-The catalog core (`catalog/core/`) talks to PLM systems only through
-`catalog/backends/base.py` and must never import a concrete backend; the
-registry and `catalog/factory.py` wire them together. The core never opens a
-plan file to learn about it (see `catalog/core/plan_contract.py`). A
-backend's `part_id` is never used as a file path component; use the
-`storage_key`. The catalog is being extracted to the `plm_bridge` repository
-(see `PLM_BRIDGE_STATUS.md`).
-
-## 3DX client: tenant API surface varies
-
-The 3DEXPERIENCE REST surface differs substantially between tenants and
-platform releases. Before assuming an endpoint exists, check
-`docs/3dx_integration/TENANT_API_FINDINGS.md` in the `inspection-docker` repo,
-which records what this tenant actually exposes and what it does not.
-
-Two behaviours to keep in mind when touching `catalog/backends/dx3/client.py`:
-
-- **HTTP 200 does not mean the write happened.** Several endpoints accept a
-  request with the wrong method or shape, return 200, and do nothing (the
-  file check-in via PUT is the known case). Judge success on the returned
-  object, not the status code.
-- **An expired session is not a 401.** 3DX redirects to the passport login
-  page and returns HTML with status 200. `_looks_like_login_redirect()` is what
-  detects this; keep new request paths going through `_request()` so they
-  inherit the re-login-and-retry behaviour.
-
-Methods that depend on services a tenant may not expose should degrade to an
-empty result and log, rather than raising -- a missing derived-output service
-must not fail a whole catalog sync.
-
-## Cache paths are environment-relative
-
-`catalog.db` is read from both the host (`./catalog`) and the container
-(`/catalog`), so absolute paths stored in it are not
-portable between the two. Resolve cached STEP/thumbnail/plan paths through
-`Catalog.resolved_geometry_path()` / `resolved_thumb_path()` /
-`resolved_plan_path()` (which prefer the canonical location for the current
-environment, then the legacy layout) rather than trusting the stored column
-directly.
+- Plans for a selected part go to the selection's `plan_dir`, and their
+  `plm_context` is the selection's `plm_context_json` plus only `stage`,
+  `generated_at` and `software_version` (`plan_io.stamp`). Do not add other
+  PLM keys here: the bridge authors them.
+- Everything the bridge records about a plan comes from
+  `plan_io.describe_plan()` (sent in `RecordPlan`, and served by
+  `describe_plans`). The bridge never opens plan files, so a new plan field
+  the catalog should show belongs in `summarize()`/`describe()`.
+- `plan_io.read_plan()` must keep reading schema 2.0 (mapping `eng_item_id`
+  -> `part_id`, `cestamp` -> `change_token`, `backend: dx3`), the 1.0
+  envelope, and bare results JSON.
 
 ## Reading model files
 
 Never call `o3d.io.read_triangle_mesh()` on a path that could be a model the
 operator selected. It cannot parse STEP and signals that failure by returning
 an *empty mesh* rather than raising, so the caller silently displays nothing.
-Use `mesh_utils.read_mesh_file()`, which dispatches on the extension and
-returns `(mesh, error)` in the file's own units. Scale the result by
-`mesh_utils.mesh_file_units(path, configured_units)`, not by the configured
-units: for a STEP file it is always `'m'`. The exceptions are fixed
-package assets that are always STL (e.g. `planning_volume.stl`).
+Use `mesh_utils.read_mesh_file()` (re-exported from `cad_loader.mesh_io`),
+which dispatches on the extension and returns `(mesh, error)` in the file's
+own units. Scale the result by `mesh_utils.mesh_file_units(path,
+configured_units)`, not by the configured units: for a STEP file it is always
+`'m'`. The exceptions are fixed package assets that are always STL (e.g.
+`planning_volume.stl`).
 
-## STEP loading invariants
-
-If you touch `step_loader.py`, preserve these:
-
-- The vertex weld (`merge_close_vertices`) must stay. Without it, adjacent
-  B-rep faces share no vertex indices and `RegionGrowing` cannot grow a region
-  across a face boundary.
-- `tri_to_brep` and `BRepFace.triangle_indices` must be rebuilt **after** the
-  weld, because welding renumbers and can drop triangles.
-- STEP geometry is always returned in metres. OpenCascade converts every STEP
-  to its working unit (mm, pinned via `xstep.cad.unit`) whatever the file
-  declares, so a caller-supplied unit can never be right or wrong for STEP;
-  `load_step()` ignores its `units` argument. Absolute tessellation
-  deflections are configured in metres and converted to OCC's mm.
-- Keep the OCP 7/8 import fallbacks in `_import_occ()`: OCP 8 moved the
-  TopTools collection typedefs to `OCP.collections` and renamed
-  `TopoDS.Face_s` to `TopoDS.Face`.
-- B-rep face identity must come from OCC's own shape map, not Python `id()` or
-  `hash()`: OCP returns a fresh wrapper object per access, so Python identity
-  differs between two handles to the same face.
+STEP loading itself is `cad_loader.step_loader`; its invariants (the vertex
+weld, rebuilding `tri_to_brep` after it, metres, the OCP 7/8 fallbacks, face
+identity from OCC's shape map) are in that package's README.

@@ -36,23 +36,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/OptimizeViewpointTraversal.srv"
   "srv/ImportCadModel.srv"
   "srv/FindNearestViewpoint.srv"
-  "srv/ListParts.srv"
-  "srv/SelectPart.srv"
-  "srv/SyncNow.srv"
-  "srv/EnsurePlan.srv"
-  "srv/RecordPlan.srv"
-  "srv/UploadPlan.srv"
-  "srv/UploadResults.srv"
-  "srv/DescribePlans.srv"
-  "srv/ListBackends.srv"
   "msg/FocusValue.msg"
   "msg/AutofocusData.msg"
   "msg/OrientationControlData.msg"
-  "msg/PartSummary.msg"
-  "msg/PartSelected.msg"
-  "msg/SyncResult.msg"
-  "msg/PlanDescription.msg"
-  "msg/BackendInfo.msg"
   DEPENDENCIES geometry_msgs sensor_msgs
 )
 

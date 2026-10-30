@@ -3,7 +3,7 @@
 import json
 import os
 
-from catalog_fakes import results_for
+from plan_fixtures import results_for
 
 from viewpoint_generation import plan_io
 

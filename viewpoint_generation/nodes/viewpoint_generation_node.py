@@ -22,15 +22,15 @@ from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
 
 from std_srvs.srv import Trigger
 # from viewpoint_generation_interfaces.action import ViewpointGeneration
-from viewpoint_generation_interfaces.msg import PartSelected, PlanDescription
+from plm_interfaces.msg import PartSelected, PlanDescription
+from plm_interfaces.srv import DescribePlans, RecordPlan
 
 from std_msgs.msg import Bool, ColorRGBA
 from geometry_msgs.msg import PoseStamped, Pose, PointStamped, Point
 from visualization_msgs.msg import Marker
 from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject, ObjectColor
-from viewpoint_generation_interfaces.srv import (DescribePlans, OptimizeViewpointTraversal,
-                                                 RecordPlan)
+from viewpoint_generation_interfaces.srv import OptimizeViewpointTraversal
 
 
 def _pose_to_matrix(pose):

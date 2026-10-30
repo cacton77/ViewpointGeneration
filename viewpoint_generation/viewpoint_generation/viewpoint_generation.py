@@ -21,7 +21,7 @@ from viewpoint_generation.viewpoint_projection import *
 from viewpoint_generation.mesh_utils import mesh_file_units, submesh_from_faces
 from viewpoint_generation.brep_segmentation import (
     BRepSegmentation, BRepSegmentationConfig)
-from viewpoint_generation.step_loader import (
+from cad_loader.step_loader import (
     StepLoadResult, TessellationConfig, load_step)
 
 

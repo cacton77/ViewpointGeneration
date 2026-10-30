@@ -1,6 +1,0 @@
-string backend
-string part_id
----
-string status            # CURRENT | DOWNLOADED | UPDATED_FROM_REMOTE | STALE | NONE
-string plan_file_path
-string message
