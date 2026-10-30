@@ -74,10 +74,7 @@ class ROSThread(Node):
                 ('show_skybox', False),
                 ('show_mesh', True),
                 ('show_point_cloud', True),
-                ('show_curvatures', True),
-                ('show_regions', True),
                 ('show_noise_points', True),
-                ('show_fov_clusters', True),
                 ('show_viewpoints', True),
                 ('show_joint_path', True),
                 ('show_unreachable', True),
@@ -99,14 +96,8 @@ class ROSThread(Node):
             'show_mesh').get_parameter_value().bool_value
         self.show_point_cloud = self.get_parameter(
             'show_point_cloud').get_parameter_value().bool_value
-        self.show_curvatures = self.get_parameter(
-            'show_curvatures').get_parameter_value().bool_value
-        self.show_regions = self.get_parameter(
-            'show_regions').get_parameter_value().bool_value
         self.show_noise_points = self.get_parameter(
             'show_noise_points').get_parameter_value().bool_value
-        self.show_fov_clusters = self.get_parameter(
-            'show_fov_clusters').get_parameter_value().bool_value
         self.show_viewpoints = self.get_parameter(
             'show_viewpoints').get_parameter_value().bool_value
         self.show_joint_path = self.get_parameter(

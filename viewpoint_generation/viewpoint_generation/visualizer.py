@@ -15,7 +15,7 @@ import open3d.visualization.gui as gui
 from matplotlib import colormaps
 
 from viewpoint_generation.assets.materials import Materials
-from viewpoint_generation.mesh_utils import submesh_from_faces
+from viewpoint_generation.mesh_utils import mesh_file_units, read_mesh_file, submesh_from_faces
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -497,10 +497,13 @@ class Visualizer:
         # Show flags
         self.show_mesh_flag                  = True
         self.show_point_cloud_flag           = False
-        self.show_curvatures_flag            = False
-        self.show_regions_flag               = False
+        # View-level override: when True every region is drawn in focus
+        # (full colour, opaque) regardless of which one is selected. Reset to
+        # True each time results load, and cleared automatically the first time
+        # the region selection actually moves, so a fresh segmentation is shown
+        # whole before the user starts stepping through regions.
+        self.show_all_regions_flag           = True
         self.show_noise_points_flag          = False
-        self.show_clusters_flag              = False
         self.show_viewpoints_flag            = False
         self.mesh_has_vertex_colors          = False
         self.show_joint_path_flag            = True
@@ -508,7 +511,7 @@ class Visualizer:
         self.show_blind_spots_flag           = True
 
         # Names of every origin-frame model geometry added via add_geometry
-        # (mesh, point cloud, curvatures, regions, clusters, viewpoints, model
+        # (mesh, point cloud, regions, clusters, viewpoints, model
         # bounding box). apply_model_placement transforms exactly these to the
         # part's live placement; world-fixed geometry (ground grid, world axes,
         # skybox) is added via self.scene.add_geometry directly and is left put.
@@ -547,13 +550,42 @@ class Visualizer:
         self._surface_mode = mode
         self._render_surfaces()
 
+    def _region_in_focus(self, region_name: str) -> bool:
+        """Whether a region should be drawn in focus (full colour, opaque).
+
+        Every region is in focus while ``show_all_regions_flag`` is set or
+        while nothing is selected; otherwise only the selected one is.
+        Single source of truth for selection dimming, shared by surfaces,
+        overlays, and per-region path/marker geometry so they can never
+        disagree about what is in focus.
+        """
+        return (self.show_all_regions_flag
+                or not self.selected_region_name
+                or region_name == self.selected_region_name)
+
+    def show_all_regions(self, show: bool):
+        """Draw every region in focus, overriding the selection dimming.
+
+        The region slider still tracks a selection while this is on (paths and
+        overlays for the whole part are simply all drawn); turning it back off
+        restores the usual selected-region-only view without changing which
+        region is selected.
+        """
+        self.show_all_regions_flag = show
+        self._render_surfaces()
+        self._show_region_scoped(["joint_path", "joint_markers"],
+                                 self.show_joint_path_flag)
+        self._show_region_scoped(["unreachable_markers"],
+                                 self.show_unreachable_flag)
+        self._show_region_scoped(["blind_spot_markers"],
+                                 self.show_blind_spots_flag)
+        self._update_overlay_visibility()
+
     def _render_surfaces(self):
         """Apply the active surface mode to every region surface, honoring the
-        current selection (selected region opaque/full-bright, others dimmed)."""
-        sel = self.selected_region_name
+        regions in focus (in-focus opaque/full-bright, the rest dimmed)."""
         for region_name in self.geometries_dict:
-            selected = (not sel) or (region_name == sel)
-            self._apply_surface(region_name, selected)
+            self._apply_surface(region_name, self._region_in_focus(region_name))
 
     # Flat grey applied to non-selected region surfaces so cluster/solid
     # coloring only ever appears on the region currently in focus.
@@ -641,17 +673,17 @@ class Visualizer:
         self._built_overlays.add(kind)
 
     def _update_overlay_visibility(self):
-        """Show/colour overlays for the selected region (all regions when none is
-        selected), gated by the master ``show_viewpoints`` flag.
+        """Show/colour overlays for the regions currently in focus (the selected
+        one, or every region under ``show_all_regions``), gated by the master
+        ``show_viewpoints`` flag.
 
         The selected viewpoint uses its own overlay set (``_selected_overlays``)
         and the highlight materials; every other viewpoint uses the shared
         ``_enabled_overlays`` set and default materials.
         """
-        sel_region  = self.selected_region_name
         sel_cluster = self.selected_cluster_name
         for region_name, region_data in self.geometries_dict.items():
-            region_visible = (not sel_region) or (region_name == sel_region)
+            region_visible = self._region_in_focus(region_name)
             for cluster_name, cdata in region_data.get('clusters', {}).items():
                 is_selected_vp = (cluster_name == sel_cluster)
                 kinds = (self._selected_overlays if is_selected_vp
@@ -840,12 +872,17 @@ class Visualizer:
         """Load and display a mesh. Returns {'mesh': mesh, 'bbox': bbox} or None."""
         print(f"Importing mesh from {file_path}")
         try:
-            mesh = o3d.io.read_triangle_mesh(file_path)
-            if mesh.is_empty():
-                print(f"Warning: Mesh file {file_path} is empty or invalid.")
+            # read_mesh_file, not o3d.io.read_triangle_mesh: the latter cannot
+            # parse STEP and fails silently with an empty mesh, so a
+            # STEP-loaded part would simply never appear in the scene.
+            mesh, error = read_mesh_file(file_path)
+            if mesh is None:
+                print(f"Warning: {error}")
                 return None
 
             self.mesh_name  = file_path.rsplit('/', 1)[-1].rsplit('.', 1)[0]
+            # A STEP file's geometry is in metres whatever was configured.
+            mesh_units = mesh_file_units(file_path, mesh_units)
             self.mesh_units = mesh_units
 
             scale_map = {'mm': 1.0, 'cm': 10.0, 'm': 1000.0,
@@ -860,7 +897,6 @@ class Visualizer:
 
             self.scene.remove_geometry("mesh")
             self.scene.remove_geometry("point_cloud")
-            self.scene.remove_geometry("curvatures")
 
             self._clear_result_geometry()
 
@@ -896,7 +932,6 @@ class Visualizer:
             pcd.scale(scale_map.get(pcd_units, 1.0), center=(0, 0, 0))
 
             self.scene.remove_geometry("point_cloud")
-            self.scene.remove_geometry("curvatures")
 
             self._clear_result_geometry()
 
@@ -906,35 +941,6 @@ class Visualizer:
 
         except Exception as e:
             print(f"Error loading point cloud from {file_path}: {e}")
-            return False
-
-    def import_curvature(self, file_path: str) -> bool:
-        """Colour-code the stored point cloud by curvature. Returns True on success."""
-        if self.point_cloud is None:
-            print("No point cloud loaded; cannot import curvature.")
-            return False
-        print(f"Importing curvature data from {file_path}")
-        try:
-            curvature = np.load(file_path)
-            curvatures_cloud = copy.deepcopy(self.point_cloud)
-
-            normalised = (curvature - curvature.min()) / (
-                curvature.max() - curvature.min() + 1e-9)
-            cmap = colormaps[Materials.curvature_colormap]
-            colors = np.array([cmap(v)[:3] for v in normalised])
-            curvatures_cloud.colors = o3d.utility.Vector3dVector(colors)
-
-            self.scene.remove_geometry("curvatures")
-            self.scene.remove_geometry("regions")
-
-            self._clear_result_geometry()
-
-            self.add_geometry("curvatures", curvatures_cloud,
-                              Materials.point_cloud_material)
-            return True
-
-        except Exception as e:
-            print(f"Error loading curvature data from {file_path}: {e}")
             return False
 
     def visualize_results(self, file_path: str) -> None:
@@ -968,15 +974,14 @@ class Visualizer:
         scale_map = {'mm': 1.0, 'cm': 10.0, 'm': 1000.0, 'in': 25.4, 'ft': 304.8}
 
         # Loading a new results file invalidates everything from the previous
-        # one, so remove all downstream geometry before rebuilding: meshes,
-        # curvatures, and every region/cluster/viewpoint/path/view manifold.
+        # one, so remove all downstream geometry before rebuilding: meshes and
+        # every region/cluster/viewpoint/path/view manifold.
         # _clear_result_geometry must run while the name lists still hold the
         # previous file's names so its removals take effect.
         self.scene.remove_geometry("mesh")
         for name in self.mesh_names:
             self.scene.remove_geometry(name)
         self.scene.remove_geometry("point_cloud")
-        self.scene.remove_geometry("curvatures")
         self._clear_result_geometry()
         self.noise_faces            = []
         self.meshes                 = {}
@@ -1002,15 +1007,19 @@ class Visualizer:
 
         for mesh_idx, mesh_entry in enumerate(results_dict.get('meshes', [])):
             mesh_file  = mesh_entry.get('file', '')
-            mesh_units = mesh_entry.get('units', 'mm')
+            # STEP geometry is in metres whatever the JSON says; results
+            # written before the loader's unit fix recorded 'mm' for STEP.
+            mesh_units = mesh_file_units(mesh_file, mesh_entry.get('units', 'mm'))
             mesh_name  = f"mesh_{mesh_idx}"
 
             mesh = None
             if mesh_file:
                 try:
-                    mesh = o3d.io.read_triangle_mesh(mesh_file)
-                    if mesh.is_empty():
-                        mesh = None
+                    # Handles STEP as well as tessellated formats; see
+                    # read_mesh_file.
+                    mesh, mesh_error = read_mesh_file(mesh_file)
+                    if mesh is None:
+                        print(f"Error loading mesh {mesh_file}: {mesh_error}")
                     else:
                         mesh.scale(scale_map.get(mesh_units, 1.0), center=(0, 0, 0))
 
@@ -1213,6 +1222,9 @@ class Visualizer:
         self.selected_mesh_idx     = -1
         self.selected_region_name  = ''
         self.selected_cluster_name = ''
+        # A freshly loaded segmentation is shown whole; the first real move of
+        # the region slider switches to the selected-region view.
+        self.show_all_regions_flag = True
 
         # ── Build per-region surfaces (exact submesh per region) and per-mesh
         #    noise-face surfaces ────────────────────────────────────────────────
@@ -1264,7 +1276,6 @@ class Visualizer:
 
         # ── Initial visibility ────────────────────────────────────────────────
         self.show_mesh(True)
-        self.show_curvatures(False)
         self.show_noise_points(False)
         # Independent of clusters/viewpoints — a region can be entirely
         # blind (zero clusters) and still carry blind-spot markers.
@@ -1430,14 +1441,6 @@ class Visualizer:
         self.show_point_cloud_flag = show
         self.scene.show_geometry('point_cloud', show)
 
-    def show_curvatures(self, show: bool):
-        self.show_curvatures_flag = show
-        self.scene.show_geometry('curvatures', show)
-        if show:
-            self.show_point_cloud(False)
-            self.show_regions(False)
-            self.show_noise_points(False)
-
     def show_noise_points(self, show: bool):
         self.show_noise_points_flag = show
         for name in self.noise_surface_names:
@@ -1451,30 +1454,6 @@ class Visualizer:
         if self.region_names:
             self.scene.show_geometry('point_cloud', False)
 
-    def show_regions(self, show: bool):
-        """Back-compat shim: selects the SOLID region-surface mode.
-
-        Region surface coloring is now an exclusive choice (see
-        ``set_region_surface_mode``); this keeps the legacy "Show Regions"
-        menu item / ROS parameter driving the solid-color view.
-        """
-        self.show_regions_flag = show
-        if show:
-            self.show_point_cloud(False)
-            self.show_curvatures(False)
-            self.show_noise_points(False)
-            self.show_clusters_flag = False
-            self.set_region_surface_mode(RegionSurfaceMode.SOLID)
-
-    def show_fov_clusters(self, show: bool):
-        """Back-compat shim: selects the CLUSTER region-surface mode."""
-        self.show_clusters_flag = show
-        if show:
-            self.show_point_cloud(False)
-            self.show_curvatures(False)
-            self.show_regions_flag = False
-            self.set_region_surface_mode(RegionSurfaceMode.CLUSTER)
-
     def show_viewpoints(self, show: bool):
         """Master toggle for all viewpoint overlays."""
         self.show_viewpoints_flag = show
@@ -1487,13 +1466,11 @@ class Visualizer:
         self._update_overlay_visibility()
 
     def _show_region_scoped(self, suffixes, show: bool):
-        """Show/hide per-region geometry named ``{region}_{suffix}``. With no
-        region selected every region's geometry is affected; once a region is
-        selected only that region's is shown (mirrors the selection scoping used
-        for paths)."""
+        """Show/hide per-region geometry named ``{region}_{suffix}``, scoped to
+        the regions in focus: every region while nothing is selected or
+        ``show_all_regions`` is on, otherwise just the selected one."""
         for name in self.region_names:
-            visible = show and (
-                not self.selected_region_name or name == self.selected_region_name)
+            visible = show and self._region_in_focus(name)
             for suffix in suffixes:
                 self._safe_show(f"{name}_{suffix}", visible)
 
@@ -1697,23 +1674,23 @@ class Visualizer:
         selected_region_name = self.region_names[region_idx]
         self.selected_region_name = selected_region_name
 
-        # Surfaces: selected opaque/full-bright, all others dimmed/transparent.
+        # Surfaces: in-focus opaque/full-bright, all others dimmed/transparent.
         self._render_surfaces()
 
-        # Cartesian path and unreachable markers: only the selected region's,
+        # Cartesian path and unreachable markers: only the regions in focus,
         # each gated by its own toggle.
         for region_name in self.region_names:
-            is_selected = (region_name == selected_region_name)
+            in_focus = self._region_in_focus(region_name)
             self._safe_show(f"{region_name}_joint_path",
-                            is_selected and self.show_joint_path_flag)
+                            in_focus and self.show_joint_path_flag)
             self._safe_show(f"{region_name}_joint_markers",
-                            is_selected and self.show_joint_path_flag)
+                            in_focus and self.show_joint_path_flag)
             self._safe_show(f"{region_name}_unreachable_markers",
-                            is_selected and self.show_unreachable_flag)
+                            in_focus and self.show_unreachable_flag)
             self._safe_show(f"{region_name}_blind_spot_markers",
-                            is_selected and self.show_blind_spots_flag)
+                            in_focus and self.show_blind_spots_flag)
 
-        # Overlays: every enabled kind, for the selected region only.
+        # Overlays: every enabled kind, for the regions in focus.
         self._update_overlay_visibility()
 
         # Auto-select viewpoint 0 of this region.

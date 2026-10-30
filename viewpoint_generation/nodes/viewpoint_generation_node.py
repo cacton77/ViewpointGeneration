@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import rclpy
@@ -6,6 +7,8 @@ import numpy as np
 import open3d as o3d
 from rclpy.duration import Duration
 from rclpy.action import ActionServer
+from viewpoint_generation import plan_io
+from viewpoint_generation.mesh_utils import mesh_file_units
 from viewpoint_generation.viewpoint_generation import ViewpointGeneration
 from rcl_interfaces.msg import (
     SetParametersResult, ParameterDescriptor,
@@ -15,8 +18,13 @@ from importlib import resources as importlib_resources
 from ament_index_python.packages import get_package_prefix
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
+from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
+                       ReliabilityPolicy)
+
 from std_srvs.srv import Trigger
 # from viewpoint_generation_interfaces.action import ViewpointGeneration
+from plm_interfaces.msg import PartSelected, PlanDescription
+from plm_interfaces.srv import DescribePlans, RecordPlan
 
 from std_msgs.msg import Bool, ColorRGBA
 from geometry_msgs.msg import PoseStamped, Pose, PointStamped, Point
@@ -41,6 +49,15 @@ class ViewpointGenerationNode(rclpy.node.Node):
     block_next_param_callback = False
     initialized = False
     mesh = None
+
+    # The catalog part currently loaded, learned from /catalog/part_selected:
+    # its PLM backend and that backend's part id. Empty when the operator
+    # loaded a mesh by hand: plans still get written, they just have no PLM
+    # record to attach to. `selected_step_path` is what detects that a
+    # different mesh has been loaded over the selection.
+    selected_backend = ''
+    selected_part_id = ''
+    selected_step_path = ''
 
     def __init__(self):
         node_name = 'viewpoint_generation'
@@ -102,7 +119,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     if not success:
                         self.get_logger().error(message)
 
-        # Segmentation algorithm selector: 'region_growth' or 'partfield'.
+        # Segmentation algorithm selector: 'region_growth', 'partfield', or
+        # 'brep' (the last requires a STEP-loaded mesh).
         self.declare_parameters(
             namespace='',
             parameters=[
@@ -127,6 +145,18 @@ class ViewpointGenerationNode(rclpy.node.Node):
         _auto_declare_parameters(
             prefix='regions.partfield.',
             config_dict=self.viewpoint_generation.partfield_config.to_dict(),
+            excluded=set(),
+        )
+        _auto_declare_parameters(
+            prefix='regions.brep.',
+            config_dict=self.viewpoint_generation.brep_config.to_dict(),
+            excluded=set(),
+        )
+        # Tessellation quality is applied when a STEP file is loaded, so
+        # changing it takes effect on the next model load.
+        _auto_declare_parameters(
+            prefix='model.mesh.tessellation.',
+            config_dict=self.viewpoint_generation.tessellation_config.to_dict(),
             excluded=set(),
         )
         _auto_declare_parameters(
@@ -165,6 +195,19 @@ class ViewpointGenerationNode(rclpy.node.Node):
             self._filtered_pose_cb,
             10)
 
+        # Part selections from the PLM catalog node. Matches the publisher's
+        # transient-local QoS so a selection made before this node started is
+        # still delivered on subscribe.
+        self.create_subscription(
+            PartSelected,
+            '/catalog/part_selected',
+            self._part_selected_cb,
+            QoSProfile(
+                depth=1,
+                history=HistoryPolicy.KEEP_LAST,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL))
+
         # Update planning scene timer
         self.create_timer(1.0, self.update_planning_scene)
 
@@ -189,6 +232,20 @@ class ViewpointGenerationNode(rclpy.node.Node):
 
         self.optimize_traversal_client = self.create_client(
             OptimizeViewpointTraversal, f'{viewpoint_traversal_node_name}/optimize_traversal', callback_group=services_cb_group)
+
+        # Records every generated plan in the PLM catalog. Called fire-and-forget
+        # so a slow or absent catalog node can never stall the pipeline: plan
+        # files are always written to disk first, and recording is the
+        # bookkeeping that follows.
+        self.record_plan_client = self.create_client(
+            RecordPlan, 'catalog/record_plan', callback_group=services_cb_group)
+
+        # The catalog never opens plan files; when it finds ones it did not
+        # see being written (the picker's "Scan for files"), it asks this node
+        # -- the owner of the plan format -- to describe them.
+        self.create_service(DescribePlans, node_name + '/describe_plans',
+                            self.describe_plans_callback,
+                            callback_group=MutuallyExclusiveCallbackGroup())
 
         self.set_data_path(self.get_parameter(
             'settings.data_path').get_parameter_value().string_value)
@@ -247,6 +304,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # If file doesn't exist, look in data path
         if not os.path.exists(mesh_file):
             mesh_file = os.path.join(self.data_path, mesh_file)
+
+        # Loading any mesh other than the selected part's own STEP drops the
+        # catalog association. Without this, hand-loading a mesh over a
+        # previous catalog selection would keep writing plans into -- and
+        # recording them against -- the part that is no longer loaded.
+        if mesh_file != self.selected_step_path:
+            self._clear_plm_context()
 
         success, message = self.viewpoint_generation.set_mesh_file(
             mesh_file, mesh_units)
@@ -391,6 +455,189 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # TF that tsdf_pose broadcasts.
         self._filtered_pose = msg.pose
         self.viewpoint_generation.set_placement(_pose_to_matrix(msg.pose))
+
+    def _part_selected_cb(self, msg: PartSelected):
+        """Load a part chosen in the PLM catalog into the pipeline.
+
+        Sets the mesh from the STEP the catalog cached, and -- when the
+        catalog reports a plan that still matches the part's CAD revision, or
+        the operator picked one explicitly -- loads that plan's
+        regions/clusters/viewpoints instead of discarding them, so an
+        already-planned part is ready to inspect without re-running the
+        pipeline.
+
+        A merely STALE plan is deliberately NOT loaded: its viewpoints were
+        computed against different geometry, and the operator decides whether
+        to re-plan. SELECTED is the operator having made exactly that decision,
+        so it loads with a warning."""
+        self.get_logger().info(
+            f'Catalog selected {msg.title!r} ({msg.part_number} rev {msg.revision}), '
+            f'plan status {msg.plan_status}.')
+
+        if not msg.geometry_path:
+            self.get_logger().warn('Part selection carried no model file; ignoring.')
+            return
+
+        units = msg.mesh_units or 'mm'
+        # Recorded before set_mesh_file() so its "mesh replaced outside the
+        # catalog" guard recognises this load as the selection itself.
+        self.selected_backend = msg.backend or ''
+        self.selected_part_id = msg.part_id or ''
+        self.selected_step_path = msg.geometry_path
+
+        # Load the plan first when it is usable: set_mesh_file() preserves
+        # regions/clusters already recorded in self.results for the same
+        # file+units, so seeding results from the plan before the mesh is what
+        # lets a downloaded plan survive the load.
+        loadable = ('CURRENT', 'DOWNLOADED', 'UPDATED_FROM_REMOTE', 'SELECTED')
+        if msg.plan_status in loadable and msg.plan_file_path:
+            if not self.set_results_file(msg.plan_file_path):
+                self.get_logger().warn(
+                    f'Could not load plan {msg.plan_file_path}; '
+                    'continuing with the model only.')
+
+        # Re-selecting the part that is already loaded (to load another of its
+        # plans, say) leaves the model as it is: "already set" is success,
+        # not a failed load, so the context and warnings below still apply.
+        already_loaded = (
+            msg.geometry_path == self.viewpoint_generation.mesh_file
+            and mesh_file_units(msg.geometry_path, units) == self.viewpoint_generation.mesh_units)
+        if not already_loaded and not self.set_mesh_file(msg.geometry_path, units):
+            self.get_logger().error(
+                f'Failed to load selected model: {msg.geometry_path}')
+            return
+
+        # Plans generated from here go to the catalog's directory for this
+        # part, and carry its PLM identity. Both must come after
+        # set_mesh_file(), which resets self.results when the mesh changes.
+        self._apply_plm_context(msg)
+
+        if msg.plan_status == 'SELECTED':
+            self.get_logger().warn(
+                f'Loaded a plan for {msg.title!r} that was generated against an '
+                'EARLIER CAD REVISION, because it was selected explicitly. Its '
+                'viewpoints may not match the current geometry -- verify before '
+                'inspecting.')
+        elif msg.plan_status == 'STALE':
+            self.get_logger().warn(
+                f'The stored plan for {msg.title!r} was generated for an earlier '
+                'CAD revision. Re-run segmentation before inspecting.')
+
+    def _clear_plm_context(self):
+        """Drop the catalog association, so plans stop being attributed to a
+        part that is no longer loaded."""
+        if not self.selected_part_id:
+            return
+        self.get_logger().info(
+            'Mesh replaced outside the catalog; plans will no longer be recorded '
+            f'against {self.selected_backend}/{self.selected_part_id}.')
+        self.selected_backend = ''
+        self.selected_part_id = ''
+        self.selected_step_path = ''
+        self.viewpoint_generation.plan_dir = None
+
+    def _apply_plm_context(self, msg: PartSelected):
+        """Point plan output where the catalog said, and embed its PLM context.
+
+        Both come from the selection itself: the catalog names the plan
+        directory and authors the `plm_context` block; plan_io adds only the
+        stage, generation time and software version when a plan is written.
+        """
+        if not msg.part_id:
+            self.viewpoint_generation.plan_dir = None
+            return
+        self.viewpoint_generation.plan_dir = msg.plan_dir or None
+        if not msg.plan_dir:
+            self.get_logger().warn(
+                'The selection named no plan directory; plans will be written '
+                'beside the model instead.')
+
+        context = {}
+        if msg.plm_context_json:
+            try:
+                context = json.loads(msg.plm_context_json)
+            except ValueError as e:
+                self.get_logger().warn(f'Ignoring malformed plm_context_json: {e}')
+        if not isinstance(context, dict) or not context:
+            context = {
+                'backend': msg.backend,
+                'part_id': msg.part_id,
+                'part_number': msg.part_number,
+                'revision': msg.revision,
+                'change_token': msg.change_token,
+                'title': msg.title,
+            }
+        self.viewpoint_generation.set_plm_context(context)
+
+    def _record_plan(self, plan_path, stage):
+        """Register a generated plan file with the catalog node.
+
+        Fire-and-forget: the plan file is already safely on disk, so a missing
+        or slow catalog node degrades to "not in the database yet" rather than
+        blocking the pipeline service that produced it.
+        """
+        if not plan_path:
+            return
+        if not self.selected_part_id:
+            self.get_logger().debug(
+                'No catalog part is loaded; plan was not recorded in the database.')
+            return
+        if not self.record_plan_client.service_is_ready():
+            self.get_logger().warn(
+                f'Catalog node is not available; the {stage} plan was written to '
+                f'{plan_path} but not recorded in the database.')
+            return
+
+        # The catalog records what the producer states about the plan; it
+        # never opens the file itself.
+        description = plan_io.describe_plan(plan_path)
+        request = RecordPlan.Request()
+        request.backend = self.selected_backend
+        request.part_id = self.selected_part_id
+        request.plan_path = str(plan_path)
+        request.stage = stage
+        request.force_upload = False
+        request.stage_rank = plan_io.stage_rank(stage)
+        request.summary_json = description['summary_json']
+        request.summary_text = description['summary_text']
+        request.change_token = description['change_token']
+        request.generated_at = description['generated_at']
+
+        future = self.record_plan_client.call_async(request)
+        future.add_done_callback(
+            lambda f, stage=stage: self._record_plan_done(f, stage))
+
+    def describe_plans_callback(self, request, response):
+        """Describe plan files for the catalog (it never opens them itself)."""
+        for path in request.paths:
+            description = plan_io.describe_plan(path)
+            plan = PlanDescription()
+            plan.path = description['path']
+            plan.valid = description['valid']
+            plan.stage = description['stage']
+            plan.stage_rank = description['stage_rank']
+            plan.summary_json = description['summary_json']
+            plan.summary_text = description['summary_text']
+            plan.change_token = description['change_token']
+            plan.generated_at = description['generated_at']
+            plan.message = description['message']
+            response.plans.append(plan)
+        return response
+
+    def _record_plan_done(self, future, stage):
+        """Log the outcome of a plan recording."""
+        try:
+            result = future.result()
+        except Exception as e:  # noqa: BLE001 - a failed record must not raise here
+            self.get_logger().warn(f'Could not record the {stage} plan: {e}')
+            return
+        if result.success:
+            self.get_logger().info(
+                f'Recorded {stage} plan {result.plan_id} '
+                f'(upload: {result.upload_status}).')
+        else:
+            self.get_logger().warn(
+                f'Could not record the {stage} plan: {result.message}')
 
     def update_planning_scene(self):
         if not self.mesh:
@@ -669,6 +916,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 message
             )
             self.set_parameters([results_file_param])
+            self._record_plan(message, 'segmented')
         else:
             self.get_logger().error(f"Region segmentation failed: {message}")
 
@@ -709,6 +957,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 message
             )
             self.set_parameters([results_file_param])
+            self._record_plan(message, 'clustered')
         else:
             self.get_logger().error(f"FOV clustering failed: {message}")
 
@@ -741,6 +990,7 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 message
             )
             self.set_parameters([results_file_param])
+            self._record_plan(message, 'projected')
         else:
             self.get_logger().error(f"Viewpoint projection failed: {message}")
 
@@ -777,6 +1027,9 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 self.set_parameters([results_file_param])
                 self.get_logger().info(
                     f'New viewpoint dictionary saved at: {new_viewpoint_dict_path}')
+                # The terminal plan -- the one the cell executes. This is the
+                # stage auto-uploaded to the PLM by default.
+                self._record_plan(new_viewpoint_dict_path, 'ordered')
             else:
                 self.get_logger().error(
                     f'Optimization failed: {result.message}')
@@ -832,6 +1085,8 @@ class ViewpointGenerationNode(rclpy.node.Node):
                     self.get_logger().error(message)
             elif (param.name.startswith('regions.region_growth.') or
                   param.name.startswith('regions.partfield.') or
+                  param.name.startswith('regions.brep.') or
+                  param.name.startswith('model.mesh.tessellation.') or
                   param.name.startswith('fov_clustering.') or
                   param.name.startswith('viewpoints.projection.')):
                 field_name = param.name.split('.')[-1]

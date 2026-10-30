@@ -1,8 +1,12 @@
+import os
+
+from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.substitutions import (EnvironmentVariable, LaunchConfiguration,
+                                  PathJoinSubstitution, PythonExpression)
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterFile
@@ -12,6 +16,9 @@ def generate_launch_description():
     declared_arguments = [
         DeclareLaunchArgument("cell", default_value="false"),
         DeclareLaunchArgument("sim", default_value="false"),
+        DeclareLaunchArgument("dual_arm", default_value="false",
+                              description="Add the second UR5e carrying the Zivid 2+ MR60 "
+                              "(cell beta only)."),
         DeclareLaunchArgument("object", default_value="new.yaml",
                               description="Configuration file for viewpoint generation."),
         DeclareLaunchArgument("data_path", default_value="/data/ViewpointGenerationData",
@@ -37,6 +44,27 @@ def generate_launch_description():
         DeclareLaunchArgument("headless_mode", default_value="false",
                               description="Run without the Open3D GUI (gui_node). Use on hosts "
                               "with no X display; an rqt GUI is started instead."),
+        DeclareLaunchArgument("catalog", default_value="true",
+                              description="Launch the PLM parts catalog node (plm_bridge_ros). It serves "
+                              "whatever is already cached even without DX_* credentials, so it is "
+                              "safe to leave on."),
+        DeclareLaunchArgument("picker", default_value="true",
+                              description="Launch the browser part picker UI alongside the catalog "
+                              "node (requires catalog:=true)."),
+        DeclareLaunchArgument("picker_port", default_value="5050",
+                              description="Port the part picker UI listens on."),
+        DeclareLaunchArgument("catalog_sync_interval", default_value="300",
+                              description="Seconds between background incremental catalog syncs "
+                              "(0 disables the timer)."),
+        DeclareLaunchArgument("catalog_sync_on_startup", default_value="false",
+                              description="Run a full catalog sync when the system starts. Off by "
+                              "default because a full pass over a broad DX_BOOKMARK_SCOPE takes "
+                              "minutes; the periodic timer and the picker's Sync button cover it."),
+        DeclareLaunchArgument("plm_backends",
+                              default_value=EnvironmentVariable("PLM_BACKENDS", default_value="dx3"),
+                              description="Comma-separated PLM backends the catalog hosts."),
+        DeclareLaunchArgument("catalog_mesh_units", default_value="mm",
+                              description="Units used to load STEP files selected from the catalog."),
     ]
 
     cell_enabled = PythonExpression(
@@ -73,6 +101,7 @@ def generate_launch_description():
             "use_fake_hardware": LaunchConfiguration("sim"),
             "rviz_config": LaunchConfiguration("rviz_config"),
             "launch_control": LaunchConfiguration("launch_control"),
+            "dual_arm": LaunchConfiguration("dual_arm"),
         }.items(),
         condition=IfCondition(cell_enabled)
     )
@@ -118,7 +147,8 @@ def generate_launch_description():
         ]),
         launch_arguments={
             "controller_config_file": LaunchConfiguration("controller"),
-            "admittance_config_file": LaunchConfiguration("admittance_config_file")
+            "admittance_config_file": LaunchConfiguration("admittance_config_file"),
+            "dual_arm": LaunchConfiguration("dual_arm"),
         }.items(),
         condition=IfCondition(cell_enabled)
     )
@@ -154,6 +184,36 @@ def generate_launch_description():
         }.items()
     )
 
+    # PLM parts catalog + picker UI (the plm_bridge repository). Always-on
+    # (not gated on cell), like the Foxglove bridge: browsing the catalog and
+    # caching STEP files is useful with or without cell hardware attached.
+    try:
+        plm_bridge_share = get_package_share_directory("plm_bridge_ros")
+    except PackageNotFoundError:
+        plm_bridge_share = None
+    if plm_bridge_share is not None:
+        catalog_launch = IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(plm_bridge_share, "launch", "plm_bridge.launch.py")),
+            launch_arguments={
+                "sync_interval": LaunchConfiguration("catalog_sync_interval"),
+                "sync_on_startup": LaunchConfiguration("catalog_sync_on_startup"),
+                "mesh_units": LaunchConfiguration("catalog_mesh_units"),
+                "picker": LaunchConfiguration("picker"),
+                "picker_port": LaunchConfiguration("picker_port"),
+                "plm_backends": LaunchConfiguration("plm_backends"),
+                # This package's node describes plan files the catalog finds.
+                "describe_plans_service": "viewpoint_generation/describe_plans",
+            }.items(),
+            condition=IfCondition(LaunchConfiguration("catalog"))
+        )
+    else:
+        catalog_launch = LogInfo(
+            msg="catalog:=true, but the plm_bridge_ros package is not installed, so the "
+                "parts catalog and picker are not running. Add the plm_bridge repository "
+                "to the workspace (see the README), or pass catalog:=false.",
+            condition=IfCondition(LaunchConfiguration("catalog")))
+
     return LaunchDescription(declared_arguments + [
         control_moveit_launch,
         viewpoint_generation_launch,
@@ -161,4 +221,5 @@ def generate_launch_description():
         task_planning_node,
         admittance_control_launch,
         foxglove_bridge_node,
+        catalog_launch,
     ])

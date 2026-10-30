@@ -10,10 +10,11 @@ ViewpointGeneration is structured as a standalone Python library (`viewpoint_gen
 
 The pipeline follows these stages:
 
-1. **Load CAD Model** -- Import an STL/OBJ mesh with unit conversion
-2. **Surface Segmentation** -- Segment the mesh directly into regions (by triangle face, not a sampled point cloud). Two interchangeable algorithms (selected via `regions.segmentation_algorithm`):
+1. **Load CAD Model** -- Import an STL/OBJ/PLY/OFF mesh, or a STEP file, with unit conversion. STEP files are tessellated through PythonOCC and additionally carry their B-rep topology (see [STEP ingest](#step-ingest))
+2. **Surface Segmentation** -- Segment the mesh directly into regions (by triangle face, not a sampled point cloud). Three interchangeable algorithms (selected via `regions.algorithm`):
    - `region_growth` -- contiguous regions grown over triangle face-adjacency, using face-normal similarity and a per-face curvature analog (variance of neighboring face normals) as the merge criteria
    - `partfield` -- semantic parts from [PartField](https://github.com/nv-tlabs/PartField), grouped directly from its per-face labels (requires GPU + PartField mounted at `/models/PartField`)
+   - `brep` -- one region per analytical B-rep face from the CAD model itself (requires a STEP-loaded mesh). No seeds, no thresholds, no GPU: the segmentation is the one the CAD author drew. Small faces are merged into their largest neighbour, and adjacent same-type faces can optionally be unioned
 3. **Sample Region Point Clouds** -- Poisson disk sample each region's own submesh (sized from `fov_clustering.point_density`); cached to disk and referenced from the results file
 4. **FOV Clustering** -- Subdivide each region's sampled point cloud into clusters that fit within the camera's field of view and depth of field. Two interchangeable algorithms (selected via `regions.fov_clustering.algorithm`):
    - `kmeans` -- K-means with Bayesian optimization for cluster count
@@ -34,7 +35,9 @@ viewpoint_generation/
 │   ├── fov_clustering.py           # Field-of-view clustering
 │   ├── viewpoint_projection.py     # Viewpoint pose computation
 │   ├── occlusion_search.py         # Monte Carlo hemisphere occlusion search (blind-spot rescue + direction refinement)
-│   ├── mesh_utils.py               # Shared triangle-mesh helpers (submesh extraction)
+│   ├── brep_segmentation.py        # B-rep topology segmentation (third algorithm)
+│   ├── mesh_utils.py               # Shared triangle-mesh helpers (submesh extraction; re-exports cad_loader.mesh_io)
+│   ├── plan_io.py                  # Plan file naming, stage inference, read/write, describe_plan
 │   ├── visualizer.py               # Open3D visualization
 │   ├── gui_node.py                 # GUI node implementation
 │   └── assets/
@@ -49,12 +52,37 @@ viewpoint_generation/
 │   ├── bringup.launch.py           # Full system bringup
 │   ├── viewpoint_generation.launch.py
 │   └── viewpoint_traversal.launch.py
+├── test/                           # pytest suites (see "Tests" below)
 ├── package.xml
 ├── setup.py
 └── requirements.txt
 ```
 
 A companion package, `viewpoint_generation_interfaces/`, defines the ROS 2 message, service, and action interfaces.
+
+The PLM parts catalog, the part picker and the STEP loader live in the
+[plm_bridge](https://github.com/cacton77/plm_bridge) repository (public, BSD-3-Clause):
+this package depends on its `plm_interfaces` (part selection, plan recording)
+and `cad_loader` (STEP and mesh loading) packages, and its bringup starts the
+`plm_bridge` node when that is installed.
+
+### Tests
+
+`test/` holds tests for `plan_io`: stage inference, file naming, every plan
+file shape it reads (3.0, 2.0 with its context mapped to 3.0, the 1.0 envelope,
+bare results) and `describe_plan()`, the producer's side of the plan contract
+with plm_bridge. They need neither ROS nor a network. The catalog's tests
+moved to plm_bridge, and the STEP loader's to `cad_loader`. Run them inside
+the container:
+
+```bash
+cd viewpoint_generation
+python3 -m pytest test/ --deselect test/test_flake8.py::test_flake8 \
+    --deselect test/test_pep257.py::test_pep257
+```
+
+The ament `flake8`/`pep257` checks are deselected because the package
+predates them and fails them throughout.
 
 ## Dependencies
 
@@ -69,6 +97,12 @@ Listed in `requirements.txt`:
 - matplotlib
 - requests
 
+For STEP ingest and the `brep` segmentation algorithm: the `cad_loader`
+package (plm_bridge repository), which needs `cadquery-ocp` (the maintained
+OpenCascade Python bindings, imported as `OCP`). It imports them lazily, so
+the rest of the package works without them -- only loading a `.stp`/`.step`
+file requires them, and the error names the fix.
+
 For the optional `partfield` segmentation algorithm: a CUDA GPU and the
 [PartField](https://github.com/nv-tlabs/PartField) checkout mounted at
 `/models/PartField` (with its `model/model_objaverse.ckpt` checkpoint and
@@ -80,6 +114,7 @@ mount is provided by `docker-compose.yaml`.
 
 - sensor_msgs
 - geometry_msgs
+- plm_interfaces, cad_loader (plm_bridge repository)
 - ros2launch
 - MoveIt 2 (for viewpoint traversal)
 
@@ -287,6 +322,9 @@ the mathematical formulation and per-algorithm details are documented in
 - `OptimizeViewpointTraversal.srv` -- Optimize traversal order for a results file
 - `FindNearestViewpoint.srv` -- Given a region index, return the viewpoint in that region nearest to the robot's current joint state (used for dynamic entry selection at execution time)
 
+The catalog's interfaces (part selection, plan recording, `DescribePlans`)
+moved to `plm_interfaces` in the plm_bridge repository.
+
 **Messages:**
 - `OrientationControlData.msg` -- Orientation control feedback (pitch/yaw/roll errors, PID gains)
 - `FocusValue.msg` -- Focus metric data
@@ -326,6 +364,31 @@ ros2 launch viewpoint_generation bringup.launch.py \
 Additional arguments:
 - `cell` -- Inspection cell configuration (`alpha` or `beta`)
 - `sim` -- Use fake/simulated hardware
+- `dual_arm` -- Add the second UR5e carrying the Zivid 2+ MR60 (cell `beta` only; default
+  `false`). Forwarded to `inspection_cell_moveit_config/launch/inspection_cell.launch.py`
+  and to `inspection_control/launch/admittance_control.launch.py`. The latter adds an
+  admittance controller for that arm, and lets the joystick's arm-switch button (10, right
+  stick click) move teleop between the two arms.
+- `catalog` -- Launch the PLM catalog node (`plm_bridge_ros`, from the plm_bridge
+  repository; default: `true`). If that package is not installed, bringup logs
+  a message and carries on. Like the
+  Foxglove bridge it is not gated on `cell`: browsing the catalog and caching
+  STEP files is useful with or without cell hardware. It serves whatever is
+  already cached even when the `DX_*` credentials are absent.
+- `picker` -- Launch the browser part picker alongside the catalog node
+  (default: `true`, requires `catalog:=true`)
+- `picker_port` -- Port the picker listens on (default: `5050`). With
+  `network_mode: host` it is reachable at `http://localhost:5050`.
+- `catalog_sync_interval` -- Seconds between background incremental syncs
+  (default: `300`; `0` disables the timer)
+- `catalog_sync_on_startup` -- Run a full sync at bringup (default: `false`; a
+  full pass over a broad `DX_BOOKMARK_SCOPE` takes minutes, and the periodic
+  timer and the picker's Sync button cover it)
+- `plm_backends` -- PLM backends the catalog hosts (default: `$PLM_BACKENDS`,
+  else `dx3`)
+- `catalog_mesh_units` -- Units announced with a catalog selection (default:
+  `mm`). Ignored for STEP files, which declare their own units (see
+  [STEP ingest](#step-ingest)); it only matters for a hand-placed non-STEP model
 - `headless_mode` -- Run without the Open3D GUI (`gui_node`); starts rqt instead
   (default: false). Forwarded to `viewpoint_generation.launch.py`. Use on hosts with
   no X display.
@@ -345,7 +408,29 @@ Additional arguments:
 
 ## JSON Results Format
 
-Results are saved with the naming convention `{N_regions}_regions_{N_clusters}_clusters_{timestamp}.json`:
+Results are saved with the naming convention
+`{stage}_{N}r_{M}c_{V}v_{timestamp}.json`, e.g.
+`projected_12r_75c_75v_20260814T162442Z.json`. Zero counts are omitted, so a
+segmentation-only plan is `segmented_12r_20260814T162427Z.json`. The stage is
+one of `segmented` → `clustered` → `projected` → `ordered`, matching the
+pipeline step that produced the file. Naming, reading, and writing all live in
+`plan_io.py`, which both the core class and `viewpoint_traversal_node` use.
+
+Alongside `meshes`, a plan carries three self-describing top-level keys:
+
+| key | meaning |
+| --- | --- |
+| `schema_version` | plan format version (`"3.0"`) |
+| `plm_context` | PLM identity, authored by the catalog: `backend`, `part_id`, `part_number`, `revision`, `change_token`, `container`, `title`, `cell_id`, `generated_by`; plus the producer's `stage`, `generated_at`, `software_version`. (2.0 files used `eng_item_id`/`cestamp`/`collab_space`; `read_plan()` maps them.) |
+| `summary` | `num_regions`, `num_clusters`, `num_viewpoints`, and the mesh identity |
+
+These sit **beside** `meshes`, never wrapping it, so every consumer that reads
+`json.load(...)['meshes']` is unaffected. `viewpoint_traversal_node` round-trips
+the whole dict, so an optimized plan inherits its part linkage automatically.
+
+`plan_io.infer_stage()` derives the stage from content rather than trusting the
+filename: a region's `order` becomes an algorithm-keyed dict only after
+traversal optimization, which is what separates `ordered` from `projected`.
 
 Each mesh holds a `regions` **list**; each region holds a `clusters` **list**.
 The `"0"`, `"1"` keys shown below are list indices. A region's `order` is a
@@ -541,3 +626,114 @@ baked-in `model.pose.*` transform; it is no longer read.
   region's *Paths* in the tree view), so the same choice drives both the
   visualized path and the execution order. An empty value falls back to the
   first available algorithm.
+
+## STEP ingest
+
+STEP files load natively, producing the same `o3d.geometry.TriangleMesh` the
+STL/OBJ path produces plus a sidecar of B-rep topology. `_load_scaled_mesh()`
+dispatches on the file extension, so `set_mesh_file("part.stp", ...)` is all
+that is required and every downstream stage is unchanged.
+
+**Units are not configurable for STEP.** A STEP file declares its own length
+unit, and OpenCascade converts every file to its working unit (millimetres) on
+read, so the loader always returns metres and ignores the units argument.
+`set_mesh_file()` records `m` for a STEP mesh, so the results JSON does too.
+Code that scales what `mesh_utils.read_mesh_file()` returns must use
+`mesh_utils.mesh_file_units(path, units)`, which is `m` for STEP. The
+visualizer does this, so older results files that recorded `mm` for a STEP
+mesh still display at the right size.
+
+> Before this was fixed (2026-10-16) the loader treated its `units` argument as
+> the file's unit, so a STEP was only sized correctly when loaded as `mm` (the
+> catalog's default), and 1000× too large otherwise. Tessellation deflection was
+> applied in millimetres, so the default `0.0005` meant 0.5 µm rather than
+> 0.5 mm.
+
+`step_loader.load_step()` returns a `StepLoadResult`:
+
+| Field | Meaning |
+|-------|---------|
+| `mesh` | Tessellated Open3D mesh, scaled to metres, normals computed |
+| `brep_faces` | One `BRepFace` per face: surface type, triangle indices, area, exact centroid and normal |
+| `face_adjacency` | `face_id -> {face_id}` from shared B-rep edges (exact CAD topology) |
+| `tri_to_brep` | Triangle index -> B-rep face id |
+| `source_file`, `units` | Provenance; `units` is always `m` |
+
+Surface types are classified from the analytical surface: `plane`, `cylinder`,
+`cone`, `sphere`, `torus`, `bezier`, `bspline`, `revolution`, `extrusion`,
+`offset`, `other`.
+
+**Vertex merging is load-bearing.** OpenCascade tessellates each B-rep face
+independently with its own vertex pool, so adjacent faces produce coincident
+but *distinct* vertices at shared edges. `RegionGrowing` derives face adjacency
+from shared vertex indices, so without welding it sees a mesh that falls apart
+at every B-rep boundary and can never grow a region across one. The loader
+welds with `merge_close_vertices(1e-8)` and then **rebuilds** `tri_to_brep` and
+every `BRepFace.triangle_indices` from the surviving triangles, because welding
+renumbers (and can drop degenerate) triangles.
+
+Tessellation quality is exposed as ROS parameters under
+`model.mesh.tessellation.` (`linear_deflection` in metres, or a fraction of
+edge size when `relative` is set; `angular_deflection` in radians; `relative`)
+and applies on the next model load.
+
+The loader works with `cadquery-ocp` 7.x and 8.x. OCP 8 moved the TopTools
+collection classes to `OCP.collections` and renamed `TopoDS.Face_s` to
+`TopoDS.Face`; `_import_occ()` falls back to the OCP 8 names.
+
+**Everything that reads a model file must go through
+`mesh_utils.read_mesh_file()`**, which dispatches on the extension and returns
+the geometry in the file's own units (metres for STEP; see above). `o3d.io.read_triangle_mesh()` cannot
+parse STEP and fails *silently* by returning an empty mesh, so any code path
+calling it directly renders nothing at all for a STEP-loaded part — which is
+exactly how the visualizer first went blank. Tessellated STEP meshes are cached
+by (path, mtime, size) and handed out as copies, since callers scale what they
+receive.
+
+### B-rep segmentation parameters
+
+Declared under `regions.brep.`:
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `min_face_area` | `1e-6` | Faces below this area (m²) merge into their largest neighbour; 0 disables |
+| `merge_same_type` | `false` | Union adjacent faces sharing an analytical surface type |
+| `max_regions` | `0` | Cap on emitted regions (0 = one per B-rep face) |
+
+## Parts catalog (plm_bridge)
+
+The PLM parts catalog moved to the
+[plm_bridge](https://github.com/cacton77/plm_bridge) repository (packages
+`plm_bridge`, `plm_bridge_ros`, `plm_interfaces`, `cad_loader`); its
+`README.md` and `docs/architecture.md` document it. What this package does
+with it:
+
+- `ViewpointGenerationNode` subscribes to `/catalog/part_selected`
+  (`plm_interfaces/PartSelected`), loads `geometry_path`, and loads the plan
+  when its status is `CURRENT`, `DOWNLOADED`, `UPDATED_FROM_REMOTE` or
+  `SELECTED` (an operator's explicit choice, loaded with a warning). A `STALE`
+  plan is not loaded.
+- Plans for a selected part are written to the selection's `plan_dir`, and
+  their `plm_context` is the selection's `plm_context_json` plus the stage,
+  generation time and software version (`plan_io`).
+- After every stage it calls `catalog/record_plan`, describing the plan
+  itself with `plan_io.describe_plan()`. The bridge never opens plan files.
+- It serves `viewpoint_generation/describe_plans` (`DescribePlans`), which
+  the bridge's picker uses to adopt plan files it finds on disk. From the
+  command line, the same description is
+  `python3 -m viewpoint_generation.plan_io describe FILE...`, which is what
+  `PLAN_DESCRIBE_CMD` should be for the `plm-bridge --adopt-plans` CLI.
+
+`bringup.launch.py` includes `plm_bridge_ros/launch/plm_bridge.launch.py` when
+`catalog:=true` and that package is installed, and logs a message otherwise.
+
+### Region provenance in the results JSON
+
+When the mesh came from STEP, each region additionally carries:
+
+- `surface_type` -- the analytical surface type, or `mixed` when a region spans
+  several (region_growth/partfield regions get this too, derived from which
+  B-rep faces their triangles came from)
+- `brep_face_ids` -- the B-rep faces the region covers
+
+and the mesh entry carries `source_format: "STEP"`.

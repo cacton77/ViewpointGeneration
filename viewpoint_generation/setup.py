@@ -36,7 +36,7 @@ setup(
             'viewpoint_generation_node = nodes.viewpoint_generation_node:main',
             'gui_node = nodes.gui:main',
             'viewpoint_traversal_node = nodes.viewpoint_traversal_node:main',
-            'task_planning_node = nodes.task_planning_node:main'
+            'task_planning_node = nodes.task_planning_node:main',
         ],
     },
 )

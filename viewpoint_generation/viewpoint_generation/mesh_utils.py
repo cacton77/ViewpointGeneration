@@ -1,8 +1,16 @@
 """Small shared triangle-mesh helpers used by both segmentation/orchestration
-and visualization code."""
+and visualization code.
+
+Reading model files (STEP included) lives in `cad_loader.mesh_io`; it is
+re-exported here so existing callers keep working. Never call
+`o3d.io.read_triangle_mesh()` on an operator-selected model: use
+`read_mesh_file()` and scale by `mesh_file_units()`.
+"""
 
 import numpy as np
 import open3d as o3d
+from cad_loader.mesh_io import (  # noqa: F401 (re-exported)
+    STEP_EXTENSIONS, STEP_MESH_UNITS, mesh_file_units, read_mesh_file)
 
 
 def submesh_from_faces(mesh: o3d.geometry.TriangleMesh, tris: np.ndarray):
