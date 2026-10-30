@@ -29,14 +29,14 @@ def test_second_sync_reports_everything_unchanged(catalog, fake_client):
 
 
 def test_modified_part_drops_cached_step_and_marks_plans_stale(
-        catalog, fake_client, write_plan_file):
+        catalog, fake_client, write_plan_file, record):
     _add(fake_client, make_item('A'))
     fake_client.step_files['A'] = b'ISO-10303-21; dummy'
     catalog.run_full_sync()
     step_path, _ = catalog.fetch_step('A')
     assert step_path is not None and step_path.exists()
     plan_file = write_plan_file(catalog.plan_dir_for('A'), 'ordered')
-    catalog.record_plan('A', plan_file, upload=False)
+    record(catalog, 'A', plan_file, upload=False)
     assert catalog.ensure_plan('A', check_remote=False)[0].value == 'CURRENT'
 
     fake_client.items['A']['cestamp'] = 'c2'

@@ -6,15 +6,27 @@ select a part, and trigger synchronization without knowing anything about 3DX.
 
 Services (all namespaced under the node name, `catalog`):
 
-    catalog/list_parts   -- browse the local catalog
-    catalog/select_part  -- fetch the STEP, resolve the plan, announce it
-    catalog/sync_now     -- run a sync on demand
-    catalog/ensure_plan  -- report plan validity for one part
+    catalog/list_parts     -- browse the local catalog
+    catalog/select_part    -- fetch the STEP, resolve the plan, announce it
+    catalog/sync_now       -- run a sync on demand
+    catalog/ensure_plan    -- report plan validity for one part
+    catalog/record_plan    -- record a plan the producer wrote (plan contract)
+    catalog/upload_plan    -- upload a recorded plan on demand
+    catalog/upload_results -- upload an inspection run's result bundle
 
 Topics:
 
     /catalog/part_selected  -- PartSelected, latched for late joiners
     /catalog/sync_complete  -- SyncResult after every sync pass
+
+Calls (as a client): `viewpoint_generation/describe_plans`, the plan
+producer's service for describing plan files found on disk, used by the
+picker's "Scan for files".
+
+The browser part picker runs inside this process when `catalog.picker_enabled`
+is true, on `catalog.picker_port`. It is handed callbacks for selecting,
+syncing and adopting, so it shares this node's catalog, sync lock and
+publisher rather than keeping its own.
 
 The node deliberately is NOT a lifecycle node: it has to interoperate with the
 existing non-lifecycle nodes, and the only state worth managing (the sync
@@ -37,7 +49,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 
 from viewpoint_generation_interfaces.msg import PartSelected, PartSummary
 from viewpoint_generation_interfaces.msg import SyncResult as SyncResultMsg
-from viewpoint_generation_interfaces.srv import (EnsurePlan, ListParts,
+from viewpoint_generation_interfaces.srv import (DescribePlans, EnsurePlan, ListParts,
                                                  RecordPlan, SelectPart, SyncNow,
                                                  UploadPlan, UploadResults)
 
@@ -155,6 +167,14 @@ class CatalogNode(rclpy.node.Node):
 
         self.add_on_set_parameters_callback(self.parameter_callback)
 
+        self.describe_plans_client = self.create_client(
+            DescribePlans, 'viewpoint_generation/describe_plans',
+            callback_group=services_cb_group)
+
+        self.picker_server = None
+        if self.get_parameter('catalog.picker_enabled').value:
+            self._start_picker()
+
         if self.get_parameter('catalog.sync_on_startup').value and configured:
             self.get_logger().info('Running startup catalog sync...')
             self._start_sync(full=True)
@@ -180,6 +200,9 @@ class CatalogNode(rclpy.node.Node):
         # the same value drives model loading and thumbnail rendering.
         self.declare_parameters(namespace='', parameters=[
             ('catalog.sync_on_startup', True),
+            ('catalog.picker_enabled', False),
+            ('catalog.picker_port', 5050),
+            ('catalog.picker_host', '0.0.0.0'),
         ])
 
     def parameter_callback(self, params):
@@ -242,6 +265,96 @@ class CatalogNode(rclpy.node.Node):
                 f'{" (safety net; events drive updates)" if self.event_driven else ""}.')
         else:
             self.get_logger().info('Background sync disabled (interval = 0).')
+
+    # --- picker and plan producer -------------------------------------------
+
+    def _start_picker(self):
+        """Serve the browser part picker from a thread in this process."""
+        from werkzeug.serving import make_server
+
+        from viewpoint_generation.picker.app import create_app
+
+        app = create_app(self.catalog, on_select=self._publish_selection,
+                         on_sync=self.sync_blocking, on_adopt=self.adopt_plans)
+        host = self.get_parameter('catalog.picker_host').value
+        port = int(self.get_parameter('catalog.picker_port').value)
+        try:
+            self.picker_server = make_server(host, port, app, threaded=True)
+        except OSError as e:
+            self.get_logger().error(f'Part picker could not bind {host}:{port}: {e}')
+            return
+        threading.Thread(target=self.picker_server.serve_forever,
+                         name='catalog-picker', daemon=True).start()
+        self.get_logger().info(f'Part picker listening on http://{host}:{port}')
+
+    def describe_plans(self, paths, timeout=120.0):
+        """Ask the plan producer to describe plan files (DescribePlans).
+
+        Returns:
+            list: description dicts; empty when the producer is not running.
+        """
+        if not self.describe_plans_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn(
+                'Plan producer (viewpoint_generation/describe_plans) is not running; '
+                'cannot describe plan files.')
+            return []
+        request = DescribePlans.Request()
+        request.paths = [str(path) for path in paths]
+        done = threading.Event()
+        future = self.describe_plans_client.call_async(request)
+        future.add_done_callback(lambda _: done.set())
+        if not done.wait(timeout) or future.result() is None:
+            self.get_logger().warn('Plan producer did not answer describe_plans.')
+            return []
+        return [{
+            'path': plan.path, 'valid': plan.valid, 'stage': plan.stage,
+            'stage_rank': plan.stage_rank, 'summary_json': plan.summary_json,
+            'summary_text': plan.summary_text, 'change_token': plan.change_token,
+            'generated_at': plan.generated_at,
+        } for plan in future.result().plans]
+
+    def adopt_plans(self, eng_item_id):
+        """Record plan files on disk that the catalog never captured.
+
+        Returns:
+            tuple: (int, int, str) adopted and skipped counts, and a message.
+        """
+        if not self.catalog.orphan_plan_candidates(eng_item_id):
+            return 0, 0, 'No unrecorded plan files found.'
+        if not self.describe_plans_client.service_is_ready() and \
+                not self.describe_plans_client.wait_for_service(timeout_sec=2.0):
+            return 0, 0, ('Found unrecorded plan files, but the plan producer '
+                          '(viewpoint_generation) is not running to describe them.')
+        adopted, skipped = self.catalog.adopt_orphan_plans(
+            eng_item_id, describe=self.describe_plans)
+        message = (f'Adopted {adopted} plan(s).' if adopted
+                   else 'No unrecorded plan files found.')
+        return adopted, skipped, message
+
+    def _publish_selection(self, selection):
+        """Announce a selection made by the service or the picker.
+
+        Returns:
+            tuple: (bool, str) whether it was published, and a message.
+        """
+        part = selection['part']
+        msg = PartSelected()
+        msg.eng_item_id = part['eng_item_id']
+        msg.title = part.get('title') or ''
+        msg.part_number = part.get('part_number') or ''
+        msg.revision = part.get('revision') or ''
+        msg.cestamp = part.get('cestamp') or ''
+        msg.step_file_path = selection['step_path']
+        msg.mesh_units = selection['mesh_units']
+        msg.plan_status = selection['plan_status'].value
+        msg.plan_file_path = selection['plan_path']
+        msg.plan_dir = selection['plan_dir']
+        msg.plm_context_json = selection['plm_context_json']
+        self.part_selected_pub.publish(msg)
+        self.get_logger().info(
+            f"Selected {part.get('title')} -> {msg.step_file_path} "
+            f'(plan: {msg.plan_status})')
+        return True, 'Selection published.'
 
     # --- sync --------------------------------------------------------------
 
@@ -336,71 +449,51 @@ class CatalogNode(rclpy.node.Node):
         eng_item_id = request.eng_item_id
         self.get_logger().info(f'SelectPart: {eng_item_id}')
 
-        part = self.catalog.db.get_part(eng_item_id)
-        if part is None:
-            response.success = False
-            response.error_message = f'Unknown part: {eng_item_id}.'
-            self.get_logger().error(response.error_message)
-            return response
-
-        step_path, message = self.catalog.fetch_step(eng_item_id)
-        if step_path is None:
+        selection, message = self.catalog.select(
+            eng_item_id, skip_plan_check=request.skip_plan_check)
+        if selection is None:
             response.success = False
             response.error_message = message
             self.get_logger().error(f'SelectPart failed: {message}')
             return response
 
-        plan_status = PlanStatus.NONE
-        plan_path = ''
-        if not request.skip_plan_check:
-            plan_status, plan_path = self.catalog.ensure_plan(eng_item_id)
-
         response.success = True
-        response.step_file_path = str(step_path)
-        response.plan_status = plan_status.value
-        response.plan_file_path = plan_path or ''
+        response.step_file_path = selection['step_path']
+        response.plan_status = selection['plan_status'].value
+        response.plan_file_path = selection['plan_path']
+        response.plan_dir = selection['plan_dir']
         response.error_message = ''
-
-        msg = PartSelected()
-        msg.eng_item_id = eng_item_id
-        msg.title = part.get('title') or ''
-        msg.part_number = part.get('part_number') or ''
-        msg.revision = part.get('revision') or ''
-        msg.cestamp = part.get('cestamp') or ''
-        msg.step_file_path = str(step_path)
-        msg.mesh_units = self.sync_config.mesh_units
-        msg.plan_status = plan_status.value
-        msg.plan_file_path = plan_path or ''
-        self.part_selected_pub.publish(msg)
-
-        self.get_logger().info(
-            f"Selected {part.get('title')} -> {step_path} (plan: {plan_status.value})")
+        self._publish_selection(selection)
         return response
+
+    def sync_blocking(self, full):
+        """Run a sync and wait for it, for callers that want real counts.
+
+        Returns:
+            tuple: (SyncResult or None, str) the result and, when there is
+            none, why.
+        """
+        configured, message = self.dx_config.is_configured()
+        if not configured:
+            return None, message
+        if not self._start_sync(full=full):
+            return None, 'A catalog sync is already running.'
+        # The worker owns the lock for the duration of the pass; joining it
+        # keeps the caller synchronous. Service handlers run in a reentrant
+        # group, so other services stay live meanwhile.
+        if self._sync_thread is not None:
+            self._sync_thread.join()
+        result = self.catalog.last_result
+        if result is None:
+            return None, 'Sync produced no result.'
+        return result, result.message
 
     def sync_now_callback(self, request, response):
         """Trigger a sync and wait for it, so the caller gets real counts."""
-        configured, message = self.dx_config.is_configured()
-        if not configured:
-            response.result.success = False
-            response.result.message = message
-            return response
-
-        if not self._start_sync(full=request.full):
-            response.result.success = False
-            response.result.message = 'A catalog sync is already running.'
-            return response
-
-        # The worker owns the lock for the duration of the pass; joining it
-        # keeps this service synchronous, which is what the picker's Sync
-        # button expects. The handler runs in a reentrant group, so other
-        # services stay live meanwhile.
-        if self._sync_thread is not None:
-            self._sync_thread.join()
-
-        result = self.catalog.last_result
+        result, message = self.sync_blocking(request.full)
         if result is None:
             response.result.success = False
-            response.result.message = 'Sync produced no result.'
+            response.result.message = message
             return response
 
         response.result.success = bool(result.success)
@@ -423,8 +516,10 @@ class CatalogNode(rclpy.node.Node):
         tenant rather than one per stage.
         """
         plan_id, message = self.catalog.record_plan(
-            request.eng_item_id, request.plan_path,
-            stage=request.stage or None,
+            request.eng_item_id, request.plan_path, stage=request.stage,
+            stage_rank=request.stage_rank, summary_json=request.summary_json,
+            summary_text=request.summary_text, change_token=request.change_token,
+            generated_at=request.generated_at,
             upload=True if request.force_upload else None)
 
         response.success = plan_id is not None
@@ -443,7 +538,7 @@ class CatalogNode(rclpy.node.Node):
         return response
 
     def upload_plan_callback(self, request, response):
-        """Wrap a results JSON in a PLM envelope and upload it to 3DX."""
+        """Upload an already-recorded plan, identified by its file, to 3DX."""
         self.get_logger().info(
             f'UploadPlan: {request.eng_item_id} <- {request.results_json_path}')
         doc_id, message = self.catalog.upload_plan(
@@ -499,6 +594,8 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        if node.picker_server is not None:
+            node.picker_server.shutdown()
         if node.jms is not None:
             node.jms.stop()
         node.client.close()

@@ -41,7 +41,6 @@ setup(
             'viewpoint_traversal_node = nodes.viewpoint_traversal_node:main',
             'task_planning_node = nodes.task_planning_node:main',
             'catalog_node = viewpoint_generation.catalog.ros_node:main',
-            'picker_node = viewpoint_generation.picker.app:main'
         ],
     },
 )

@@ -9,13 +9,17 @@ One file-backed database (`catalog/catalog.db`) holds four tables:
     sync_log         -- audit trail of sync actions, for debugging
 
 `init_db()` is idempotent: tables are created only when absent, and
-`_migrate()` adds columns that older databases predate, so an existing
-catalog.db survives an upgrade of this package without being rebuilt.
+existing databases are upgraded in place, never rebuilt. Two mechanisms do
+that. `_migrate()` adds plain columns that older databases predate. Changes
+that also have to move data are numbered steps in `VERSIONED_STEPS`, tracked
+with `PRAGMA user_version`; before the first step runs on an existing
+database, a consistent copy is saved beside it as `catalog.db.bak-<UTC stamp>`.
 
 All access goes through `CatalogDB`, which opens a short-lived connection per
 operation via a context manager and uses parameterized queries throughout.
 """
 
+import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
@@ -63,7 +67,11 @@ CREATE TABLE IF NOT EXISTS plans (
     upload_status   TEXT DEFAULT 'local',
     is_current      INTEGER DEFAULT 1,
     source          TEXT DEFAULT 'local',
-    stage           TEXT
+    stage           TEXT,
+    -- Plan contract: supplied by the producer when the plan is recorded.
+    stage_rank      INTEGER DEFAULT -1,
+    summary_json    TEXT,
+    summary_text    TEXT
 )
 """
 
@@ -131,6 +139,17 @@ MIGRATIONS = {
 }
 
 
+# Ranks for stage labels recorded before the producer supplied its own, copied
+# from ViewpointGeneration's plan_io.STAGES when the plan contract was
+# introduced. Used only to fill stage_rank on rows that predate it.
+LEGACY_STAGE_RANKS = {'segmented': 0, 'clustered': 1, 'projected': 2, 'ordered': 3}
+
+# Planner-specific plan columns from before the plan contract. Their values
+# are carried into summary_json by step 1; nothing writes them any more.
+LEGACY_PLAN_SUMMARY_COLUMNS = ('num_regions', 'num_clusters', 'num_viewpoints',
+                               'seg_algorithm', 'traversal_algo')
+
+
 def utc_now():
     """Current UTC time as an ISO-8601 string with a trailing Z."""
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -162,8 +181,71 @@ def _migrate(conn):
                 conn.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
 
 
+def _legacy_summary_text(summary):
+    """One-line description of a legacy plan row, as plan_io.describe() wrote it."""
+    bits = [f'{summary[key]} {label}' for key, label in (
+        ('num_regions', 'regions'), ('num_clusters', 'clusters'),
+        ('num_viewpoints', 'viewpoints')) if summary.get(key)]
+    return ', '.join(bits) or 'empty'
+
+
+def _step_1_plan_contract(conn):
+    """Give every plan row the producer-supplied fields of the plan contract.
+
+    Rows recorded before the contract carry their size in planner-specific
+    columns; those values move into summary_json (the columns stay, unread),
+    summary_text is regenerated in the producer's format, and stage_rank is
+    derived from the stage label.
+    """
+    existing = _column_names(conn, 'plans')
+    for name, definition in (('stage_rank', 'INTEGER DEFAULT -1'),
+                             ('summary_json', 'TEXT'), ('summary_text', 'TEXT')):
+        if name not in existing:
+            conn.execute(f'ALTER TABLE plans ADD COLUMN {name} {definition}')
+    legacy = [c for c in LEGACY_PLAN_SUMMARY_COLUMNS if c in existing]
+    rows = conn.execute(
+        f"SELECT plan_id, stage{''.join(', ' + c for c in legacy)} FROM plans"
+        ' WHERE summary_json IS NULL').fetchall()
+    for row in rows:
+        values = dict(zip(['plan_id', 'stage', *legacy], row))
+        summary = {c: values[c] for c in legacy if values[c] is not None}
+        conn.execute(
+            'UPDATE plans SET summary_json = ?, summary_text = ?, stage_rank = ?'
+            ' WHERE plan_id = ?',
+            (json.dumps(summary, sort_keys=True), _legacy_summary_text(summary),
+             LEGACY_STAGE_RANKS.get(values['stage'] or '', -1), values['plan_id']))
+
+
+# Numbered migrations. Step N brings a database from user_version N-1 to N.
+# Every step must be idempotent: it may meet a database a fresh CREATE TABLE
+# already gave the new columns to.
+VERSIONED_STEPS = (_step_1_plan_contract,)
+SCHEMA_VERSION = len(VERSIONED_STEPS)
+
+
+def _backup(db_path):
+    """Save a consistent copy of the database beside it before migrating.
+
+    Returns:
+        Path: the backup written.
+    """
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    backup = db_path.with_name(f'{db_path.name}.bak-{stamp}')
+    with sqlite3.connect(str(db_path)) as source, sqlite3.connect(str(backup)) as dest:
+        source.backup(dest)
+    return backup
+
+
+def _has_tables(db_path):
+    """True when the file at db_path is an existing catalog database."""
+    if not db_path.exists() or db_path.stat().st_size == 0:
+        return False
+    with sqlite3.connect(str(db_path)) as conn:
+        return _table_exists(conn, 'parts')
+
+
 def init_db(db_path):
-    """Create the catalog database and its tables if they do not exist.
+    """Create the catalog database and its tables, migrating an older one.
 
     Args:
         db_path: Path to the SQLite file. Parent directories are created.
@@ -174,6 +256,13 @@ def init_db(db_path):
     db_path = Path(db_path)
     try:
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        existed = _has_tables(db_path)
+        with sqlite3.connect(str(db_path)) as conn:
+            version = conn.execute('PRAGMA user_version').fetchone()[0]
+        if existed and version < SCHEMA_VERSION:
+            backup = _backup(db_path)
+            logger.info('Backed up %s to %s before migrating from schema %d to %d.',
+                        db_path, backup, version, SCHEMA_VERSION)
         with sqlite3.connect(str(db_path)) as conn:
             conn.execute('PRAGMA foreign_keys = ON')
             for statement in TABLES:
@@ -181,6 +270,10 @@ def init_db(db_path):
             for statement in INDEXES:
                 conn.execute(statement)
             _migrate(conn)
+            for step_number in range(version + 1, SCHEMA_VERSION + 1):
+                logger.info('Migrating %s to schema %d.', db_path, step_number)
+                VERSIONED_STEPS[step_number - 1](conn)
+                conn.execute(f'PRAGMA user_version = {step_number}')
             conn.commit()
     except (sqlite3.Error, OSError) as e:
         return False, f'Could not initialize catalog database at {db_path}: {e}'
@@ -410,6 +503,8 @@ class CatalogDB:
 
         Args:
             plan: dict with at least plan_id, eng_item_id, cestamp, file_path.
+                Everything describing the plan's content (stage, stage_rank,
+                summary_json, summary_text) comes from the producer.
 
         Returns:
             str: the plan_id written.
@@ -420,33 +515,30 @@ class CatalogDB:
                              (plan['eng_item_id'],))
             conn.execute(
                 """INSERT INTO plans (plan_id, eng_item_id, plan_doc_id, cestamp,
-                                      file_path, num_regions, num_clusters,
-                                      num_viewpoints, seg_algorithm, traversal_algo,
-                                      generated_at, uploaded_at, upload_status,
-                                      is_current, source, stage)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      file_path, generated_at, uploaded_at,
+                                      upload_status, is_current, source, stage,
+                                      stage_rank, summary_json, summary_text)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(plan_id) DO UPDATE SET
                        plan_doc_id = excluded.plan_doc_id,
                        cestamp = excluded.cestamp,
                        file_path = excluded.file_path,
-                       num_regions = excluded.num_regions,
-                       num_clusters = excluded.num_clusters,
-                       num_viewpoints = excluded.num_viewpoints,
-                       seg_algorithm = excluded.seg_algorithm,
-                       traversal_algo = excluded.traversal_algo,
                        uploaded_at = excluded.uploaded_at,
                        upload_status = excluded.upload_status,
                        is_current = excluded.is_current,
                        source = excluded.source,
-                       stage = excluded.stage""",
+                       stage = excluded.stage,
+                       stage_rank = excluded.stage_rank,
+                       summary_json = excluded.summary_json,
+                       summary_text = excluded.summary_text""",
                 (plan['plan_id'], plan['eng_item_id'], plan.get('plan_doc_id'),
                  plan.get('cestamp') or '', str(plan['file_path']),
-                 plan.get('num_regions'), plan.get('num_clusters'),
-                 plan.get('num_viewpoints'), plan.get('seg_algorithm'),
-                 plan.get('traversal_algo'), plan.get('generated_at') or utc_now(),
+                 plan.get('generated_at') or utc_now(),
                  plan.get('uploaded_at'), plan.get('upload_status', 'local'),
                  1 if plan.get('is_current', 1) else 0,
-                 plan.get('source', 'local'), plan.get('stage')))
+                 plan.get('source', 'local'), plan.get('stage'),
+                 int(plan.get('stage_rank', -1)), plan.get('summary_json') or '{}',
+                 plan.get('summary_text') or ''))
             conn.commit()
         return plan['plan_id']
 
@@ -478,9 +570,8 @@ class CatalogDB:
     def update_plan(self, plan_id, **fields):
         """Update named columns on a plan row."""
         allowed = {'plan_doc_id', 'uploaded_at', 'upload_status', 'is_current',
-                   'file_path', 'num_regions', 'num_clusters', 'num_viewpoints',
-                   'seg_algorithm', 'traversal_algo', 'source', 'cestamp',
-                   'stage'}
+                   'file_path', 'source', 'cestamp', 'stage', 'stage_rank',
+                   'summary_json', 'summary_text', 'generated_at'}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return

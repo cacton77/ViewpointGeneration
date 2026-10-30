@@ -135,12 +135,9 @@ function relativeTime(iso) {
   return `${Math.floor(seconds / 604800)}w ago`;
 }
 
+// The producer's own one-line summary (the catalog stores it verbatim).
 function planCounts(plan) {
-  return [
-    plan.num_regions ? `${plan.num_regions}r` : null,
-    plan.num_clusters ? `${plan.num_clusters}c` : null,
-    plan.num_viewpoints ? `${plan.num_viewpoints}v` : null,
-  ].filter(Boolean).join(' · ') || 'empty';
+  return plan.summary_text || 'empty';
 }
 
 function syncLabel(plan) {
@@ -350,8 +347,7 @@ function renderPlanBox() {
       <dt>Stage</dt><dd>${escapeHtml(plan.stage)}
         ${plan.stale ? '— <span class="warn-text">targets an earlier CAD revision; '
           + 'loading it is honoured but its viewpoints may not match the geometry</span>' : ''}</dd>
-      <dt>Contents</dt><dd>${plan.num_regions ?? '—'} regions →
-        ${plan.num_clusters ?? '—'} clusters → ${plan.num_viewpoints ?? '—'} viewpoints</dd>
+      <dt>Contents</dt><dd>${escapeHtml(plan.summary_text || '—')}</dd>
       <dt>Generated</dt><dd>${escapeHtml(plan.generated_at || '—')}
         (${escapeHtml(plan.source || 'local')})</dd>
       <dt>3DX document</dt><dd>${escapeHtml(plan.plan_doc_id || 'not uploaded')}

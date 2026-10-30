@@ -5,4 +5,5 @@ bool success
 string step_file_path    # absolute path inside the container
 string plan_status       # CURRENT | DOWNLOADED | UPDATED_FROM_REMOTE | STALE | NONE
 string plan_file_path
+string plan_dir           # where the producer writes new plans for this part
 string error_message

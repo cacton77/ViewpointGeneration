@@ -2,23 +2,20 @@
 
 Serves a card grid of catalogued parts with thumbnails, cache state, and plan
 state, and turns a click into the full selection flow: fetch the STEP, resolve
-the inspection plan, and announce the part on `/catalog/part_selected` so the
-viewpoint generation node loads it.
+the inspection plan, and announce the part so the viewpoint generation node
+loads it.
 
-**How this talks to ROS.** The app owns a small rclpy node of its own and
-publishes `PartSelected` directly, rather than calling the catalog node's
-`SelectPart` service. Two reasons: a Flask worker thread calling a ROS service
-synchronously is a deadlock waiting to happen, and the catalog itself is a
-plain SQLite database plus an HTTP client -- the picker can use `CatalogSync`
-in-process and get the same result with far less machinery. When rclpy is
-unavailable or ROS is not running, the UI still works completely; it just
-reports that the selection was not announced.
+**How this talks to ROS: it does not.** The catalog node runs the picker in its
+own process (`catalog.picker_enabled`) and hands `create_app()` three
+callbacks -- `on_select` to announce a selection on `/catalog/part_selected`,
+`on_sync` to run a sync under the node's sync lock, and `on_adopt` to have the
+plan producer describe plan files found on disk. The picker imports no ROS
+message types. Without callbacks it still works completely for browsing and
+caching; it reports that selections were not announced.
 
-Run standalone (no ROS):
+Run standalone (no ROS), e.g. for UI work:
 
     python -m viewpoint_generation.picker.app --port 5050
-
-or as the `picker_node` executable inside the ROS graph.
 """
 
 import argparse
@@ -30,91 +27,10 @@ from flask import Flask, abort, jsonify, render_template, request, send_file
 
 from viewpoint_generation.catalog.client import DXClient
 from viewpoint_generation.catalog.config import CatalogPaths, DXConfig, SyncConfig
-from viewpoint_generation.catalog.sync import CatalogSync, PlanStatus
+from viewpoint_generation.catalog.sync import (CatalogSync, PlanStatus,
+                                               describe_with_command)
 
 logger = logging.getLogger(__name__)
-
-
-class PickerBridge:
-    """Owns the catalog and, when available, a ROS publisher for selections."""
-
-    def __init__(self, catalog, enable_ros=True):
-        self.catalog = catalog
-        self.node = None
-        self.publisher = None
-        self._executor_thread = None
-        self._sync_lock = threading.Lock()
-        self.last_error = ''
-        if enable_ros:
-            self._start_ros()
-
-    def _start_ros(self):
-        """Bring up a minimal rclpy node for publishing part selections.
-
-        Failure here is never fatal -- the picker is useful for browsing and
-        caching even with no ROS graph running.
-        """
-        try:
-            import rclpy
-            from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
-                                   ReliabilityPolicy)
-            from viewpoint_generation_interfaces.msg import PartSelected
-
-            if not rclpy.ok():
-                rclpy.init()
-            self.node = rclpy.create_node('picker')
-            self._part_selected_type = PartSelected
-            self.publisher = self.node.create_publisher(
-                PartSelected, '/catalog/part_selected',
-                QoSProfile(depth=1,
-                           history=HistoryPolicy.KEEP_LAST,
-                           reliability=ReliabilityPolicy.RELIABLE,
-                           durability=DurabilityPolicy.TRANSIENT_LOCAL))
-
-            def spin():
-                try:
-                    rclpy.spin(self.node)
-                except Exception:  # noqa: BLE001 - shutdown races are expected
-                    pass
-
-            self._executor_thread = threading.Thread(
-                target=spin, name='picker-ros', daemon=True)
-            self._executor_thread.start()
-            logger.info('Picker connected to ROS; selections will be published.')
-        except Exception as e:  # noqa: BLE001 - any ROS problem is non-fatal here
-            logger.warning('ROS unavailable (%s); the picker will run '
-                           'without publishing selections.', e)
-            self.node = None
-            self.publisher = None
-
-    def publish_selection(self, part, step_path, plan_status, plan_path, units='mm'):
-        """Announce a part selection on /catalog/part_selected.
-
-        Returns:
-            tuple: (bool, str) whether the message was published, and why not.
-        """
-        if self.publisher is None:
-            return False, 'ROS is not available; selection was not announced.'
-        msg = self._part_selected_type()
-        msg.eng_item_id = part['eng_item_id']
-        msg.title = part.get('title') or ''
-        msg.part_number = part.get('part_number') or ''
-        msg.revision = part.get('revision') or ''
-        msg.cestamp = part.get('cestamp') or ''
-        msg.step_file_path = str(step_path)
-        msg.mesh_units = units
-        msg.plan_status = plan_status
-        msg.plan_file_path = plan_path or ''
-        self.publisher.publish(msg)
-        return True, 'Selection published.'
-
-    def shutdown(self):
-        """Tear down the ROS node, if one was created."""
-        if self.node is not None:
-            try:
-                self.node.destroy_node()
-            except Exception:  # noqa: BLE001
-                pass
 
 
 def card_state(part, catalog):
@@ -141,15 +57,20 @@ def card_state(part, catalog):
     return 'nostp', 'No STP'
 
 
-def create_app(catalog=None, bridge=None, mesh_units='mm'):
+def create_app(catalog=None, on_select=None, on_sync=None, on_adopt=None):
     """Build the Flask application.
 
     Args:
         catalog: A `CatalogSync`; one is constructed from the environment
             when omitted.
-        bridge: A `PickerBridge`; one is constructed when omitted.
-        mesh_units: Units announced with selections, matching how the STEP
-            files on this tenant are authored.
+        on_select: Callable taking the selection dict from
+            `CatalogSync.select()` and returning (published, message). None
+            means selections are not announced anywhere.
+        on_sync: Callable taking `full` and returning (SyncResult or None,
+            message). None runs the sync directly in the request thread.
+        on_adopt: Callable taking an eng_item_id and returning (adopted,
+            skipped, message). None asks the producer's describe command
+            (`describe_with_command`).
 
     Returns:
         Flask: The configured application.
@@ -158,13 +79,10 @@ def create_app(catalog=None, bridge=None, mesh_units='mm'):
         paths = CatalogPaths.from_env()
         catalog = CatalogSync(DXClient(DXConfig.from_env()), paths.db_path,
                               SyncConfig.from_env(), paths)
-    if bridge is None:
-        bridge = PickerBridge(catalog)
+    sync_lock = threading.Lock()
 
     app = Flask(__name__)
     app.config['CATALOG'] = catalog
-    app.config['BRIDGE'] = bridge
-    app.config['MESH_UNITS'] = mesh_units
 
     def part_payload(part):
         """Serialize one catalog row for the front end."""
@@ -212,7 +130,7 @@ def create_app(catalog=None, bridge=None, mesh_units='mm'):
     def api_status():
         """Catalog counts, sync state, and the last sync's outcome."""
         status = catalog.status()
-        status['ros'] = bridge.publisher is not None
+        status['ros'] = on_select is not None
         status['configured'] = catalog.client.config.is_configured()[0]
         return jsonify(status)
 
@@ -235,32 +153,27 @@ def create_app(catalog=None, bridge=None, mesh_units='mm'):
             return jsonify({'success': False,
                             'message': f'Unknown part: {eng_item_id}.'}), 404
 
-        step_path, message = catalog.fetch_step(eng_item_id)
-        if step_path is None:
-            return jsonify({'success': False, 'message': message}), 409
+        selection, message = catalog.select(
+            eng_item_id, plan_id=payload.get('plan_id'),
+            model_only=bool(payload.get('model_only')))
+        if selection is None:
+            status = 404 if message.startswith('Plan is unavailable') else 409
+            return jsonify({'success': False, 'message': message}), status
 
-        plan_id = payload.get('plan_id')
-        if plan_id:
-            plan_status, plan_path = catalog.select_plan(eng_item_id, plan_id)
-            if plan_status == PlanStatus.NONE:
-                return jsonify({'success': False,
-                                'message': f'Plan is unavailable: {plan_id}.'}), 404
-        elif payload.get('model_only'):
-            plan_status, plan_path = PlanStatus.NONE, ''
+        if on_select is None:
+            published, publish_message = (
+                False, 'ROS is not available; selection was not announced.')
         else:
-            plan_status, plan_path = catalog.ensure_plan(eng_item_id)
-
-        published, publish_message = bridge.publish_selection(
-            part, step_path, plan_status.value, plan_path,
-            units=app.config['MESH_UNITS'])
+            published, publish_message = on_select(selection)
 
         return jsonify({
             'success': True,
             'eng_item_id': eng_item_id,
             'title': part.get('title'),
-            'step_file_path': str(step_path),
-            'plan_status': plan_status.value,
-            'plan_file_path': plan_path or '',
+            'step_file_path': selection['step_path'],
+            'plan_status': selection['plan_status'].value,
+            'plan_file_path': selection['plan_path'],
+            'plan_dir': selection['plan_dir'],
             'published': published,
             'message': f'{message} {publish_message}'.strip(),
         })
@@ -270,14 +183,23 @@ def create_app(catalog=None, bridge=None, mesh_units='mm'):
         """Run a catalog sync and report what changed."""
         payload = request.get_json(silent=True) or {}
         full = bool(payload.get('full', True))
+        if on_sync is not None:
+            result, message = on_sync(full)
+            if result is None:
+                return jsonify({'success': False, 'message': message}), 409
+            return jsonify({'success': result.success, **result.to_dict()})
+
         configured, message = catalog.client.config.is_configured()
         if not configured:
             return jsonify({'success': False, 'message': message}), 409
-        if catalog.syncing:
+        if not sync_lock.acquire(blocking=False) or catalog.syncing:
             return jsonify({'success': False,
                             'message': 'A sync is already running.'}), 409
-        result = (catalog.run_full_sync() if full
-                  else catalog.run_incremental_sync())
+        try:
+            result = (catalog.run_full_sync() if full
+                      else catalog.run_incremental_sync())
+        finally:
+            sync_lock.release()
         return jsonify({'success': result.success, **result.to_dict()})
 
     @app.route('/thumb/<eng_item_id>')
@@ -325,16 +247,24 @@ def create_app(catalog=None, bridge=None, mesh_units='mm'):
 
     @app.route('/api/parts/<eng_item_id>/plans/adopt', methods=['POST'])
     def api_adopt_plans(eng_item_id):
-        """Record plan files already on disk that the catalog never captured."""
+        """Record plan files already on disk that the catalog never captured.
+
+        The catalog only lists the files; the plan producer describes them.
+        """
         if catalog.db.get_part(eng_item_id) is None:
             abort(404)
-        adopted, skipped = catalog.adopt_orphan_plans(eng_item_id)
+        if on_adopt is not None:
+            adopted, skipped, message = on_adopt(eng_item_id)
+        else:
+            adopted, skipped = catalog.adopt_orphan_plans(
+                eng_item_id, describe=describe_with_command)
+            message = (f'Adopted {adopted} plan(s).' if adopted
+                       else 'No unrecorded plan files found.')
         return jsonify({
             'success': True,
             'adopted': adopted,
             'skipped': skipped,
-            'message': (f'Adopted {adopted} plan(s).' if adopted
-                        else 'No unrecorded plan files found.'),
+            'message': message,
         })
 
     @app.route('/api/plans/<path:plan_id>/upload', methods=['POST'])
@@ -358,19 +288,19 @@ def create_app(catalog=None, bridge=None, mesh_units='mm'):
 
 
 def main(args=None):
-    """Entry point for both the ROS executable and standalone use."""
+    """Standalone entry point (no ROS): browse, cache, and sync only.
+
+    Inside the cell the catalog node serves the picker itself; see
+    `catalog.picker_enabled`.
+    """
     parser = argparse.ArgumentParser(
         prog='viewpoint_generation.picker.app',
-        description='Part picker UI for the 3DEXPERIENCE catalog.')
+        description='Part picker UI for the 3DEXPERIENCE catalog (standalone, no ROS).')
     parser.add_argument('--port', type=int,
                         default=int(os.environ.get('PICKER_PORT', '5050')),
                         help='Port to listen on (default: $PICKER_PORT or 5050).')
     parser.add_argument('--host', default='0.0.0.0',
                         help='Address to bind (default: all interfaces).')
-    parser.add_argument('--units', default='mm',
-                        help='Units used to load selected STEP files.')
-    parser.add_argument('--no-ros', action='store_true',
-                        help='Do not attempt to publish selections over ROS.')
     parser.add_argument('--debug', action='store_true', help='Flask debug mode.')
     parsed, _ = parser.parse_known_args(args)
 
@@ -384,16 +314,12 @@ def main(args=None):
         return 1
     catalog = CatalogSync(DXClient(DXConfig.from_env()), paths.db_path,
                           SyncConfig.from_env(), paths)
-    bridge = PickerBridge(catalog, enable_ros=not parsed.no_ros)
-    app = create_app(catalog, bridge, mesh_units=parsed.units)
+    app = create_app(catalog)
 
     logger.info('Part picker listening on http://%s:%d', parsed.host, parsed.port)
-    try:
-        # threaded so a slow STEP fetch cannot block the whole UI.
-        app.run(host=parsed.host, port=parsed.port, debug=parsed.debug,
-                threaded=True, use_reloader=False)
-    finally:
-        bridge.shutdown()
+    # threaded so a slow STEP fetch cannot block the whole UI.
+    app.run(host=parsed.host, port=parsed.port, debug=parsed.debug,
+            threaded=True, use_reloader=False)
     return 0
 
 

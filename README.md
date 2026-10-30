@@ -38,7 +38,7 @@ viewpoint_generation/
 │   ├── step_loader.py              # STEP/B-rep ingest via PythonOCC (OCP)
 │   ├── brep_segmentation.py        # B-rep topology segmentation (third algorithm)
 │   ├── mesh_utils.py               # Shared triangle-mesh helpers (submesh extraction)
-│   ├── plan_io.py                  # Plan file naming, stage inference, read/write
+│   ├── plan_io.py                  # Plan file naming, stage inference, read/write, describe_plan
 │   ├── visualizer.py               # Open3D visualization
 │   ├── gui_node.py                 # GUI node implementation
 │   ├── catalog/                    # 3DEXPERIENCE parts catalog
@@ -46,10 +46,13 @@ viewpoint_generation/
 │   │   ├── schema.py               # SQLite schema + CatalogDB access layer
 │   │   ├── client.py               # Authenticated 3DX REST session (DXClient)
 │   │   ├── sync.py                 # Sync daemon + plan/result upload (CatalogSync)
-│   │   ├── ros_node.py             # CatalogNode ROS 2 services and topics
+│   │   ├── plan_contract.py        # PLM context the catalog authors; what it may read from plans
+│   │   ├── cad.py                  # The catalog's single import of the STEP loader
+│   │   ├── thumbnails.py           # Local preview rendering from cached STEP
+│   │   ├── ros_node.py             # CatalogNode ROS 2 services and topics (serves the picker)
 │   │   └── jms.py                  # Optional event-driven sync over STOMP
-│   ├── picker/                     # Browser-based part picker
-│   │   ├── app.py                  # Flask routes
+│   ├── picker/                     # Browser-based part picker (runs inside the catalog node)
+│   │   ├── app.py                  # Flask routes; selection/sync/adopt via injected callbacks
 │   │   ├── templates/index.html
 │   │   └── static/{style.css,picker.js}
 │   └── assets/
@@ -724,14 +727,19 @@ browser UI.
 ### Running it
 
 ```bash
-ros2 launch viewpoint_generation catalog.launch.py          # catalog node + picker
+ros2 launch viewpoint_generation catalog.launch.py          # catalog node (+ picker)
 python -m viewpoint_generation.catalog.sync --full          # one-shot CLI sync
 python -m viewpoint_generation.catalog.sync --contexts      # discover security contexts
 python -m viewpoint_generation.catalog.sync --sync-item ID  # add one item by id
 ```
 
-The picker listens on `PICKER_PORT` (default 5050); with `network_mode: host`
-it is reachable at `http://localhost:5050`.
+The picker is served by the catalog node itself when `catalog.picker_enabled`
+is true (the launch file's `picker:=true`, the default), on
+`catalog.picker_port` (`picker_port:=`, default 5050); with
+`network_mode: host` it is reachable at `http://localhost:5050`. It shares the
+node's catalog, sync lock and `part_selected` publisher through callbacks and
+imports no ROS types itself. `python -m viewpoint_generation.picker.app` still
+runs it standalone, without ROS, for browsing and caching only.
 
 Opening a part shows its **inspection plans** as a horizontally scrolling strip
 of chips -- one per plan recorded for that part, newest first -- colour-coded by
@@ -773,6 +781,13 @@ Services `catalog/{list_parts,select_part,sync_now,ensure_plan,record_plan,uploa
 topics `/catalog/part_selected` (transient-local, so late joiners still learn the
 current part) and `/catalog/sync_complete`.
 
+`PartSelected` (and the `SelectPart` response) also carry `plan_dir`, the
+directory the producer should write new plans for the part into, and
+`PartSelected.plm_context_json`, the PLM context the catalog authored for the
+part. `ViewpointGenerationNode` serves `viewpoint_generation/describe_plans`
+(`DescribePlans`), which the catalog calls to learn about plan files it finds
+on disk.
+
 `ViewpointGenerationNode` subscribes to `/catalog/part_selected` and loads the
 selected STEP automatically. A plan reported `CURRENT`, `DOWNLOADED`,
 `UPDATED_FROM_REMOTE`, or `SELECTED` is loaded with it; a merely `STALE` plan
@@ -789,8 +804,8 @@ segmentation, clustering, projection, and traversal optimization; the call is
 fire-and-forget, so an absent or slow catalog node degrades to "written to disk
 but not recorded" instead of stalling the pipeline.
 
-Plans for a catalogued part are written to `catalog/plans/{eng_item_id}/`,
-which survives STEP cache invalidation. Per-region point clouds stay beside the
+Plans for a catalogued part are written to the `plan_dir` the selection names
+(`catalog/plans/{eng_item_id}/`), which survives STEP cache invalidation. Per-region point clouds stay beside the
 mesh in `steps/…_results/`, since they are a function of geometry rather than
 of the plan. A mesh loaded outside the catalog keeps the old behaviour: the
 plan is written beside the mesh and simply has no database row.
@@ -798,6 +813,19 @@ plan is written beside the mesh and simply has no database row.
 Plan validity is decided by comparing a plan's `cestamp` against the part's
 current one -- a plan is valid only for the CAD revision it was generated
 against.
+
+**The plan contract.** The catalog never opens a plan file to learn anything
+about it (`catalog/plan_contract.py`). On selection it publishes the PLM
+context it authored for the part (`plm_context_json`); `plan_io` embeds that
+object as each plan's `plm_context` and adds only `stage`, `generated_at` and
+`software_version`. On recording, the node describes the plan with
+`plan_io.describe_plan()` and sends what the catalog stores in `RecordPlan`:
+`stage`, `stage_rank` (higher = further through the pipeline), `summary_json`
+(stored verbatim), `summary_text` (the line the picker shows), the
+`change_token` the plan was generated against, and `generated_at`. The one
+exception is a plan *downloaded* from 3DX, which has no producer to ask: its
+change token, stage and time are read back from the `plm_context` block the
+catalog itself authored, and nothing else in the file.
 
 **Uploading.** `auto_upload_plan_stages` (default `ordered`) selects which
 stages become 3DX Documents automatically, so a full pipeline run leaves one
@@ -807,9 +835,20 @@ the picker's per-plan **Upload** button or `--upload-plan`. Set the setting
 empty to make uploading entirely manual.
 
 `adopt_orphan_plans()` (picker: **Scan for files**, CLI: `--adopt-plans`)
-registers plan files already on disk that the catalog never captured, reading
-each file's real stage from its content and its generation time from the file
-itself so the adopted history stays correctly ordered.
+registers plan files already on disk that the catalog never captured. The
+catalog lists candidate files by name only; the producer describes them --
+the picker calls `viewpoint_generation/describe_plans`, the CLI runs
+`python3 -m viewpoint_generation.plan_io describe` (override with
+`--describe-cmd` or `PLAN_DESCRIBE_CMD`). Each file is recorded with its real
+stage, its own change token (the part's current one when the file has none)
+and its generation time (the file's mtime when it has none), so the adopted
+history stays correctly ordered.
+
+**Database migration.** `catalog.db` is upgraded in place. Changes that move
+data are numbered steps tracked with `PRAGMA user_version`; before the first
+step runs on an existing database a copy is saved as
+`catalog.db.bak-<UTC stamp>`. Step 1 moves the old per-plan region, cluster
+and viewpoint counts into `summary_json`/`summary_text`/`stage_rank`.
 
 `plan_io.read_plan()` accepts all three historical shapes -- the current
 sibling-context form, the older `{plm_context, plan: {...}}` envelope, and a
@@ -848,8 +887,13 @@ python -m viewpoint_generation.catalog.sync --plans ENG_ITEM_ID
 # register plan files already on disk that the catalog never captured
 python -m viewpoint_generation.catalog.sync --adopt-plans ENG_ITEM_ID
 
-# record one plan file, honouring the auto-upload stage policy
-python -m viewpoint_generation.catalog.sync --record-plan ENG_ITEM_ID PLAN.json
+# record one plan file, honouring the auto-upload stage policy; the catalog
+# does not open the file, so its stage (and optionally rank/summary) is given
+python -m viewpoint_generation.catalog.sync --record-plan ENG_ITEM_ID PLAN.json \
+    --stage ordered [--stage-rank 3] [--summary-text '12 regions, 75 viewpoints']
+
+# what the catalog would be told about plan files (the DescribePlans contract)
+python3 -m viewpoint_generation.plan_io describe PLAN.json ...
 
 # push an already-recorded plan to 3DX
 python -m viewpoint_generation.catalog.sync --upload-plan PLAN_ID

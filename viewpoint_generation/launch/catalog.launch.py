@@ -1,4 +1,4 @@
-"""Launch the 3DEXPERIENCE parts catalog node and the part picker UI.
+"""Launch the 3DEXPERIENCE parts catalog node, which also serves the part picker UI.
 
 The catalog node needs the DX_* environment variables (supplied by
 docker-compose from the host `.env`); it starts and serves whatever is already
@@ -10,7 +10,6 @@ cached even when they are absent, logging a warning instead of failing.
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -64,6 +63,10 @@ def generate_launch_description():
         'catalog.sync_interval': LaunchConfiguration('sync_interval'),
         'catalog.sync_on_startup': LaunchConfiguration('sync_on_startup'),
         'catalog.mesh_units': LaunchConfiguration('mesh_units'),
+        # The picker runs inside the catalog node's process, sharing its
+        # catalog, sync lock and part_selected publisher.
+        'catalog.picker_enabled': LaunchConfiguration('picker'),
+        'catalog.picker_port': LaunchConfiguration('picker_port'),
     }]
 
     catalog_node = Node(
@@ -75,19 +78,4 @@ def generate_launch_description():
         emulate_tty=True,
     )
 
-    # The picker is configured through its own CLI (it is equally runnable
-    # outside ROS), so the port is passed as a process argument rather than a
-    # ROS parameter -- as a parameter it would be silently ignored. main()
-    # uses parse_known_args, so the --ros-args launch appends are harmless.
-    picker_node = Node(
-        package='viewpoint_generation',
-        executable='picker_node',
-        name='picker',
-        arguments=['--port', LaunchConfiguration('picker_port'),
-                   '--units', LaunchConfiguration('mesh_units')],
-        output='screen',
-        emulate_tty=True,
-        condition=IfCondition(LaunchConfiguration('picker')),
-    )
-
-    return LaunchDescription(declared_arguments + [catalog_node, picker_node])
+    return LaunchDescription(declared_arguments + [catalog_node])

@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import rclpy
@@ -6,6 +7,7 @@ import numpy as np
 import open3d as o3d
 from rclpy.duration import Duration
 from rclpy.action import ActionServer
+from viewpoint_generation import plan_io
 from viewpoint_generation.viewpoint_generation import ViewpointGeneration
 from rcl_interfaces.msg import (
     SetParametersResult, ParameterDescriptor,
@@ -20,14 +22,14 @@ from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
 
 from std_srvs.srv import Trigger
 # from viewpoint_generation_interfaces.action import ViewpointGeneration
-from viewpoint_generation_interfaces.msg import PartSelected
+from viewpoint_generation_interfaces.msg import PartSelected, PlanDescription
 
 from std_msgs.msg import Bool, ColorRGBA
 from geometry_msgs.msg import PoseStamped, Pose, PointStamped, Point
 from visualization_msgs.msg import Marker
 from shape_msgs.msg import Mesh, MeshTriangle, SolidPrimitive
 from moveit_msgs.msg import PlanningScene, CollisionObject, AttachedCollisionObject, ObjectColor
-from viewpoint_generation_interfaces.srv import (OptimizeViewpointTraversal,
+from viewpoint_generation_interfaces.srv import (DescribePlans, OptimizeViewpointTraversal,
                                                  RecordPlan)
 
 
@@ -234,6 +236,13 @@ class ViewpointGenerationNode(rclpy.node.Node):
         # bookkeeping that follows.
         self.record_plan_client = self.create_client(
             RecordPlan, 'catalog/record_plan', callback_group=services_cb_group)
+
+        # The catalog never opens plan files; when it finds ones it did not
+        # see being written (the picker's "Scan for files"), it asks this node
+        # -- the owner of the plan format -- to describe them.
+        self.create_service(DescribePlans, node_name + '/describe_plans',
+                            self.describe_plans_callback,
+                            callback_group=MutuallyExclusiveCallbackGroup())
 
         self.set_data_path(self.get_parameter(
             'settings.data_path').get_parameter_value().string_value)
@@ -517,25 +526,36 @@ class ViewpointGenerationNode(rclpy.node.Node):
         self.viewpoint_generation.plan_dir = None
 
     def _apply_plm_context(self, msg: PartSelected):
-        """Point plan output at the catalog and stamp the part's identity on it."""
+        """Point plan output where the catalog said, and embed its PLM context.
+
+        Both come from the selection itself: the catalog names the plan
+        directory and authors the `plm_context` block; plan_io adds only the
+        stage, generation time and software version when a plan is written.
+        """
         if not msg.eng_item_id:
             self.viewpoint_generation.plan_dir = None
             return
-        try:
-            from viewpoint_generation.catalog.config import CatalogPaths
-            self.viewpoint_generation.plan_dir = str(
-                CatalogPaths.from_env().plan_dir_for(msg.eng_item_id))
-        except Exception as e:  # noqa: BLE001 - never block loading a part
-            self.get_logger().warn(f'Could not resolve the catalog plan directory: {e}')
-            self.viewpoint_generation.plan_dir = None
+        self.viewpoint_generation.plan_dir = msg.plan_dir or None
+        if not msg.plan_dir:
+            self.get_logger().warn(
+                'The selection named no plan directory; plans will be written '
+                'beside the model instead.')
 
-        self.viewpoint_generation.set_plm_context({
-            'eng_item_id': msg.eng_item_id,
-            'part_number': msg.part_number,
-            'revision': msg.revision,
-            'cestamp': msg.cestamp,
-            'title': msg.title,
-        })
+        context = {}
+        if msg.plm_context_json:
+            try:
+                context = json.loads(msg.plm_context_json)
+            except ValueError as e:
+                self.get_logger().warn(f'Ignoring malformed plm_context_json: {e}')
+        if not isinstance(context, dict) or not context:
+            context = {
+                'eng_item_id': msg.eng_item_id,
+                'part_number': msg.part_number,
+                'revision': msg.revision,
+                'cestamp': msg.cestamp,
+                'title': msg.title,
+            }
+        self.viewpoint_generation.set_plm_context(context)
 
     def _record_plan(self, plan_path, stage):
         """Register a generated plan file with the catalog node.
@@ -556,15 +576,40 @@ class ViewpointGenerationNode(rclpy.node.Node):
                 f'{plan_path} but not recorded in the database.')
             return
 
+        # The catalog records what the producer states about the plan; it
+        # never opens the file itself.
+        description = plan_io.describe_plan(plan_path)
         request = RecordPlan.Request()
         request.eng_item_id = self.selected_eng_item_id
         request.plan_path = str(plan_path)
         request.stage = stage
         request.force_upload = False
+        request.stage_rank = plan_io.stage_rank(stage)
+        request.summary_json = description['summary_json']
+        request.summary_text = description['summary_text']
+        request.change_token = description['change_token']
+        request.generated_at = description['generated_at']
 
         future = self.record_plan_client.call_async(request)
         future.add_done_callback(
             lambda f, stage=stage: self._record_plan_done(f, stage))
+
+    def describe_plans_callback(self, request, response):
+        """Describe plan files for the catalog (it never opens them itself)."""
+        for path in request.paths:
+            description = plan_io.describe_plan(path)
+            plan = PlanDescription()
+            plan.path = description['path']
+            plan.valid = description['valid']
+            plan.stage = description['stage']
+            plan.stage_rank = description['stage_rank']
+            plan.summary_json = description['summary_json']
+            plan.summary_text = description['summary_text']
+            plan.change_token = description['change_token']
+            plan.generated_at = description['generated_at']
+            plan.message = description['message']
+            response.plans.append(plan)
+        return response
 
     def _record_plan_done(self, future, stage):
         """Log the outcome of a plan recording."""

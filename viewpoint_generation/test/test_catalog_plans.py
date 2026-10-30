@@ -4,7 +4,7 @@ import json
 import os
 import time
 
-from catalog_fakes import make_item, results_for
+from catalog_fakes import make_item, producer_describe, results_for
 
 from viewpoint_generation import plan_io
 
@@ -16,13 +16,12 @@ def _sync(catalog, client, *items):
 
 
 def test_every_stage_is_recorded_and_the_latest_is_current(
-        catalog, fake_client, write_plan_file):
+        catalog, fake_client, write_plan_file, record):
     _sync(catalog, fake_client, make_item('A'))
     plan_dir = catalog.plan_dir_for('A')
     recorded = []
     for stage in plan_io.STAGES:
-        plan_id, message = catalog.record_plan('A', write_plan_file(plan_dir, stage),
-                                               upload=False)
+        plan_id, message = record(catalog, 'A', write_plan_file(plan_dir, stage), upload=False)
         assert plan_id, message
         recorded.append(plan_id)
 
@@ -32,35 +31,69 @@ def test_every_stage_is_recorded_and_the_latest_is_current(
     assert [p['plan_id'] for p in plans if p['is_current']] == [recorded[-1]]
     assert catalog.db.get_current_plan('A')['stage'] == 'ordered'
     row = catalog.db.get_plan(recorded[2])
-    assert (row['num_regions'], row['num_clusters'], row['num_viewpoints']) == (2, 4, 4)
+    assert row['summary_text'] == '2 regions, 4 clusters, 4 viewpoints'
+    assert json.loads(row['summary_json'])['num_viewpoints'] == 4
+    assert row['stage_rank'] == 2
     assert row['cestamp'] == 'c1'
 
 
-def test_record_plan_stamps_identity_into_the_file(catalog, fake_client, write_plan_file):
+def test_plan_carries_the_catalog_context_plus_producer_keys(
+        catalog, fake_client, write_plan_file, record):
+    fake_client.step_files['A'] = b'ISO-10303-21; dummy'
     _sync(catalog, fake_client, make_item('A'))
-    path = write_plan_file(catalog.plan_dir_for('A'), 'segmented')
-    catalog.record_plan('A', path, upload=False)
-    data = json.loads(path.read_text())
-    context = data['plm_context']
+    selection, message = catalog.select('A')
+    assert selection is not None, message
+    context = json.loads(selection['plm_context_json'])
     assert context['eng_item_id'] == 'A'
     assert context['cestamp'] == 'c1'
-    assert context['stage'] == 'segmented'
     assert context['cell_id'] == 'alpha'
     assert context['generated_by'] == 'tester'
-    assert context['software_version'].startswith('ViewpointGeneration@')
-    assert data['schema_version'] == '2.0'
-    assert 'meshes' in data
+    assert selection['plan_dir'] == str(catalog.plan_dir_for('A'))
+
+    # The producer embeds that object and adds only its own keys.
+    results = results_for('segmented')
+    results['plm_context'] = context
+    path, _ = plan_io.write_plan(selection['plan_dir'], results)
+    before = open(path).read()
+    plan_id, _ = record(catalog, 'A', path, upload=False)
+    # Recording never rewrites the file.
+    assert open(path).read() == before
+    written = json.loads(before)['plm_context']
+    assert set(written) - set(context) == {'stage', 'generated_at', 'software_version'}
+    assert written['software_version'].startswith('ViewpointGeneration@')
+    row = catalog.db.get_plan(plan_id)
+    assert row['generated_at'] == written['generated_at']
+    assert row['cestamp'] == 'c1'
+
+
+def test_catalog_records_what_the_producer_states_without_opening_the_file(
+        catalog, fake_client, tmp_path):
+    _sync(catalog, fake_client, make_item('A'))
+    opaque = tmp_path / 'opaque.plan'
+    opaque.write_bytes(b'\x00 not json at all')
+    plan_id, message = catalog.record_plan(
+        'A', opaque, stage='inspected', stage_rank=7, summary_json='{"k": 1}',
+        summary_text='seven things', change_token='c0', generated_at='2026-01-01T00:00:00Z',
+        upload=False)
+    assert plan_id, message
+    row = catalog.db.get_plan(plan_id)
+    assert (row['stage'], row['stage_rank'], row['summary_json'], row['summary_text'],
+            row['cestamp'], row['generated_at']) == (
+        'inspected', 7, '{"k": 1}', 'seven things', 'c0', '2026-01-01T00:00:00Z')
+    assert catalog.ensure_plan('A', check_remote=False)[0].value == 'STALE'
+    assert catalog.record_plan('A', opaque, stage='')[0] is None
+    assert catalog.record_plan('A', tmp_path / 'missing.json', stage='x')[0] is None
 
 
 def test_auto_upload_policy_uploads_only_configured_stages(
-        catalog, fake_client, write_plan_file):
+        catalog, fake_client, write_plan_file, record):
     _sync(catalog, fake_client, make_item('A'))
     plan_dir = catalog.plan_dir_for('A')
-    seg_id, _ = catalog.record_plan('A', write_plan_file(plan_dir, 'segmented'))
+    seg_id, _ = record(catalog, 'A', write_plan_file(plan_dir, 'segmented'))
     assert fake_client.uploads == []
     assert catalog.db.get_plan(seg_id)['upload_status'] == 'local'
 
-    ordered_id, message = catalog.record_plan('A', write_plan_file(plan_dir, 'ordered'))
+    ordered_id, message = record(catalog, 'A', write_plan_file(plan_dir, 'ordered'))
     assert len(fake_client.uploads) == 1
     assert fake_client.uploads[0]['title'] == 'PLAN_prd-A_A.1_ORDERED'
     assert fake_client.uploads[0]['collab_space'] == 'Test Space'
@@ -71,41 +104,41 @@ def test_auto_upload_policy_uploads_only_configured_stages(
 
 
 def test_upload_policy_empty_means_manual_only(catalog, fake_client, sync_config,
-                                               write_plan_file):
+                                               write_plan_file, record):
     sync_config.auto_upload_plan_stages = ''
     _sync(catalog, fake_client, make_item('A'))
-    plan_id, _ = catalog.record_plan('A', write_plan_file(catalog.plan_dir_for('A'), 'ordered'))
+    plan_id, _ = record(catalog, 'A', write_plan_file(catalog.plan_dir_for('A'), 'ordered'))
     assert fake_client.uploads == []
     doc_id, _ = catalog.upload_recorded_plan(plan_id)
     assert doc_id == 'DOC1'
 
 
-def test_force_upload_overrides_policy(catalog, fake_client, write_plan_file):
+def test_force_upload_overrides_policy(catalog, fake_client, write_plan_file, record):
     _sync(catalog, fake_client, make_item('A'))
-    catalog.record_plan('A', write_plan_file(catalog.plan_dir_for('A'), 'clustered'),
-                        upload=True)
+    record(catalog, 'A', write_plan_file(catalog.plan_dir_for('A'), 'clustered'),
+           upload=True)
     assert [u['title'] for u in fake_client.uploads] == ['PLAN_prd-A_A.1_CLUSTERED']
 
 
-def test_upload_without_credentials_stays_local(catalog, fake_client, write_plan_file):
+def test_upload_without_credentials_stays_local(catalog, fake_client, write_plan_file, record):
     _sync(catalog, fake_client, make_item('A'))
     fake_client.config.password = ''
-    plan_id, _ = catalog.record_plan('A', write_plan_file(catalog.plan_dir_for('A'), 'ordered'))
+    plan_id, _ = record(catalog, 'A', write_plan_file(catalog.plan_dir_for('A'), 'ordered'))
     assert fake_client.uploads == []
     assert catalog.db.get_plan(plan_id)['upload_status'] == 'local'
 
 
-def test_staleness_and_explicit_selection(catalog, fake_client, write_plan_file):
+def test_staleness_and_explicit_selection(catalog, fake_client, write_plan_file, record):
     _sync(catalog, fake_client, make_item('A'))
-    old_id, _ = catalog.record_plan(
-        'A', write_plan_file(catalog.plan_dir_for('A'), 'ordered'), upload=False)
+    old_id, _ = record(
+        catalog, 'A', write_plan_file(catalog.plan_dir_for('A'), 'ordered'), upload=False)
 
     fake_client.items['A']['cestamp'] = 'c2'
     catalog.run_full_sync()
     assert catalog.ensure_plan('A', check_remote=True)[0].value == 'STALE'
 
-    new_id, _ = catalog.record_plan(
-        'A', write_plan_file(catalog.plan_dir_for('A'), 'segmented'), upload=False)
+    new_id, _ = record(
+        catalog, 'A', write_plan_file(catalog.plan_dir_for('A'), 'segmented'), upload=False)
     assert catalog.ensure_plan('A', check_remote=False)[0].value == 'CURRENT'
     stale = {p['plan_id']: p['stale'] for p in catalog.list_plans('A')}
     assert stale == {old_id: True, new_id: False}
@@ -145,20 +178,20 @@ def test_adoption_orders_by_generation_time_then_stage(catalog, fake_client, cat
     os.utime(legacy, (stamp - 60, stamp - 60))
     (legacy_dir / 'empty.json').write_text(json.dumps({'meshes': [{'regions': []}]}))
 
-    adopted, skipped = catalog.adopt_orphan_plans('A')
+    adopted, skipped = catalog.adopt_orphan_plans('A', describe=producer_describe)
 
     assert (adopted, skipped) == (4, 1)
     assert catalog.db.get_current_plan('A')['stage'] == 'ordered'
     # Adopting again finds nothing new.
-    assert catalog.adopt_orphan_plans('A') == (0, 1)
+    assert catalog.adopt_orphan_plans('A', describe=producer_describe) == (0, 1)
 
 
-def test_adoption_backfills_missing_stage(catalog, fake_client, write_plan_file):
+def test_adoption_backfills_missing_stage(catalog, fake_client, write_plan_file, record):
     _sync(catalog, fake_client, make_item('A'))
-    plan_id, _ = catalog.record_plan(
-        'A', write_plan_file(catalog.plan_dir_for('A'), 'projected'), upload=False)
+    plan_id, _ = record(
+        catalog, 'A', write_plan_file(catalog.plan_dir_for('A'), 'projected'), upload=False)
     catalog.db.update_plan(plan_id, stage=None)
-    catalog.adopt_orphan_plans('A')
+    catalog.adopt_orphan_plans('A', describe=producer_describe)
     assert catalog.db.get_plan(plan_id)['stage'] == 'projected'
 
 

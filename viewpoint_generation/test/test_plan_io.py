@@ -101,15 +101,50 @@ def test_read_rejects_garbage(tmp_path):
     assert plan_io.read_plan(tmp_path / 'missing.json')[0] is None
 
 
-def test_build_context_shape():
-    part = {'eng_item_id': 'E1', 'part_number': 'P', 'revision': 'A.1',
-            'cestamp': 'c1', 'collab_space': 'S', 'title': 'T'}
-    context = plan_io.build_context(part, 'ordered', extra={'cell_id': 'alpha'})
-    for key in ('eng_item_id', 'part_number', 'revision', 'cestamp', 'collab_space',
-                'title', 'plan_doc_id', 'stage', 'generated_at', 'cell_id'):
-        assert key in context
-    assert context['stage'] == 'ordered'
-    assert plan_io.build_context()['eng_item_id'] is None
+def test_stamp_adds_only_producer_keys_to_the_catalog_context(tmp_path):
+    catalog_context = {'eng_item_id': 'E1', 'cestamp': 'c1', 'cell_id': 'alpha'}
+    results = results_for('clustered')
+    results['plm_context'] = dict(catalog_context)
+    path, _ = plan_io.write_plan(tmp_path, results)
+    context = json.loads(open(path).read())['plm_context']
+    assert set(context) - set(catalog_context) == {'stage', 'generated_at',
+                                                   'software_version'}
+    assert context['stage'] == 'clustered'
+    assert context['software_version'].startswith('ViewpointGeneration@')
+
+
+def test_describe_plan_is_the_describeplans_contract(tmp_path):
+    results = results_for('projected', regions=3, clusters_per_region=1)
+    results['plm_context'] = {'eng_item_id': 'E1', 'cestamp': 'c7'}
+    path, _ = plan_io.write_plan(tmp_path, results)
+    description = plan_io.describe_plan(path)
+    assert description['valid']
+    assert (description['stage'], description['stage_rank']) == ('projected', 2)
+    assert description['summary_text'] == '3 regions, 3 clusters, 3 viewpoints'
+    assert json.loads(description['summary_json'])['num_regions'] == 3
+    assert description['change_token'] == 'c7'
+    assert description['generated_at'].endswith('Z')
+
+
+def test_describe_plan_falls_back_to_mtime_and_rejects_non_plans(tmp_path):
+    bare = tmp_path / 'bare.json'
+    bare.write_text(json.dumps(results_for('segmented')))
+    os.utime(bare, (0, 0))
+    description = plan_io.describe_plan(bare)
+    assert description['valid'] and description['change_token'] == ''
+    assert description['generated_at'] == '1970-01-01T00:00:00Z'
+    empty = tmp_path / 'empty.json'
+    empty.write_text(json.dumps({'meshes': [{'regions': []}]}))
+    assert not plan_io.describe_plan(empty)['valid']
+    assert not plan_io.describe_plan(tmp_path / 'missing.json')['valid']
+
+
+def test_describe_cli_prints_json(tmp_path, capsys):
+    path, _ = plan_io.write_plan(tmp_path, results_for('ordered'))
+    assert plan_io.main(['describe', path]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed[0]['stage'] == 'ordered'
+    assert plan_io.main([]) == 2
 
 
 def test_legacy_stage_from_name():

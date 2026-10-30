@@ -26,14 +26,25 @@ its part linkage for free.
 `read_plan()` still accepts the 1.0 envelope so plans uploaded before this
 convention existed continue to load.
 
+**PLM context.** The `plm_context` block is authored by the parts catalog and
+handed over with each part selection (`PartSelected.plm_context_json`); this
+module only adds the producer's own keys -- `stage`, `generated_at` and
+`software_version` -- when a plan is written. The catalog never opens plan
+files: when it records one, `describe_plan()` is what tells it the stage,
+rank, summary, change token and generation time (via the node's
+`describe_plans` service, or `python3 -m viewpoint_generation.plan_io describe`).
+
 This module is deliberately dependency-free (no numpy/open3d), so the catalog
 package and the ROS nodes can share it without pulling in the heavy geometry
 stack.
 """
 
+import functools
 import json
 import os
 import re
+import subprocess
+import sys
 from datetime import datetime, timezone
 
 SCHEMA_VERSION = '2.0'
@@ -162,34 +173,28 @@ def unique_path(directory, filename):
     return candidate
 
 
-def build_context(part=None, stage=None, extra=None):
-    """Assemble the `plm_context` block for a plan.
+@functools.lru_cache(maxsize=1)
+def software_version():
+    """`ViewpointGeneration@<short git rev>` of this checkout, for traceability.
 
-    Args:
-        part: A catalog row (or any mapping with the eng item fields). None
-            produces a context with no PLM linkage, which is what a mesh
-            loaded outside the catalog gets.
-        stage: Pipeline stage the plan represents.
-        extra: Additional fields merged in (generated_by, cell_id, ...).
-
-    Returns:
-        dict: the context block.
+    Stamped into every plan so it can be traced back to the code that
+    produced it. The revision is 'unknown' outside a git checkout.
     """
-    part = part or {}
-    context = {
-        'eng_item_id': part.get('eng_item_id'),
-        'part_number': part.get('part_number'),
-        'revision': part.get('revision'),
-        'cestamp': part.get('cestamp'),
-        'collab_space': part.get('collab_space'),
-        'title': part.get('title'),
-        'plan_doc_id': None,
-        'stage': stage,
-        'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-    }
-    if extra:
-        context.update(extra)
-    return context
+    try:
+        revision = subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL, text=True, timeout=5).strip()
+    except (subprocess.SubprocessError, OSError):
+        revision = 'unknown'
+    return f'ViewpointGeneration@{revision or "unknown"}'
+
+
+def _utc_iso(timestamp=None):
+    """A UTC time (default now) as an ISO-8601 string with a trailing Z."""
+    moment = (datetime.fromtimestamp(timestamp, timezone.utc) if timestamp is not None
+              else datetime.now(timezone.utc))
+    return moment.strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
 def read_plan(path):
@@ -234,6 +239,9 @@ def read_plan(path):
 def stamp(results, context=None, stage=None):
     """Fill in a results dict's own schema/context/summary keys in place.
 
+    The context itself comes from the catalog; this adds only the producer's
+    keys: the stage, when it was generated (now), and the software version.
+
     Args:
         results: The results dict, mutated in place.
         context: `plm_context` to stamp in. When None, any context already on
@@ -251,6 +259,8 @@ def stamp(results, context=None, stage=None):
     else:
         context = dict(context)
     context['stage'] = stage
+    context['generated_at'] = _utc_iso()
+    context['software_version'] = software_version()
 
     results['schema_version'] = SCHEMA_VERSION
     results['plm_context'] = context
@@ -333,3 +343,65 @@ def legacy_stage_from_name(path):
     if re.search(r'\d+_regions', name):
         return 'segmented'
     return None
+
+
+def describe_plan(path):
+    """Describe a plan file for the catalog: the `DescribePlans` contract.
+
+    This is how the catalog learns about plan files it did not see being
+    written (adoption): it lists names, and the producer -- which owns the
+    format -- reads them.
+
+    Returns:
+        dict: `path`, `valid`, `stage`, `stage_rank`, `summary_json`,
+        `summary_text`, `change_token`, `generated_at` and `message`. A file
+        that is unreadable or holds no regions is not a plan (`valid` false).
+        `change_token` and `generated_at` come from the file's own context,
+        falling back to '' (the catalog then uses the part's current token)
+        and to the file's modification time.
+    """
+    description = {'path': str(path), 'valid': False, 'stage': '', 'stage_rank': -1,
+                   'summary_json': '{}', 'summary_text': '', 'change_token': '',
+                   'generated_at': '', 'message': ''}
+    results, context, message = read_plan(path)
+    description['message'] = message
+    if results is None:
+        return description
+    summary = summarize(results)
+    if not summary['num_regions']:
+        description['message'] = 'Not a plan: it holds no regions.'
+        return description
+    stage = context.get('stage') or infer_stage(results)
+    try:
+        mtime = _utc_iso(os.stat(path).st_mtime)
+    except OSError:
+        mtime = ''
+    description.update({
+        'valid': True,
+        'stage': stage,
+        'stage_rank': stage_rank(stage),
+        'summary_json': json.dumps(summary, sort_keys=True),
+        'summary_text': describe(summary),
+        'change_token': context.get('change_token') or context.get('cestamp') or '',
+        'generated_at': context.get('generated_at') or mtime,
+    })
+    return description
+
+
+def main(argv=None):
+    """`python3 -m viewpoint_generation.plan_io describe FILE...`
+
+    Prints a JSON list of `describe_plan()` results, which is what the
+    catalog CLI's `--adopt-plans` consumes.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] != 'describe':
+        print('usage: python3 -m viewpoint_generation.plan_io describe FILE...',
+              file=sys.stderr)
+        return 2
+    print(json.dumps([describe_plan(path) for path in argv[1:]], indent=2))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

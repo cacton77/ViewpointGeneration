@@ -43,12 +43,14 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/RecordPlan.srv"
   "srv/UploadPlan.srv"
   "srv/UploadResults.srv"
+  "srv/DescribePlans.srv"
   "msg/FocusValue.msg"
   "msg/AutofocusData.msg"
   "msg/OrientationControlData.msg"
   "msg/PartSummary.msg"
   "msg/PartSelected.msg"
   "msg/SyncResult.msg"
+  "msg/PlanDescription.msg"
   DEPENDENCIES geometry_msgs sensor_msgs
 )
 

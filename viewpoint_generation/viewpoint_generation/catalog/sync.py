@@ -18,6 +18,8 @@ Run a sync from the command line with:
 import argparse
 import json
 import logging
+import os
+import shlex
 import subprocess
 import sys
 import time
@@ -26,36 +28,12 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
-from viewpoint_generation import plan_io
+from viewpoint_generation.catalog import plan_contract
 from viewpoint_generation.catalog.client import DXAPIError, DXAuthError, DXClient
 from viewpoint_generation.catalog.config import CatalogPaths, DXConfig, SyncConfig
 from viewpoint_generation.catalog.schema import CatalogDB, utc_now
 
 logger = logging.getLogger(__name__)
-
-
-def _software_version():
-    """Short git revision of the ViewpointGeneration checkout, for traceability.
-
-    Stamped into uploaded envelopes so a plan can be traced back to the code
-    that produced it. Returns 'unknown' outside a git checkout.
-    """
-    try:
-        return subprocess.check_output(
-            ['git', 'rev-parse', '--short', 'HEAD'],
-            cwd=str(Path(__file__).resolve().parent),
-            stderr=subprocess.DEVNULL, text=True, timeout=5).strip()
-    except (subprocess.SubprocessError, OSError):
-        return 'unknown'
-
-
-def _mtime_utc(path):
-    """A file's modification time as a UTC stamp, or None when unavailable."""
-    try:
-        return datetime.fromtimestamp(
-            Path(path).stat().st_mtime, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-    except OSError:
-        return None
 
 
 def _file_kind(path):
@@ -733,21 +711,15 @@ class CatalogSync:
 
     # --- plan files ---------------------------------------------------------
 
-    def plan_context_for(self, part, stage=None, generated_at=None):
-        """The `plm_context` block stamped into plans generated for a part.
+    def plm_context_json(self, part):
+        """The PLM context published with a selection of `part`.
 
-        `generated_at` overrides the default of 'now', which matters when
-        adopting an older plan file: its real generation time is what orders
-        it against the rest of the part's history.
+        The producer embeds it as each plan's `plm_context`; see
+        `plan_contract` for what else it adds.
         """
-        extra = {
-            'generated_by': self.client.config.username,
-            'cell_id': self.config.cell_id,
-            'software_version': f'ViewpointGeneration@{_software_version()}',
-        }
-        if generated_at:
-            extra['generated_at'] = generated_at
-        return plan_io.build_context(part, stage, extra=extra)
+        return plan_contract.context_json(
+            part, cell_id=self.config.cell_id,
+            generated_by=self.client.config.username)
 
     def plan_dir_for(self, eng_item_id):
         """Directory this cell writes a part's plan files into."""
@@ -766,18 +738,54 @@ class CatalogSync:
         canonical = self.paths.plan_dir_for(plan['eng_item_id']) / Path(stored).name
         return self.paths.resolve_cached(stored, canonical)
 
-    @staticmethod
-    def _unwrap_envelope(envelope_path):
-        """Read a plan file, accepting every historical shape.
+    # --- selection ----------------------------------------------------------
 
-        Retained as a thin wrapper over plan_io so callers that predate it
-        keep working.
+    def select(self, eng_item_id, plan_id=None, model_only=False,
+               skip_plan_check=False):
+        """Everything a part selection needs: geometry, plan, and plan contract.
+
+        Shared by the `select_part` service and the picker so both announce
+        exactly the same thing.
+
+        Args:
+            eng_item_id: The part to select.
+            plan_id: Load this recorded plan rather than the current one. An
+                explicit choice comes back SELECTED when it targets an
+                earlier CAD revision.
+            model_only: Load the model with no plan.
+            skip_plan_check: Resolve the geometry only.
 
         Returns:
-            tuple: (dict or None, dict, str) the plan payload, its plm_context,
-            and a message.
+            tuple: (dict or None, str) the selection and a message. The dict
+            holds `part`, `step_path`, `plan_status`, `plan_path`, `plan_dir`
+            and `plm_context_json`; None on failure.
         """
-        return plan_io.read_plan(envelope_path)
+        part = self.db.get_part(eng_item_id)
+        if part is None:
+            return None, f'Unknown part: {eng_item_id}.'
+
+        step_path, message = self.fetch_step(eng_item_id)
+        if step_path is None:
+            return None, message
+
+        if plan_id:
+            plan_status, plan_path = self.select_plan(eng_item_id, plan_id)
+            if plan_status == PlanStatus.NONE:
+                return None, f'Plan is unavailable: {plan_id}.'
+        elif model_only or skip_plan_check:
+            plan_status, plan_path = PlanStatus.NONE, ''
+        else:
+            plan_status, plan_path = self.ensure_plan(eng_item_id)
+
+        return {
+            'part': part,
+            'step_path': str(step_path),
+            'mesh_units': self.config.mesh_units,
+            'plan_status': plan_status,
+            'plan_path': plan_path or '',
+            'plan_dir': str(self.plan_dir_for(eng_item_id)),
+            'plm_context_json': self.plm_context_json(part),
+        }, message
 
     # --- plans --------------------------------------------------------------
 
@@ -821,6 +829,11 @@ class CatalogSync:
     def _try_download_remote_plan(self, part):
         """Look for a 3DX plan matching the part's current CAD revision.
 
+        A downloaded plan has no producer to describe it, so its change token,
+        stage and generation time are read back from the `plm_context` block
+        this catalog authored (`plan_contract.read_context`); nothing else in
+        the file is interpreted.
+
         Returns:
             tuple: (PlanStatus or None, str) None when nothing usable was
             found remotely, so the caller falls back to the local answer.
@@ -852,9 +865,8 @@ class CatalogSync:
                 logger.debug('Plan document %s not downloadable: %s', doc_id, message)
                 continue
 
-            results, plm_context, _unwrap_message = plan_io.read_plan(path)
+            plm_context = plan_contract.read_context(path)
             plan_cestamp = plm_context.get('cestamp') or ''
-            summary = plan_io.summarize(results) if results else {}
             had_local = self.db.get_current_plan(eng_item_id) is not None
             self.db.upsert_plan({
                 'plan_id': f'{eng_item_id}:{doc_id}',
@@ -862,11 +874,9 @@ class CatalogSync:
                 'plan_doc_id': doc_id,
                 'cestamp': plan_cestamp,
                 'file_path': str(path),
-                'num_regions': summary.get('num_regions'),
-                'num_clusters': summary.get('num_clusters'),
-                'num_viewpoints': summary.get('num_viewpoints'),
-                'stage': (plm_context.get('stage')
-                          or (plan_io.infer_stage(results) if results else None)),
+                'stage': plm_context.get('stage'),
+                'stage_rank': plm_context.get('stage_rank', -1),
+                'summary_text': document.get('title') or '',
                 'generated_at': plm_context.get('generated_at') or utc_now(),
                 'uploaded_at': plm_context.get('generated_at'),
                 'upload_status': 'synced',
@@ -881,25 +891,34 @@ class CatalogSync:
                     else PlanStatus.DOWNLOADED), str(path)
         return None, ''
 
-    def record_plan(self, eng_item_id, plan_path, stage=None, upload=None):
-        """Register a generated plan file in the catalog.
+    def record_plan(self, eng_item_id, plan_path, stage, stage_rank=-1,
+                    summary_json='', summary_text='', change_token='',
+                    generated_at='', upload=None, make_current=True):
+        """Register a plan file the producer wrote, as the producer describes it.
 
         This is what puts a plan in the database. Every plan the pipeline
         writes -- segmented, clustered, projected, ordered -- is recorded, so
         the picker can offer the full history for a part rather than only the
         latest. The newest recorded plan becomes the part's current one.
 
-        The file is recorded where it already lives; it is never copied. Its
-        `plm_context` is stamped in place when the file does not already
-        identify this part, which is what lets a plan generated before the
-        catalog knew about it still be adopted.
+        The file is recorded where it already lives and is never opened: what
+        the catalog stores about it is what the producer states here (see
+        `plan_contract`).
 
         Args:
             eng_item_id: The part the plan belongs to.
-            plan_path: The plan JSON the pipeline just wrote.
-            stage: Override the stage inferred from the file's content.
+            plan_path: The plan file.
+            stage: Producer-defined stage label (required).
+            stage_rank: Producer-defined order of the stage; higher is
+                further through the pipeline.
+            summary_json: Producer summary, stored verbatim.
+            summary_text: One-line summary shown in the picker.
+            change_token: The CAD stamp the plan was generated against.
+                Empty means the part's current one.
+            generated_at: When the plan was generated. Empty means now.
             upload: Force upload on/off. None consults
                 `auto_upload_plan_stages`.
+            make_current: Make this the part's current plan.
 
         Returns:
             tuple: (str or None, str) the plan_id recorded and a message.
@@ -907,63 +926,38 @@ class CatalogSync:
         part = self.db.get_part(eng_item_id)
         if part is None:
             return None, f'Unknown part: {eng_item_id}.'
-
+        if not stage:
+            return None, 'A plan stage is required to record a plan.'
         plan_path = Path(plan_path)
-        results, context, message = plan_io.read_plan(plan_path)
-        if results is None:
-            return None, message
-
-        stage = stage or context.get('stage') or plan_io.infer_stage(results)
-        summary = plan_io.summarize(results)
-
-        # Stamp identity into the file itself when it is missing or points at
-        # a different part, so the plan stays self-describing if it is ever
-        # moved, copied to another cell, or uploaded.
-        if (context.get('eng_item_id') != eng_item_id
-                or context.get('stage') != stage
-                or context.get('cestamp') != part.get('cestamp')):
-            # Keep the plan's real generation time. A file adopted long after
-            # it was written must not claim to be the newest plan for the part
-            # just because it was recorded last.
-            context = self.plan_context_for(
-                part, stage,
-                generated_at=(context.get('generated_at')
-                              or _mtime_utc(plan_path)))
-            written, message = plan_io.save_plan_to(
-                plan_path, results, context=context, stage=stage)
-            if written is None:
-                return None, message
+        if not plan_path.is_file():
+            return None, f'Plan file not found: {plan_path}.'
 
         plan_id = f'{eng_item_id}:{plan_path.stem}'
         self.db.upsert_plan({
             'plan_id': plan_id,
             'eng_item_id': eng_item_id,
             'plan_doc_id': None,
-            'cestamp': part.get('cestamp'),
+            'cestamp': change_token or part.get('cestamp'),
             'file_path': str(plan_path),
-            'num_regions': summary['num_regions'],
-            'num_clusters': summary['num_clusters'],
-            'num_viewpoints': summary['num_viewpoints'],
-            'seg_algorithm': (results.get('meshes') or [{}])[0].get(
-                'segmentation_algorithm'),
             'stage': stage,
-            'generated_at': context.get('generated_at') or utc_now(),
+            'stage_rank': stage_rank,
+            'summary_json': summary_json or '{}',
+            'summary_text': summary_text or '',
+            'generated_at': generated_at or utc_now(),
             'upload_status': 'local',
             'source': 'local',
-            'is_current': True,
+            'is_current': make_current,
         })
-        self.db.log_sync('plan_recorded', eng_item_id,
-                         f'{stage}: {plan_io.describe(summary)}')
+        described = f' ({summary_text})' if summary_text else ''
+        self.db.log_sync('plan_recorded', eng_item_id, f'{stage}{described}')
 
         if upload is None:
-            upload = stage in self.config.auto_upload_stages()
+            upload = stage.lower() in self.config.auto_upload_stages()
         if not upload:
-            return plan_id, (f'Recorded {stage} plan '
-                             f'({plan_io.describe(summary)}).')
+            return plan_id, f'Recorded {stage} plan{described}.'
 
         doc_id, upload_message = self.upload_recorded_plan(plan_id)
-        return plan_id, (f'Recorded {stage} plan '
-                         f'({plan_io.describe(summary)}). {upload_message}')
+        return plan_id, f'Recorded {stage} plan{described}. {upload_message}'
 
     def upload_recorded_plan(self, plan_id):
         """Upload an already-recorded plan to 3DX as a Document.
@@ -1008,19 +1002,20 @@ class CatalogSync:
         self.db.log_sync('plan_uploaded', part['eng_item_id'], doc_id)
         return doc_id, message
 
-    def upload_plan(self, eng_item_id, results_json_path):
-        """Record a results JSON as a plan and upload it to 3DX.
+    def upload_plan(self, eng_item_id, plan_path):
+        """Upload an already-recorded plan, identified by its file.
 
         Kept for the `catalog/upload_plan` service, which uploads on demand
-        regardless of the auto-upload stage policy.
+        regardless of the auto-upload stage policy. The plan must have been
+        recorded first: recording is where the producer describes it.
 
         Returns:
             tuple: (doc_id or None, str) the created document id and a message.
         """
-        plan_id, message = self.record_plan(eng_item_id, results_json_path,
-                                            upload=False)
-        if plan_id is None:
-            return None, message
+        plan_id = f'{eng_item_id}:{Path(plan_path).stem}'
+        if self.db.get_plan(plan_id) is None:
+            return None, (f'{plan_path} is not a recorded plan for {eng_item_id}; '
+                          'record it (catalog/record_plan) before uploading.')
         return self.upload_recorded_plan(plan_id)
 
     def list_plans(self, eng_item_id):
@@ -1044,6 +1039,11 @@ class CatalogSync:
                                      and plan.get('cestamp') != part['cestamp'])
             enriched['is_current'] = bool(plan.get('is_current'))
             enriched['stage'] = plan.get('stage') or 'unknown'
+            try:
+                enriched['summary'] = json.loads(plan.get('summary_json') or '{}')
+            except ValueError:
+                enriched['summary'] = {}
+            enriched['summary_text'] = plan.get('summary_text') or ''
             plans.append(enriched)
         return plans
 
@@ -1069,12 +1069,51 @@ class CatalogSync:
             return PlanStatus.CURRENT, str(path)
         return PlanStatus.SELECTED, str(path)
 
-    def adopt_orphan_plans(self, eng_item_id):
+    def orphan_plan_candidates(self, eng_item_id):
+        """Plan files on disk that the catalog should ask the producer about.
+
+        Covers files in the part's plan directory and in the `_results`
+        directories beside its cached STEP (where earlier versions wrote) that
+        no row records, plus recorded files whose row has no stage yet. Only
+        names are listed; no file is opened.
+
+        Returns:
+            list: Paths.
+        """
+        known = {}
+        for plan in self.db.list_plans(eng_item_id):
+            known[Path(plan['file_path']).name] = plan
+
+        candidates = []
+        for plan in known.values():
+            if not plan.get('stage'):
+                path = self.resolved_plan_path(plan)
+                if path is not None:
+                    candidates.append(path)
+
+        directories = [self.paths.plan_dir_for(eng_item_id)]
+        step_dir = self.paths.step_dir / str(eng_item_id)
+        if step_dir.exists():
+            directories.extend(sorted(step_dir.glob('*_results')))
+        for directory in directories:
+            if Path(directory).exists():
+                candidates.extend(path for path in sorted(Path(directory).glob('*.json'))
+                                  if path.name not in known)
+        return candidates
+
+    def adopt_orphan_plans(self, eng_item_id, describe):
         """Record plan files sitting on disk that the database never captured.
 
-        Covers plans generated before the pipeline recorded them, and the
-        `_results` directories beside a part's cached STEP where earlier
-        versions wrote. Existing rows are left untouched.
+        The catalog lists candidate files (`orphan_plan_candidates`) and the
+        producer describes them; this method never opens a plan file.
+
+        Args:
+            eng_item_id: The part whose plans to adopt.
+            describe: Callable taking a list of paths and returning one dict
+                per path with `path`, `valid`, `stage`, `stage_rank`,
+                `summary_json`, `summary_text`, `change_token` and
+                `generated_at` (the `DescribePlans` contract). Files the
+                producer does not recognise as plans come back invalid.
 
         Returns:
             tuple: (int, int) counts of plans adopted and files skipped.
@@ -1082,58 +1121,48 @@ class CatalogSync:
         part = self.db.get_part(eng_item_id)
         if part is None:
             return 0, 0
+        candidates = self.orphan_plan_candidates(eng_item_id)
+        if not candidates:
+            return 0, 0
 
-        known = {}
-        for plan in self.db.list_plans(eng_item_id):
-            known[Path(plan['file_path']).name] = plan
-        # Backfill the stage of rows recorded before it was tracked, so the
-        # picker can label them instead of showing 'unknown'.
-        for plan in known.values():
-            if plan.get('stage'):
-                continue
-            path = self.resolved_plan_path(plan)
-            if path is None:
-                continue
-            results, context, _message = plan_io.read_plan(path)
-            if results is None:
-                continue
-            self.db.update_plan(plan['plan_id'],
-                                stage=(context.get('stage')
-                                       or plan_io.infer_stage(results)))
-
-        directories = [self.paths.plan_dir_for(eng_item_id)]
-        step_dir = self.paths.step_dir / str(eng_item_id)
-        if step_dir.exists():
-            directories.extend(sorted(step_dir.glob('*_results')))
-
+        known = {plan['plan_id'] for plan in self.db.list_plans(eng_item_id)}
         adopted = skipped = 0
-        for directory in directories:
-            if not Path(directory).exists():
+        for description in describe([str(path) for path in candidates]):
+            if not description.get('valid'):
+                skipped += 1
                 continue
-            for path in sorted(Path(directory).glob('*.json')):
-                if path.name in known:
-                    continue
-                results, _context, _message = plan_io.read_plan(path)
-                if results is None or not plan_io.summarize(results)['num_regions']:
-                    skipped += 1
-                    continue
-                plan_id, _message = self.record_plan(
-                    eng_item_id, path, upload=False)
-                if plan_id is None:
-                    skipped += 1
-                else:
-                    adopted += 1
+            path = Path(description['path'])
+            plan_id = f'{eng_item_id}:{path.stem}'
+            if plan_id in known:
+                # A recorded row missing its stage: backfill what the producer
+                # said, leaving everything else about the row alone.
+                self.db.update_plan(
+                    plan_id, stage=description.get('stage'),
+                    stage_rank=description.get('stage_rank', -1),
+                    summary_json=description.get('summary_json') or '{}',
+                    summary_text=description.get('summary_text') or '')
+                continue
+            recorded, _message = self.record_plan(
+                eng_item_id, path, stage=description.get('stage'),
+                stage_rank=description.get('stage_rank', -1),
+                summary_json=description.get('summary_json', ''),
+                summary_text=description.get('summary_text', ''),
+                change_token=description.get('change_token', ''),
+                generated_at=description.get('generated_at', ''),
+                upload=False, make_current=False)
+            if recorded is None:
+                skipped += 1
+            else:
+                adopted += 1
 
-        # record_plan() makes each plan current as it goes, so after adopting a
-        # batch the flag sits on whichever file happened to be recorded last.
-        # Hand it back to the genuinely newest plan -- breaking ties by how far
-        # through the pipeline it got, since a whole run's stages routinely
-        # share a timestamp.
+        # Hand the current flag to the genuinely newest plan, breaking ties by
+        # how far through the pipeline it got, since a whole run's stages
+        # routinely share a timestamp.
         if adopted:
             plans = self.db.list_plans(eng_item_id)
             if plans:
                 newest = max(plans, key=lambda p: (p.get('generated_at') or '',
-                                                   plan_io.stage_rank(p.get('stage'))))
+                                                   p.get('stage_rank', -1)))
                 self.db.set_current_plan(newest['plan_id'])
         return adopted, skipped
 
@@ -1326,6 +1355,31 @@ class CatalogSync:
         }
 
 
+# How the CLI asks the plan producer to describe files during adoption: the
+# command-line form of the DescribePlans service. Paths are appended, and it
+# must print a JSON list of descriptions (see CatalogSync.adopt_orphan_plans).
+DEFAULT_DESCRIBE_COMMAND = 'python3 -m viewpoint_generation.plan_io describe'
+
+
+def describe_with_command(paths, command=None):
+    """Describe plan files by running the producer's describe command.
+
+    Returns:
+        list: one description dict per path; empty when the command fails.
+    """
+    command = command or os.environ.get('PLAN_DESCRIBE_CMD') or DEFAULT_DESCRIBE_COMMAND
+    try:
+        completed = subprocess.run(shlex.split(command) + [str(p) for p in paths],
+                                   capture_output=True, text=True, timeout=600,
+                                   check=True)
+        descriptions = json.loads(completed.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        logger.error('Plan producer could not describe %d file(s) with %r: %s',
+                     len(paths), command, e)
+        return []
+    return descriptions if isinstance(descriptions, list) else []
+
+
 def build_sync(dx_config=None, sync_config=None, paths=None):
     """Assemble a `CatalogSync` from environment-derived configuration.
 
@@ -1371,10 +1425,20 @@ def main(argv=None):
                         help='List every inspection plan recorded for one part.')
     parser.add_argument('--adopt-plans', metavar='ENG_ITEM_ID',
                         help='Record plan files already on disk for one part '
-                             'that the catalog never captured.')
+                             'that the catalog never captured. The plan '
+                             'producer describes them (see --describe-cmd).')
+    parser.add_argument('--describe-cmd', metavar='COMMAND',
+                        help='Producer command that describes plan files as '
+                             'JSON (default: $PLAN_DESCRIBE_CMD or '
+                             f'{DEFAULT_DESCRIBE_COMMAND!r}).')
     parser.add_argument('--record-plan', nargs=2,
                         metavar=('ENG_ITEM_ID', 'PLAN_JSON'),
-                        help='Record one plan file in the catalog.')
+                        help='Record one plan file in the catalog (needs --stage).')
+    parser.add_argument('--stage', help='With --record-plan: the plan stage label.')
+    parser.add_argument('--stage-rank', type=int, default=-1,
+                        help='With --record-plan: the stage order (higher = later).')
+    parser.add_argument('--summary-text', default='',
+                        help='With --record-plan: one-line summary for the picker.')
     parser.add_argument('--upload-plan', metavar='PLAN_ID',
                         help='Upload one already-recorded plan to 3DX.')
     parser.add_argument('--scope', metavar='SEARCH',
@@ -1440,13 +1504,17 @@ def main(argv=None):
         return 0 if path else 1
 
     if args.adopt_plans:
-        adopted, skipped = catalog.adopt_orphan_plans(args.adopt_plans)
+        adopted, skipped = catalog.adopt_orphan_plans(
+            args.adopt_plans,
+            describe=lambda paths: describe_with_command(paths, args.describe_cmd))
         print(f'Adopted {adopted} plan(s); skipped {skipped} file(s).')
         return 0
 
     if args.record_plan:
         eng_item_id, plan_path = args.record_plan
-        plan_id, message = catalog.record_plan(eng_item_id, plan_path)
+        plan_id, message = catalog.record_plan(
+            eng_item_id, plan_path, stage=args.stage, stage_rank=args.stage_rank,
+            summary_text=args.summary_text)
         print(message)
         return 0 if plan_id else 1
 
@@ -1465,10 +1533,7 @@ def main(argv=None):
                 '!' if plan['stale'] else ' ',
                 '?' if not plan['available'] else ' ',
             ))
-            print(f"{flags} {plan['stage']:<10} "
-                  f"{plan['num_regions'] or 0:>4}r "
-                  f"{plan['num_clusters'] or 0:>4}c "
-                  f"{plan['num_viewpoints'] or 0:>4}v  "
+            print(f"{flags} {plan['stage']:<10} {plan['summary_text']:<40.40} "
                   f"{plan['generated_at']}  {plan['upload_status']:<9} "
                   f"{plan['plan_id']}")
         if plans:

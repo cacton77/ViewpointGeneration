@@ -1,5 +1,6 @@
 """Characterization test: an old catalog.db gains newer columns in place."""
 
+import json
 import sqlite3
 
 from viewpoint_generation.catalog.schema import CatalogDB
@@ -54,10 +55,42 @@ def test_old_database_migrates_without_losing_rows(tmp_path):
     assert db.get_part('A')['title'] == 'Part A'
     plan = db.get_current_plan('A')
     assert plan['plan_id'] == 'A:p1'
-    assert plan['num_regions'] == 3
     assert plan['stage'] is None
+    # Schema step 1: the legacy counts move into the plan-contract fields.
+    assert json.loads(plan['summary_json'])['num_regions'] == 3
+    assert plan['summary_text'] == '3 regions, 9 clusters, 9 viewpoints'
+    assert plan['stage_rank'] == -1
     assert len(db.recent_sync_log()) == 1
 
     # Opening again is a no-op.
     CatalogDB(db_path)
     assert db.get_plan('A:p1')['file_path'] == '/catalog/plans/A/p1.json'
+
+
+def test_versioned_migration_backs_up_once_and_is_idempotent(tmp_path):
+    db_path = tmp_path / 'catalog.db'
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(OLD_SCHEMA)
+        conn.execute("INSERT INTO parts VALUES ('A', 'Part A', 'prd-A', 'A.1', 'c1',"
+                     " 'IN_WORK', 'VPMReference', 'Space', 'synced', 't0', 't0')")
+        conn.execute("INSERT INTO plans VALUES ('A:o', 'A', NULL, 'c1', '/x/o.json',"
+                     " 2, 4, 4, NULL, NULL, 't1', NULL, 'local')")
+        conn.execute("UPDATE plans SET upload_status = 'local'")
+
+    CatalogDB(db_path)
+    backups = sorted(tmp_path.glob('catalog.db.bak-*'))
+    assert len(backups) == 1
+    with sqlite3.connect(backups[0]) as conn:
+        assert conn.execute('PRAGMA user_version').fetchone()[0] == 0
+        assert conn.execute('SELECT COUNT(*) FROM plans').fetchone()[0] == 1
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute('PRAGMA user_version').fetchone()[0] >= 1
+
+    CatalogDB(db_path)
+    assert len(list(tmp_path.glob('catalog.db.bak-*'))) == 1
+
+
+def test_fresh_database_needs_no_backup(tmp_path):
+    db = CatalogDB(tmp_path / 'catalog.db')
+    assert list(tmp_path.glob('catalog.db.bak-*')) == []
+    assert db.list_plans('nothing') == []

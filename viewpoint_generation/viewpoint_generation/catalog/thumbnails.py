@@ -139,7 +139,7 @@ def render_step_thumbnail(step_path, dest, units='mm', size=256):
         tuple: (bool, str) success flag and message.
     """
     try:
-        from viewpoint_generation.step_loader import load_step
+        from viewpoint_generation.catalog.cad import load_step
     except ImportError as e:
         return False, f'STEP thumbnail rendering unavailable: {e}'
     try:

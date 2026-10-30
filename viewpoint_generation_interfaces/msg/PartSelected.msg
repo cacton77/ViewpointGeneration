@@ -11,3 +11,6 @@ string plan_status        # CURRENT | DOWNLOADED | UPDATED_FROM_REMOTE | SELECTE
                           # SELECTED means an operator picked this exact plan; it is
                           # loaded even when it targets an earlier CAD revision.
 string plan_file_path     # local plan JSON, empty when there is no plan
+string plan_dir           # where the producer writes new plans for this part
+string plm_context_json   # PLM context (JSON object) the producer embeds as each
+                          # plan's plm_context, adding stage/generated_at/software_version

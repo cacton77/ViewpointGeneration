@@ -8,6 +8,7 @@ tmp_path.
 import copy
 from pathlib import Path
 
+from viewpoint_generation import plan_io
 from viewpoint_generation.catalog.client import DXClient
 from viewpoint_generation.catalog.config import DXConfig
 
@@ -150,3 +151,8 @@ def results_for(stage, regions=2, clusters_per_region=2, mesh_file='/models/part
     return {'meshes': [{'file': mesh_file, 'units': 'm', 'source_format': 'step',
                         'segmentation_algorithm': 'region_growth',
                         'regions': region_list}]}
+
+
+def producer_describe(paths):
+    """The producer's side of DescribePlans, as the VG node implements it."""
+    return [plan_io.describe_plan(path) for path in paths]

@@ -48,3 +48,18 @@ def write_plan_file():
         assert path is not None, message
         return Path(path)
     return _write
+
+
+@pytest.fixture
+def record():
+    """Record a plan the way the VG node does: describe it, then RecordPlan."""
+    def _record(catalog, eng_item_id, path, **kwargs):
+        description = plan_io.describe_plan(path)
+        return catalog.record_plan(
+            eng_item_id, path, stage=description['stage'],
+            stage_rank=description['stage_rank'],
+            summary_json=description['summary_json'],
+            summary_text=description['summary_text'],
+            change_token=description['change_token'],
+            generated_at=description['generated_at'], **kwargs)
+    return _record
