@@ -9,7 +9,7 @@ from launch.substitutions import (EnvironmentVariable, LaunchConfiguration,
                                   PathJoinSubstitution, PythonExpression)
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterFile
+from launch_ros.parameter_descriptions import ParameterFile, ParameterValue
 
 
 def generate_launch_description():
@@ -65,6 +65,13 @@ def generate_launch_description():
                               description="Comma-separated PLM backends the catalog hosts."),
         DeclareLaunchArgument("catalog_mesh_units", default_value="mm",
                               description="Units used to load STEP files selected from the catalog."),
+        DeclareLaunchArgument("pi_camera_video", default_value="true",
+                              description="Re-encode magpi's /pi_camera JPEG stream as H.264 on "
+                              "/pi_camera/video/foxglove for remote Foxglove viewers. The JPEG "
+                              "stream needs ~90 Mbit/s; this needs a few. Only encodes while "
+                              "something is subscribed."),
+        DeclareLaunchArgument("pi_camera_video_bit_rate", default_value="4000000",
+                              description="Target bit rate (bit/s) of /pi_camera/video/foxglove."),
     ]
 
     cell_enabled = PythonExpression(
@@ -165,8 +172,75 @@ def generate_launch_description():
         parameters=[{
             "port": 8765,
             "address": "0.0.0.0",
+            # The bridge has no authentication and is reachable from the whole
+            # tailnet, and its defaults let any client publish any topic, call
+            # any service and set any parameter -- including the UR arms'
+            # controllers. So: no services, no parameter writes, and publishing
+            # only on the topics listed here. Add a topic to the whitelist when
+            # a Foxglove panel genuinely needs to command it.
+            "capabilities": ["clientPublish", "connectionGraph", "assets"],
+            "client_topic_whitelist": [
+                # LED ring requests, handled by lens_tuner on magpi (it stays
+                # the only publisher of /camera_head/led_ring/command).
+                "^/camera_head/led_ring/request$",
+            ],
         }],
     )
+
+    # Remote-viewing copy of magpi's camera. /pi_camera/image_raw/compressed
+    # (2028x1520 JPEG @ 30 fps, ~90 Mbit/s) is more than a home connection
+    # over Tailscale can carry, so Foxglove stutters and lags. This decodes it
+    # here and re-encodes H.264 (foxglove_msgs/CompressedVideo), which Foxglove
+    # plays natively at a few Mbit/s. zerolatency = no B-frames (Foxglove
+    # can't decode them); gop_size 30 = a keyframe every second, so a new
+    # viewer gets a picture within 1 s. Lazy: idle when nothing subscribes.
+    try:
+        get_package_share_directory("foxglove_compressed_video_transport")
+        have_video_transport = True
+    except PackageNotFoundError:
+        have_video_transport = False
+    if have_video_transport:
+        pi_camera_video_node = Node(
+            package="image_transport",
+            executable="republish",
+            name="pi_camera_video_republisher",
+            parameters=[{
+                "in_transport": "compressed",
+                "out_transport": "foxglove",
+                "out.foxglove.encoder": "libx264",
+                "out.foxglove.preset": "ultrafast",
+                "out.foxglove.tune": "zerolatency",
+                "out.foxglove.gop_size": 30,
+                "out.foxglove.bit_rate": ParameterValue(
+                    LaunchConfiguration("pi_camera_video_bit_rate"), value_type=int),
+                "out.foxglove.qmax": 51,
+                "out.foxglove.pixel_format": "yuv420p",
+                # Subscribe BEST_EFFORT. A RELIABLE reader on this host makes
+                # magpi's camera writer wait on retransmits of ~370 KB JPEG
+                # frames fragmented over UDP; one bad loss stalls the camera
+                # for everyone (seen 2026-10-31: /pi_camera stopped publishing
+                # even on magpi). Same reason the D405/pi_camera publishers are
+                # best-effort in inspection_eoat's bringup. Depth 1: a late
+                # frame is worthless to a live view.
+                "qos_overrides./pi_camera/image_raw/compressed.subscription.reliability":
+                    "best_effort",
+                "qos_overrides./pi_camera/image_raw/compressed.subscription.history":
+                    "keep_last",
+                "qos_overrides./pi_camera/image_raw/compressed.subscription.depth": 1,
+            }],
+            remappings=[
+                ("in/compressed", "/pi_camera/image_raw/compressed"),
+                ("out", "/pi_camera/video"),
+                ("out/foxglove", "/pi_camera/video/foxglove"),
+            ],
+            condition=IfCondition(LaunchConfiguration("pi_camera_video")),
+        )
+    else:
+        pi_camera_video_node = LogInfo(
+            msg="pi_camera_video:=true, but foxglove_compressed_video_transport is not "
+                "installed, so /pi_camera/video/foxglove is not published. Rebuild the "
+                "image (see docker/Dockerfile.jazzy), or pass pi_camera_video:=false.",
+            condition=IfCondition(LaunchConfiguration("pi_camera_video")))
 
     viewpoint_generation_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -221,5 +295,6 @@ def generate_launch_description():
         task_planning_node,
         admittance_control_launch,
         foxglove_bridge_node,
+        pi_camera_video_node,
         catalog_launch,
     ])
