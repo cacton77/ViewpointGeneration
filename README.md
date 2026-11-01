@@ -51,7 +51,7 @@ viewpoint_generation/
 │   ├── gui.py
 │   └── foxglove_viz_node.py        # Publishes each stage's results for Foxglove's 3D panel
 ├── launch/
-│   ├── bringup.launch.py           # Full system bringup
+│   ├── bringup.launch.py           # Moved to inspection_bringup (Inspection_System); includes it
 │   ├── viewpoint_generation.launch.py
 │   └── viewpoint_traversal.launch.py
 ├── test/                           # pytest suites (see "Tests" below)
@@ -65,7 +65,8 @@ A companion package, `viewpoint_generation_interfaces/`, defines the ROS 2 messa
 The PLM parts catalog, the part picker and the STEP loader live in the
 [plm_bridge](https://github.com/cacton77/plm_bridge) repository (public, BSD-3-Clause):
 this package depends on its `plm_interfaces` (part selection, plan recording)
-and `cad_loader` (STEP and mesh loading) packages, and its bringup starts the
+and `cad_loader` (STEP and mesh loading) packages. The system bringup
+([Inspection_System](https://github.com/cacton77/Inspection_System)) starts the
 `plm_bridge` node when that is installed.
 
 ### Tests
@@ -358,68 +359,16 @@ Arguments:
 
 ### Full System Bringup
 
+The whole-cell bringup moved to `inspection_bringup` in the
+[Inspection_System](https://github.com/cacton77/Inspection_System) repository,
+which documents its arguments and rig profiles:
+
 ```bash
-ros2 launch viewpoint_generation bringup.launch.py \
-    cell:=alpha \
-    object:=my_part \
-    data_path:=/path/to/data \
-    sim:=true
+ros2 launch inspection_bringup bringup.launch.py rig:=beta_dual
 ```
 
-Additional arguments:
-- `cell` -- Inspection cell configuration (`alpha` or `beta`)
-- `sim` -- Use fake/simulated hardware
-- `dual_arm` -- Add the second UR5e carrying the Zivid 2+ MR60 (cell `beta` only; default
-  `false`). Forwarded to `inspection_cell_moveit_config/launch/inspection_cell.launch.py`
-  (URDF, controllers, MoveIt groups, Servo) and to
-  `inspection_control/launch/admittance_control.launch.py` (admittance control for that arm;
-  the joystick's arm-switch button, 10 / right stick click, moves teleop between the arms).
-  It also defines `zivid_camera_optical_frame`, the frame the Zivid driver publishes in.
-- `zivid` -- With `cell` enabled, start the Zivid 2+ MR60 driver as `/zivid/zivid_camera`
-  (default: `true`). It publishes in `zivid_camera_optical_frame`; capture with
-  `ros2 service call /zivid/capture std_srvs/srv/Trigger`. This is the only place the
-  driver starts (the cell launch is passed `launch_zivid:=false`), since only one client can
-  hold the camera: close Zivid Studio first. `zivid_serial_number` picks a camera (default:
-  first available). `zivid_settings_file` is a 3D settings `.yml` from Zivid Studio; without
-  it, captures fail until settings are set (e.g. `/zivid/capture_assistant/suggest_settings`).
-- `catalog` -- Launch the PLM catalog node (`plm_bridge_ros`, from the plm_bridge
-  repository; default: `true`). If that package is not installed, bringup logs
-  a message and carries on. Like the
-  Foxglove bridge it is not gated on `cell`: browsing the catalog and caching
-  STEP files is useful with or without cell hardware. It serves whatever is
-  already cached even when the `DX_*` credentials are absent.
-- `picker` -- Launch the browser part picker alongside the catalog node
-  (default: `true`, requires `catalog:=true`)
-- `picker_port` -- Port the picker listens on (default: `5050`). With
-  `network_mode: host` it is reachable at `http://localhost:5050`.
-- `catalog_sync_interval` -- Seconds between background incremental syncs
-  (default: `300`; `0` disables the timer)
-- `catalog_sync_on_startup` -- Run a full sync at bringup (default: `false`; a
-  full pass over a broad `DX_BOOKMARK_SCOPE` takes minutes, and the periodic
-  timer and the picker's Sync button cover it)
-- `plm_backends` -- PLM backends the catalog hosts (default: `$PLM_BACKENDS`,
-  else `dx3`)
-- `catalog_mesh_units` -- Units announced with a catalog selection (default:
-  `mm`). Ignored for STEP files, which declare their own units (see
-  [STEP ingest](#step-ingest)); it only matters for a hand-placed non-STEP model
-- `foxglove_viz` -- Start `foxglove_viz_node` (default: `true`); see
-  [Foxglove visualization](#foxglove-visualization).
-- `headless_mode` -- Run without the Open3D GUI (`gui_node`); starts rqt instead
-  (default: false). Forwarded to `viewpoint_generation.launch.py`. Use on hosts with
-  no X display.
-- `compute_threads` -- Forwarded to `viewpoint_generation.launch.py` (see above).
-- `launch_control` -- Launch the `ros2_control` layer locally (default: `true`). Set
-  `false` to run hard-real-time control on a **dedicated RT host** (bring it up there
-  with `inspection_cell_description/launch/inspection_cell_control.launch.py`, which is
-  standalone), while this machine runs only MoveIt + perception. The control launch
-  exposes `control_lock_memory` / `control_thread_priority` / `control_cpu_affinity`
-  for `SCHED_FIFO` priority, `mlockall`, and core pinning (pin to an `isolcpus` core on
-  the RT host).
-- `admittance_config_file` -- Admittance/orientation control config (default:
-  `admittance_control_coupled_pendulum.yaml`). When `cell` is enabled, bringup includes
-  `inspection_control/launch/coupled_pendulum.launch.py`, i.e. the Tier 3 coupled-pendulum
-  orientation + admittance pair. To use the legacy point-mass pipeline instead, point this
-  back at `admittance_control.yaml` and include `admittance_control.launch.py`.
+`ros2 launch viewpoint_generation bringup.launch.py` still works for now: it
+includes the new one and passes command-line arguments through.
 
 ## Foxglove visualization
 
@@ -790,8 +739,9 @@ with it:
   `python3 -m viewpoint_generation.plan_io describe FILE...`, which is what
   `PLAN_DESCRIBE_CMD` should be for the `plm-bridge --adopt-plans` CLI.
 
-`bringup.launch.py` includes `plm_bridge_ros/launch/plm_bridge.launch.py` when
-`catalog:=true` and that package is installed, and logs a message otherwise.
+The system bringup (`inspection_bringup`, in Inspection_System) includes
+`plm_bridge_ros/launch/plm_bridge.launch.py` when `catalog:=true` and that package
+is installed, and logs a message otherwise.
 
 ### Region provenance in the results JSON
 
