@@ -9,7 +9,7 @@ from launch.substitutions import (EnvironmentVariable, LaunchConfiguration,
                                   PathJoinSubstitution, PythonExpression)
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.actions import Node
-from launch_ros.parameter_descriptions import ParameterFile
+from launch_ros.parameter_descriptions import ParameterFile, ParameterValue
 
 
 def generate_launch_description():
@@ -18,7 +18,8 @@ def generate_launch_description():
         DeclareLaunchArgument("sim", default_value="false"),
         DeclareLaunchArgument("dual_arm", default_value="false",
                               description="Add the second UR5e carrying the Zivid 2+ MR60 "
-                              "(cell beta only)."),
+                              "(cell beta only): its URDF/controllers/MoveIt groups, and "
+                              "admittance + teleop (arm_switch_button) for it."),
         DeclareLaunchArgument("object", default_value="new.yaml",
                               description="Configuration file for viewpoint generation."),
         DeclareLaunchArgument("data_path", default_value="/data/ViewpointGenerationData",
@@ -65,6 +66,26 @@ def generate_launch_description():
                               description="Comma-separated PLM backends the catalog hosts."),
         DeclareLaunchArgument("catalog_mesh_units", default_value="mm",
                               description="Units used to load STEP files selected from the catalog."),
+        DeclareLaunchArgument("zivid", default_value="true",
+                              description="With cell enabled, start the Zivid 2+ MR60 driver "
+                              "(/zivid/zivid_camera)."),
+        DeclareLaunchArgument("zivid_serial_number", default_value="",
+                              description="Zivid serial number (empty = first available camera)."),
+        DeclareLaunchArgument("zivid_settings_file", default_value="camera_settings.yml",
+                              description="Zivid 3D capture settings .yml (exported from Zivid "
+                              "Studio). Empty = captures fail until settings are set, e.g. via "
+                              "/zivid/capture_assistant/suggest_settings."),
+        DeclareLaunchArgument("foxglove_viz", default_value="true",
+                              description="Publish each viewpoint-generation stage's results "
+                              "(regions, clusters, viewpoints, paths) on /viewpoint_generation/viz/* "
+                              "for Foxglove's 3D panel: the remote alternative to the Open3D GUI."),
+        DeclareLaunchArgument("pi_camera_video", default_value="true",
+                              description="Re-encode magpi's /pi_camera JPEG stream as H.264 on "
+                              "/pi_camera/video/foxglove for remote Foxglove viewers. The JPEG "
+                              "stream needs ~90 Mbit/s; this needs a few. Only encodes while "
+                              "something is subscribed."),
+        DeclareLaunchArgument("pi_camera_video_bit_rate", default_value="4000000",
+                              description="Target bit rate (bit/s) of /pi_camera/video/foxglove."),
     ]
 
     cell_enabled = PythonExpression(
@@ -102,8 +123,34 @@ def generate_launch_description():
             "rviz_config": LaunchConfiguration("rviz_config"),
             "launch_control": LaunchConfiguration("launch_control"),
             "dual_arm": LaunchConfiguration("dual_arm"),
+            # The Zivid driver is started below; only one client may hold the camera.
+            "launch_zivid": "false",
         }.items(),
         condition=IfCondition(cell_enabled)
+    )
+
+    # Zivid 2+ MR60 driver. Capture with:
+    #   ros2 service call /zivid/capture std_srvs/srv/Trigger
+    # Point clouds and images are stamped zivid_camera_optical_frame, the frame
+    # the URDF defines for the camera on the second arm.
+    zivid_camera_node = Node(
+        package="zivid_camera",
+        executable="zivid_camera",
+        name="zivid_camera",
+        namespace="zivid",
+        output="screen",
+        parameters=[{
+            "frame_id": "zivid_camera_optical_frame",
+            "serial_number": LaunchConfiguration("zivid_serial_number"),
+            "settings_file_path": PathJoinSubstitution([
+                    FindPackageShare("zivid_samples"),
+                    "settings",
+                    LaunchConfiguration("zivid_settings_file")
+                ])
+        }],
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration("cell"), "' != 'false' and '",
+            LaunchConfiguration("zivid"), "' == 'true'"])),
     )
 
     task_planning_node = Node(
@@ -165,8 +212,91 @@ def generate_launch_description():
         parameters=[{
             "port": 8765,
             "address": "0.0.0.0",
+            # The bridge has no authentication and is reachable from the whole
+            # tailnet, and its defaults let any client publish any topic, call
+            # any service and set any parameter -- including the UR arms'
+            # controllers. So: no parameter writes, publishing only on the
+            # topics listed here, and only the services listed here. Add an
+            # entry when a Foxglove panel genuinely needs it.
+            "capabilities": ["clientPublish", "services", "connectionGraph", "assets"],
+            # The default is '.*', i.e. every service on the graph, the
+            # controller_manager's and the UR drivers' included -- so this
+            # list is what makes the services capability safe to enable.
+            "service_whitelist": [
+                # PLM catalog (plm_bridge): browse, select, sync, plan check.
+                # Not record_plan/record_run/upload_*, which write to the PLM.
+                "^/catalog/(list_backends|list_parts|select_part|sync_now|ensure_plan)$",
+                # Viewpoint-generation pipeline stages (std_srvs/Trigger).
+                "^/viewpoint_generation/(segment_regions|fov_clustering|viewpoint_projection|optimize_traversal)$",
+            ],
+            "client_topic_whitelist": [
+                # LED ring requests, handled by lens_tuner on magpi (it stays
+                # the only publisher of /camera_head/led_ring/command).
+                "^/camera_head/led_ring/request$",
+                # Focus-lens requests, same arrangement. A velocity hold sent
+                # here lapses in lens_tuner 0.6 s after the panel stops
+                # refreshing it, so a dropped connection stops the lens.
+                "^/camera_head/lens/request$",
+                # Region/cluster selection for the viewpoint-generation viz.
+                "^/viewpoint_generation/viz/select$",
+            ],
         }],
     )
+
+    # Remote-viewing copy of magpi's camera. /pi_camera/image_raw/compressed
+    # (2028x1520 JPEG @ 30 fps, ~90 Mbit/s) is more than a home connection
+    # over Tailscale can carry, so Foxglove stutters and lags. This decodes it
+    # here and re-encodes H.264 (foxglove_msgs/CompressedVideo), which Foxglove
+    # plays natively at a few Mbit/s. zerolatency = no B-frames (Foxglove
+    # can't decode them); gop_size 30 = a keyframe every second, so a new
+    # viewer gets a picture within 1 s. Lazy: idle when nothing subscribes.
+    try:
+        get_package_share_directory("foxglove_compressed_video_transport")
+        have_video_transport = True
+    except PackageNotFoundError:
+        have_video_transport = False
+    if have_video_transport:
+        pi_camera_video_node = Node(
+            package="image_transport",
+            executable="republish",
+            name="pi_camera_video_republisher",
+            parameters=[{
+                "in_transport": "compressed",
+                "out_transport": "foxglove",
+                "out.foxglove.encoder": "libx264",
+                "out.foxglove.preset": "ultrafast",
+                "out.foxglove.tune": "zerolatency",
+                "out.foxglove.gop_size": 30,
+                "out.foxglove.bit_rate": ParameterValue(
+                    LaunchConfiguration("pi_camera_video_bit_rate"), value_type=int),
+                "out.foxglove.qmax": 51,
+                "out.foxglove.pixel_format": "yuv420p",
+                # Subscribe BEST_EFFORT. A RELIABLE reader on this host makes
+                # magpi's camera writer wait on retransmits of ~370 KB JPEG
+                # frames fragmented over UDP; one bad loss stalls the camera
+                # for everyone (seen 2026-10-31: /pi_camera stopped publishing
+                # even on magpi). Same reason the D405/pi_camera publishers are
+                # best-effort in inspection_eoat's bringup. Depth 1: a late
+                # frame is worthless to a live view.
+                "qos_overrides./pi_camera/image_raw/compressed.subscription.reliability":
+                    "best_effort",
+                "qos_overrides./pi_camera/image_raw/compressed.subscription.history":
+                    "keep_last",
+                "qos_overrides./pi_camera/image_raw/compressed.subscription.depth": 1,
+            }],
+            remappings=[
+                ("in/compressed", "/pi_camera/image_raw/compressed"),
+                ("out", "/pi_camera/video"),
+                ("out/foxglove", "/pi_camera/video/foxglove"),
+            ],
+            condition=IfCondition(LaunchConfiguration("pi_camera_video")),
+        )
+    else:
+        pi_camera_video_node = LogInfo(
+            msg="pi_camera_video:=true, but foxglove_compressed_video_transport is not "
+                "installed, so /pi_camera/video/foxglove is not published. Rebuild the "
+                "image (see docker/Dockerfile.jazzy), or pass pi_camera_video:=false.",
+            condition=IfCondition(LaunchConfiguration("pi_camera_video")))
 
     viewpoint_generation_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
@@ -214,12 +344,33 @@ def generate_launch_description():
                 "to the workspace (see the README), or pass catalog:=false.",
             condition=IfCondition(LaunchConfiguration("catalog")))
 
+    # Foxglove view of the viewpoint-generation results (see
+    # nodes/foxglove_viz_node.py). Follows the pipeline node's parameters the
+    # way the Open3D GUI does, so it never sits in the pipeline's path.
+    foxglove_viz_node = Node(
+        package="viewpoint_generation",
+        executable="foxglove_viz_node",
+        name="viewpoint_generation_viz",
+        condition=IfCondition(LaunchConfiguration("foxglove_viz")),
+    )
+
+    scanning_and_reconstruction_node = Node(
+        package="scanning_and_reconstruction",
+        executable="scanning_and_reconstruction_node",
+        name="scanning_and_reconstruction",
+        output="screen",
+    )
+
     return LaunchDescription(declared_arguments + [
         control_moveit_launch,
+        zivid_camera_node,
         viewpoint_generation_launch,
         viewpoint_traversal_launch,
         task_planning_node,
         admittance_control_launch,
         foxglove_bridge_node,
+        pi_camera_video_node,
+        foxglove_viz_node,
         catalog_launch,
+        scanning_and_reconstruction_node,
     ])

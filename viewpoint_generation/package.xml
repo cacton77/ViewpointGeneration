@@ -18,6 +18,8 @@
   <depend>plm_interfaces</depend>
   <exec_depend>cad_loader</exec_depend>
   <depend>tf2_ros</depend>
+  <depend>foxglove_msgs</depend>
+  <exec_depend>zivid_camera</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>

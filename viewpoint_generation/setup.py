@@ -37,6 +37,7 @@ setup(
             'gui_node = nodes.gui:main',
             'viewpoint_traversal_node = nodes.viewpoint_traversal_node:main',
             'task_planning_node = nodes.task_planning_node:main',
+            'foxglove_viz_node = nodes.foxglove_viz_node:main',
         ],
     },
 )
