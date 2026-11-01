@@ -18,7 +18,8 @@ def generate_launch_description():
         DeclareLaunchArgument("sim", default_value="false"),
         DeclareLaunchArgument("dual_arm", default_value="false",
                               description="Add the second UR5e carrying the Zivid 2+ MR60 "
-                              "(cell beta only)."),
+                              "(cell beta only): its URDF/controllers/MoveIt groups, and "
+                              "admittance + teleop (arm_switch_button) for it."),
         DeclareLaunchArgument("object", default_value="new.yaml",
                               description="Configuration file for viewpoint generation."),
         DeclareLaunchArgument("data_path", default_value="/data/ViewpointGenerationData",
@@ -65,6 +66,15 @@ def generate_launch_description():
                               description="Comma-separated PLM backends the catalog hosts."),
         DeclareLaunchArgument("catalog_mesh_units", default_value="mm",
                               description="Units used to load STEP files selected from the catalog."),
+        DeclareLaunchArgument("zivid", default_value="true",
+                              description="With cell enabled, start the Zivid 2+ MR60 driver "
+                              "(/zivid/zivid_camera)."),
+        DeclareLaunchArgument("zivid_serial_number", default_value="",
+                              description="Zivid serial number (empty = first available camera)."),
+        DeclareLaunchArgument("zivid_settings_file", default_value="camera_settings.yml",
+                              description="Zivid 3D capture settings .yml (exported from Zivid "
+                              "Studio). Empty = captures fail until settings are set, e.g. via "
+                              "/zivid/capture_assistant/suggest_settings."),
         DeclareLaunchArgument("foxglove_viz", default_value="true",
                               description="Publish each viewpoint-generation stage's results "
                               "(regions, clusters, viewpoints, paths) on /viewpoint_generation/viz/* "
@@ -113,8 +123,34 @@ def generate_launch_description():
             "rviz_config": LaunchConfiguration("rviz_config"),
             "launch_control": LaunchConfiguration("launch_control"),
             "dual_arm": LaunchConfiguration("dual_arm"),
+            # The Zivid driver is started below; only one client may hold the camera.
+            "launch_zivid": "false",
         }.items(),
         condition=IfCondition(cell_enabled)
+    )
+
+    # Zivid 2+ MR60 driver. Capture with:
+    #   ros2 service call /zivid/capture std_srvs/srv/Trigger
+    # Point clouds and images are stamped zivid_camera_optical_frame, the frame
+    # the URDF defines for the camera on the second arm.
+    zivid_camera_node = Node(
+        package="zivid_camera",
+        executable="zivid_camera",
+        name="zivid_camera",
+        namespace="zivid",
+        output="screen",
+        parameters=[{
+            "frame_id": "zivid_camera_optical_frame",
+            "serial_number": LaunchConfiguration("zivid_serial_number"),
+            "settings_file_path": PathJoinSubstitution([
+                    FindPackageShare("zivid_samples"),
+                    "settings",
+                    LaunchConfiguration("zivid_settings_file")
+                ])
+        }],
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration("cell"), "' != 'false' and '",
+            LaunchConfiguration("zivid"), "' == 'true'"])),
     )
 
     task_planning_node = Node(
@@ -318,8 +354,16 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration("foxglove_viz")),
     )
 
+    scanning_and_reconstruction_node = Node(
+        package="scanning_and_reconstruction",
+        executable="scanning_and_reconstruction_node",
+        name="scanning_and_reconstruction",
+        output="screen",
+    )
+
     return LaunchDescription(declared_arguments + [
         control_moveit_launch,
+        zivid_camera_node,
         viewpoint_generation_launch,
         viewpoint_traversal_launch,
         task_planning_node,
@@ -328,4 +372,5 @@ def generate_launch_description():
         pi_camera_video_node,
         foxglove_viz_node,
         catalog_launch,
+        scanning_and_reconstruction_node,
     ])

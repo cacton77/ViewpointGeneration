@@ -119,6 +119,7 @@ mount is provided by `docker-compose.yaml`.
 - plm_interfaces, cad_loader (plm_bridge repository)
 - ros2launch
 - MoveIt 2 (for viewpoint traversal)
+- zivid_camera (zivid-ros, Zivid 2+ MR60 driver)
 
 ## Library Usage
 
@@ -370,9 +371,17 @@ Additional arguments:
 - `sim` -- Use fake/simulated hardware
 - `dual_arm` -- Add the second UR5e carrying the Zivid 2+ MR60 (cell `beta` only; default
   `false`). Forwarded to `inspection_cell_moveit_config/launch/inspection_cell.launch.py`
-  and to `inspection_control/launch/admittance_control.launch.py`. The latter adds an
-  admittance controller for that arm, and lets the joystick's arm-switch button (10, right
-  stick click) move teleop between the two arms.
+  (URDF, controllers, MoveIt groups, Servo) and to
+  `inspection_control/launch/admittance_control.launch.py` (admittance control for that arm;
+  the joystick's arm-switch button, 10 / right stick click, moves teleop between the arms).
+  It also defines `zivid_camera_optical_frame`, the frame the Zivid driver publishes in.
+- `zivid` -- With `cell` enabled, start the Zivid 2+ MR60 driver as `/zivid/zivid_camera`
+  (default: `true`). It publishes in `zivid_camera_optical_frame`; capture with
+  `ros2 service call /zivid/capture std_srvs/srv/Trigger`. This is the only place the
+  driver starts (the cell launch is passed `launch_zivid:=false`), since only one client can
+  hold the camera: close Zivid Studio first. `zivid_serial_number` picks a camera (default:
+  first available). `zivid_settings_file` is a 3D settings `.yml` from Zivid Studio; without
+  it, captures fail until settings are set (e.g. `/zivid/capture_assistant/suggest_settings`).
 - `catalog` -- Launch the PLM catalog node (`plm_bridge_ros`, from the plm_bridge
   repository; default: `true`). If that package is not installed, bringup logs
   a message and carries on. Like the
