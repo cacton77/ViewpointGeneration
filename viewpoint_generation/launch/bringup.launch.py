@@ -65,6 +65,10 @@ def generate_launch_description():
                               description="Comma-separated PLM backends the catalog hosts."),
         DeclareLaunchArgument("catalog_mesh_units", default_value="mm",
                               description="Units used to load STEP files selected from the catalog."),
+        DeclareLaunchArgument("foxglove_viz", default_value="true",
+                              description="Publish each viewpoint-generation stage's results "
+                              "(regions, clusters, viewpoints, paths) on /viewpoint_generation/viz/* "
+                              "for Foxglove's 3D panel: the remote alternative to the Open3D GUI."),
         DeclareLaunchArgument("pi_camera_video", default_value="true",
                               description="Re-encode magpi's /pi_camera JPEG stream as H.264 on "
                               "/pi_camera/video/foxglove for remote Foxglove viewers. The JPEG "
@@ -175,14 +179,30 @@ def generate_launch_description():
             # The bridge has no authentication and is reachable from the whole
             # tailnet, and its defaults let any client publish any topic, call
             # any service and set any parameter -- including the UR arms'
-            # controllers. So: no services, no parameter writes, and publishing
-            # only on the topics listed here. Add a topic to the whitelist when
-            # a Foxglove panel genuinely needs to command it.
-            "capabilities": ["clientPublish", "connectionGraph", "assets"],
+            # controllers. So: no parameter writes, publishing only on the
+            # topics listed here, and only the services listed here. Add an
+            # entry when a Foxglove panel genuinely needs it.
+            "capabilities": ["clientPublish", "services", "connectionGraph", "assets"],
+            # The default is '.*', i.e. every service on the graph, the
+            # controller_manager's and the UR drivers' included -- so this
+            # list is what makes the services capability safe to enable.
+            "service_whitelist": [
+                # PLM catalog (plm_bridge): browse, select, sync, plan check.
+                # Not record_plan/record_run/upload_*, which write to the PLM.
+                "^/catalog/(list_backends|list_parts|select_part|sync_now|ensure_plan)$",
+                # Viewpoint-generation pipeline stages (std_srvs/Trigger).
+                "^/viewpoint_generation/(segment_regions|fov_clustering|viewpoint_projection|optimize_traversal)$",
+            ],
             "client_topic_whitelist": [
                 # LED ring requests, handled by lens_tuner on magpi (it stays
                 # the only publisher of /camera_head/led_ring/command).
                 "^/camera_head/led_ring/request$",
+                # Focus-lens requests, same arrangement. A velocity hold sent
+                # here lapses in lens_tuner 0.6 s after the panel stops
+                # refreshing it, so a dropped connection stops the lens.
+                "^/camera_head/lens/request$",
+                # Region/cluster selection for the viewpoint-generation viz.
+                "^/viewpoint_generation/viz/select$",
             ],
         }],
     )
@@ -288,6 +308,16 @@ def generate_launch_description():
                 "to the workspace (see the README), or pass catalog:=false.",
             condition=IfCondition(LaunchConfiguration("catalog")))
 
+    # Foxglove view of the viewpoint-generation results (see
+    # nodes/foxglove_viz_node.py). Follows the pipeline node's parameters the
+    # way the Open3D GUI does, so it never sits in the pipeline's path.
+    foxglove_viz_node = Node(
+        package="viewpoint_generation",
+        executable="foxglove_viz_node",
+        name="viewpoint_generation_viz",
+        condition=IfCondition(LaunchConfiguration("foxglove_viz")),
+    )
+
     return LaunchDescription(declared_arguments + [
         control_moveit_launch,
         viewpoint_generation_launch,
@@ -296,5 +326,6 @@ def generate_launch_description():
         admittance_control_launch,
         foxglove_bridge_node,
         pi_camera_video_node,
+        foxglove_viz_node,
         catalog_launch,
     ])

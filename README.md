@@ -40,6 +40,7 @@ viewpoint_generation/
 │   ├── plan_io.py                  # Plan file naming, stage inference, read/write, describe_plan
 │   ├── visualizer.py               # Open3D visualization
 │   ├── gui_node.py                 # GUI node implementation
+│   ├── foxglove_scene.py           # Plan -> numpy scene for the Foxglove viz (no ROS, no GUI)
 │   └── assets/
 │       ├── materials.py            # Visualization materials
 │       └── planning_volume.stl     # Planning volume mesh
@@ -47,7 +48,8 @@ viewpoint_generation/
 │   ├── viewpoint_generation_node.py
 │   ├── task_planning_node.py
 │   ├── viewpoint_traversal_node.py
-│   └── gui.py
+│   ├── gui.py
+│   └── foxglove_viz_node.py        # Publishes each stage's results for Foxglove's 3D panel
 ├── launch/
 │   ├── bringup.launch.py           # Full system bringup
 │   ├── viewpoint_generation.launch.py
@@ -286,6 +288,8 @@ All `RegionGrowingConfig`, `PartFieldSegmentationConfig`, `FOVClusteringConfig`,
   - **Viewpoint overlays (inclusive)** — *View → Viewpoint Overlays* independently toggles any combination of per-viewpoint geometries: `Viewpoint Marker`, `FOV Cylinder`, `Origin Line` (surface origin → camera), `Frustum`, and `Origin Marker`. **FOV Cylinder** is a white wireframe cylinder (radius `fov_diameter/2`, height `dof`) centered on each cluster's surface target and aligned to its averaged view direction — the literal coverage volume; overlapping FOVs visibly intersect, honestly depicting the *covering* solution. **Origin Marker** is a small white sphere at the cluster's surface origin, always white rather than tinted by selection or cluster color. **Viewpoint Marker** is colored by the viewpoint's `imaging_mode`: green for `photometric`, yellow for `standard`, red for `inaccessible` (blue overrides all when the viewpoint is selected). This set applies to the non-selected viewpoints.
   - **Selected viewpoint overlays** — *View → Selected Viewpoint Overlays* is a parallel, independent set of the same toggles that applies only to the currently-selected viewpoint (drawn with highlight colors). Because the two sets are independent, you can, e.g., show the FOV cylinder for the selected viewpoint only by enabling it here while leaving it off in *Viewpoint Overlays*.
 
+- **foxglove_viz_node** (`viewpoint_generation_viz`) -- the remote alternative to the Open3D GUI's 3D view: publishes the current plan as topics Foxglove's 3D panel draws natively, so a plan can be inspected from anywhere the Foxglove bridge reaches. See [Foxglove visualization](#foxglove-visualization).
+
 #### VRP Traversal Optimization Parameters (`viewpoint_traversal_node`)
 
 The VRP optimizer treats the inspection as a **clustered vehicle-routing problem**:
@@ -389,6 +393,8 @@ Additional arguments:
 - `catalog_mesh_units` -- Units announced with a catalog selection (default:
   `mm`). Ignored for STEP files, which declare their own units (see
   [STEP ingest](#step-ingest)); it only matters for a hand-placed non-STEP model
+- `foxglove_viz` -- Start `foxglove_viz_node` (default: `true`); see
+  [Foxglove visualization](#foxglove-visualization).
 - `headless_mode` -- Run without the Open3D GUI (`gui_node`); starts rqt instead
   (default: false). Forwarded to `viewpoint_generation.launch.py`. Use on hosts with
   no X display.
@@ -405,6 +411,57 @@ Additional arguments:
   `inspection_control/launch/coupled_pendulum.launch.py`, i.e. the Tier 3 coupled-pendulum
   orientation + admittance pair. To use the legacy point-mass pipeline instead, point this
   back at `admittance_control.yaml` and include `admittance_control.launch.py`.
+
+## Foxglove visualization
+
+`foxglove_viz_node` (`nodes/foxglove_viz_node.py`, scene building in
+`viewpoint_generation/foxglove_scene.py`) publishes the plan for Foxglove's 3D
+panel. Like the Open3D GUI it stays out of the pipeline. It follows
+`/viewpoint_generation`'s `results.file`, `model.mesh.file`,
+`model.mesh.units` and `model.mesh.tessellation.*` parameters through
+`/parameter_events`, and since every stage ends by setting `results.file`, it
+redraws after each one.
+
+All topics are latched (transient local) under `/viewpoint_generation/viz`:
+
+| Topic | Type | Content |
+|---|---|---|
+| `mesh` | `foxglove_msgs/SceneUpdate` | one entity per region in the GUI's region colours, plus `noise` and `unassigned` faces; click a region for its metadata |
+| `points` | `sensor_msgs/PointCloud2` | each region's sampled points, `rgb` = cluster colour, plus `region` and `cluster` (traversal position, -1 = unclustered) fields to colour by |
+| `blind_spots` | `sensor_msgs/PointCloud2` | points no viewpoint can see (magenta) |
+| `viewpoints` | `foxglove_msgs/SceneUpdate` | per viewpoint: camera marker coloured by `imaging_mode` (green photometric, yellow standard, red inaccessible) and a frustum whose far face is the imaged patch; metadata on click |
+| `fov` | `foxglove_msgs/SceneUpdate` | FOV coverage cylinders (`fov_diameter` x `dof`) at each surface origin |
+| `path` | `foxglove_msgs/SceneUpdate` | per region: viewpoints joined in traversal order, the optimised joint path, unreachable viewpoints |
+| `labels` | `foxglove_msgs/SceneUpdate` | region numbers |
+| `selection`, `selection_points` | `SceneUpdate`, `PointCloud2` | highlight of the selected region (wireframe), cluster points and viewpoint |
+| `summary` | `std_msgs/String` | JSON: stage, counts, imaging modes, per-region stats and cluster ids, warnings |
+
+Input: `select` (`std_msgs/String`, `{"region": id, "cluster": id}`, -1 = none).
+
+TF: `object_frame -> viewpoint_generation/model` is the part's placement from
+`/tsdf_pose/pose`, the same pose the planning scene uses, and identity until
+one arrives. So the plan shows up even when `tsdf_pose` is not running.
+`viewpoint_generation/model -> viewpoint_generation/selected_viewpoint` is the
+selected camera pose (+Z forward).
+
+Parameters: `results_file` pins the node to one plan file instead of
+following the pipeline, which is useful for browsing old plans
+(`ros2 param set /viewpoint_generation_viz results_file <plan.json>`; `''`
+to follow again). Also `traversal_algorithm` (which optimised order to
+show), `labels`, `target_node`, `topic_prefix`, `frame_id`,
+`parent_frame` and `placement_topic`.
+
+A region's faces are triangle indices, so a STEP mesh is tessellated exactly
+as the pipeline tessellates it: through `cad_loader.step_loader.load_step`
+with the pipeline's `model.mesh.tessellation.*`. When a plan indexes faces
+the mesh does not have (it was made with a different tessellation), the node
+warns, and the warning appears in `summary`. Stored absolute paths that no
+longer exist are re-rooted from their last `/catalog/` component onto
+`$CATALOG_ROOT`.
+
+The **Viewpoint Generation** Foxglove panel (in the cell's Foxglove extension)
+shows the summary, runs the stages through the bridge's service whitelist, and
+steps through regions and clusters by publishing `select`.
 
 ## JSON Results Format
 
